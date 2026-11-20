@@ -1,0 +1,12 @@
+[package]
+name = "smorgasprot-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Interactive 2D/3D protein interface cartography & triage GUI"
+
+[dependencies]
+smorgasprot-core.workspace = true
+glam.workspace = true
+serde.workspace = true
+serde_json.workspace = true

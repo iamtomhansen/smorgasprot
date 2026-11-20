@@ -1,0 +1,354 @@
+//! Biophysical contact scoring and local chemical environment density heuristics:
+//! van der Waals clashes (MolProbity / Probe), hydrogen bonds (Baker–Hubbard / HBPLUS),
+//! salt bridges, buried unsatisfied polars, and local aliphatic packing density (ChimeraX Fermi MLP).
+//!
+//! ## Works referenced
+//! 1. **All-Atom Steric Clash Tolerances (`Probe` / `MolProbity` / `Phenix`):**
+//!    Word, J. M., Lovell, S. C., LaBean, T. H., Taylor, H. C., Zalis, M. E., Presley, B. K.,
+//!    Richardson, J. S., & Richardson, D. C. (1999). Visualizing and quantifying molecular
+//!    goodness-of-fit: small-probe contact dots with explicit hydrogen atoms.
+//!    *Journal of Molecular Biology*, 285(4), 1711–1733; Chen, V. B. et al. (2010).
+//!    MolProbity: all-atom structure validation for macromolecular crystallography.
+//!    *Acta Crystallographica Section D*, 66(1), 12–21.
+//! 2. **Hydrogen Bond Geometric & Angular Criteria (Baker–Hubbard / McDonald–Thornton):**
+//!    Baker, E. N., & Hubbard, R. E. (1984). Hydrogen bonding in globular proteins.
+//!    *Progress in Biophysics and Molecular Biology*, 44(2), 97–179; McDonald, I. K., &
+//!    Thornton, J. M. (1994). Satisfying hydrogen bonding potential in proteins (`HBPLUS`).
+//!    *Journal of Molecular Biology*, 238(5), 777–793.
+//! 3. **Molecular Lipophilicity Potential (MLP) & ChimeraX Fermi Distance-Decay Kernel:**
+//!    Audry, E. et al. (1986). *Eur. J. Med. Chem.*, 21, 71–72; Gaillard, P., Carrupt, P.-A.,
+//!    Testa, B., & Boudon, A. (1994). Molecular Lipophilicity Potential, a tool in 3D QSAR:
+//!    Method and applications. *Journal of Computer-Aided Molecular Design*, 8(2), 83–96;
+//!    Laguerre, M. et al. (1997). *Journal of Pharmaceutical Sciences*, 86(10), 1174–1182.
+//! 4. **Protein Interface Hydrophobic Hotspots ("O-Ring" Architecture):**
+//!    Bogan, A. A., & Thorn, K. S. (1998). Anatomy of hot spots in protein interfaces.
+//!    *Journal of Molecular Biology*, 280(1), 1–9.
+
+use crate::amino_acids::{ChemistryClass, ElementExt};
+use crate::model::{AtomRecord, ComplexStructure, EdgeKind, Element, ResidueRecord};
+use crate::spatial::SpatialGrid;
+use glam::Vec3;
+
+/// Maximum center-to-center distance for first-shell interaction edges (in Angstroms).
+pub const FIRST_SHELL_CUTOFF_A: f32 = 4.50;
+/// MolProbity / Probe van der Waals overlap threshold (`0.40 A`) for non-H-bonding atom pairs
+/// before flagging a serious steric clash (Word et al. 1999; Chen et al. 2010).
+pub const CLASH_TOLERANCE_A: f32 = 0.40;
+/// Heavy-atom donor-acceptor overlap allowance (`0.65 A`) for hydrogen-bonding N/O pairs,
+/// accounting for interpenetration of heavy-atom vdW spheres along a ~2.40 A H-bond
+/// (Word et al. 1999; UCSF ChimeraX `findclash`).
+pub const HBOND_CLASH_TOLERANCE_A: f32 = 0.65;
+/// Minimum heavy-atom donor-acceptor distance for a hydrogen bond (in Angstroms).
+pub const HBOND_MIN_DIST_A: f32 = 2.35;
+/// Maximum heavy-atom donor-acceptor distance for a hydrogen bond (`3.50 A`; Baker & Hubbard 1984).
+pub const HBOND_MAX_DIST_A: f32 = 3.50;
+/// Minimum covalent antecedent angle `<(Base-Donor...Acceptor)` and `<(Donor...Acceptor-Base)`
+/// in degrees (`100.0 deg`; Baker & Hubbard 1984; McDonald & Thornton 1994).
+pub const HBOND_MIN_ANTECEDENT_ANGLE_DEG: f32 = 100.0;
+/// Maximum heavy-atom distance between oppositely charged functional groups for a salt bridge (`4.00 A`; Barlow & Thornton 1983).
+pub const SALT_BRIDGE_MAX_DIST_A: f32 = 4.00;
+/// Cutoff radius for local 3D aliphatic/hydrophobic packing density evaluation (`8.00 A`).
+pub const ALIPHATIC_ENV_RADIUS_A: f32 = 8.00;
+/// Half-height inflection distance $d_0$ for the Laguerre (1997) / ChimeraX Fermi MLP decay kernel (`4.50 A`).
+pub const FERMI_HALF_DIST_A: f32 = 4.50;
+/// Steepness parameter $a$ for the Laguerre (1997) / ChimeraX Fermi MLP decay kernel (`1.50 A^-1`).
+pub const FERMI_STEEPNESS_INV_A: f32 = 1.50;
+
+/// Unified biophysical classifier for any pair of interfacial heavy atoms (same- or cross-side).
+///
+/// `base_a` and `base_b` are the optional 3D coordinates of the covalently bonded antecedent ("base")
+/// heavy atoms attached to `atom_a` and `atom_b`, used to enforce the Baker & Hubbard (1984) angular
+/// criterion on hydrogen bonds.
+///
+/// Returns `Some((EdgeKind, overlap_a))` if the atoms lie within [`FIRST_SHELL_CUTOFF_A`] (`<= 4.5 A`).
+pub fn classify_pair_edge(
+    atom_a: &AtomRecord,
+    res_a: &ResidueRecord,
+    base_a: Option<Vec3>,
+    atom_b: &AtomRecord,
+    res_b: &ResidueRecord,
+    base_b: Option<Vec3>,
+    dist_a: f32,
+) -> Option<(EdgeKind, f32)> {
+    if dist_a > FIRST_SHELL_CUTOFF_A {
+        return None;
+    }
+
+    if atom_a.residue_idx == atom_b.residue_idx {
+        return Some((EdgeKind::SameResidue, 0.0));
+    }
+
+    if is_adjacent_backbone_pair(res_a, res_b) {
+        return Some((EdgeKind::VanDerWaalsContact, 0.0));
+    }
+
+    if let Some(overlap_a) = check_steric_clash(atom_a, atom_b, dist_a) {
+        return Some((EdgeKind::Clash, overlap_a));
+    }
+
+    if is_salt_bridge(atom_a, res_a, atom_b, res_b, dist_a) {
+        return Some((EdgeKind::SaltBridge, 0.0));
+    }
+
+    if is_hydrogen_bond_baker_hubbard(atom_a, base_a, atom_b, base_b, dist_a) {
+        return Some((EdgeKind::HBond, 0.0));
+    }
+
+    Some((EdgeKind::VanDerWaalsContact, 0.0))
+}
+
+/// Precomputes the 3D position of each atom's closest covalently bonded antecedent ("base")
+/// heavy atom within the same residue (`1.10 A <= d <= 1.68 A`).
+///
+/// Examples:
+/// - For `Ser OG`, the covalent base is `CB`.
+/// - For `Glu OE1/OE2`, the covalent base is `CD`.
+/// - For backbone `O`, the covalent base is `C`; for backbone `N`, the covalent base is `CA`.
+pub fn precompute_covalent_base_positions(complex: &ComplexStructure) -> Vec<Option<Vec3>> {
+    let mut bases = vec![None; complex.atoms.len()];
+
+    for res in &complex.residues {
+        let start = res.atom_range.0 as usize;
+        let end = res.atom_range.1 as usize;
+        for i in start..end {
+            let pi = Vec3::from(complex.atoms[i].pos_3d);
+            let mut best_base = None;
+            let mut best_d2 = f32::INFINITY;
+
+            for j in start..end {
+                if i == j {
+                    continue;
+                }
+                let pj = Vec3::from(complex.atoms[j].pos_3d);
+                let d2 = pi.distance_squared(pj);
+                if (1.10 * 1.10..=1.72 * 1.72).contains(&d2) && d2 < best_d2 {
+                    best_d2 = d2;
+                    best_base = Some(pj);
+                }
+            }
+            bases[i] = best_base;
+        }
+    }
+
+    bases
+}
+
+/// Returns true if `res_a` and `res_b` are adjacent covalently linked polypeptide residues (`|Δseq| <= 1`) on the same chain.
+#[inline]
+pub fn is_adjacent_backbone_pair(res_a: &ResidueRecord, res_b: &ResidueRecord) -> bool {
+    res_a.chain_idx == res_b.chain_idx
+        && (res_a.seq_num - res_b.seq_num).abs() <= 1
+        && res_a.kind.is_polypeptide()
+        && res_b.kind.is_polypeptide()
+}
+
+/// Checks if two non-bonded heavy atoms violate van der Waals steric exclusion (Word et al. 1999).
+/// Returns `Some(overlap_a)` when the penetration exceeds the allowed tolerance.
+#[inline]
+pub fn check_steric_clash(atom_a: &AtomRecord, atom_b: &AtomRecord, dist_a: f32) -> Option<f32> {
+    let is_hbond_pair = atom_a.element.is_h_bond_partner() && atom_b.element.is_h_bond_partner();
+    let tol = if is_hbond_pair {
+        HBOND_CLASH_TOLERANCE_A
+    } else {
+        CLASH_TOLERANCE_A
+    };
+    let overlap_a = (atom_a.vdw_radius_a + atom_b.vdw_radius_a - tol) - dist_a;
+    if overlap_a > f32::EPSILON {
+        Some(overlap_a)
+    } else {
+        None
+    }
+}
+
+/// Returns true if `atom_a` and `atom_b` carry opposite formal charges within [`SALT_BRIDGE_MAX_DIST_A`].
+#[inline]
+pub fn is_salt_bridge(
+    atom_a: &AtomRecord,
+    res_a: &ResidueRecord,
+    atom_b: &AtomRecord,
+    res_b: &ResidueRecord,
+    dist_a: f32,
+) -> bool {
+    dist_a <= SALT_BRIDGE_MAX_DIST_A && is_opposite_charged_atoms(atom_a, res_a, atom_b, res_b)
+}
+
+/// Baker & Hubbard (1984) / McDonald & Thornton (1994) heavy-atom hydrogen bond detector.
+///
+/// Requires:
+/// 1. Both atoms are polar N/O heavy atoms (`ElementExt::is_h_bond_partner`),
+/// 2. Donor–acceptor distance 2.35 A < dA < 3.50 A, and
+/// 3. Antecedent covalent bond angles angle(BaseA-A...B) >= 100° and angle(A...B-BaseB) >= 100°
+///    (when covalent base atoms are present).
+pub fn is_hydrogen_bond_baker_hubbard(
+    atom_a: &AtomRecord,
+    base_a: Option<Vec3>,
+    atom_b: &AtomRecord,
+    base_b: Option<Vec3>,
+    dist_a: f32,
+) -> bool {
+    if !atom_a.element.is_h_bond_partner()
+        || !atom_b.element.is_h_bond_partner()
+        || !(HBOND_MIN_DIST_A..=HBOND_MAX_DIST_A).contains(&dist_a)
+    {
+        return false;
+    }
+
+    let pa = Vec3::from(atom_a.pos_3d);
+    let pb = Vec3::from(atom_b.pos_3d);
+    // cos(100 deg) = -0.173648
+    let max_cos = (HBOND_MIN_ANTECEDENT_ANGLE_DEG.to_radians()).cos();
+
+    if let Some(ba) = base_a {
+        let u_ba = (ba - pa).normalize_or_zero();
+        let u_ab = (pb - pa).normalize_or_zero();
+        // Angle at A is obtuse (>= 100 deg) iff dot(u_ba, u_ab) <= cos(100 deg)
+        if u_ba.dot(u_ab) > max_cos {
+            return false;
+        }
+    }
+
+    if let Some(bb) = base_b {
+        let u_bb = (bb - pb).normalize_or_zero();
+        let u_ba = (pa - pb).normalize_or_zero();
+        if u_bb.dot(u_ba) > max_cos {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn is_positive_sidechain_atom(atom: &AtomRecord, res: &ResidueRecord) -> bool {
+    if let Some(aa) = res.kind.amino_acid() {
+        let aname = std::str::from_utf8(&atom.atom_name).unwrap_or("");
+        aa.is_positive_functional_atom(aname)
+    } else {
+        atom.element.is_metal_ion()
+    }
+}
+
+fn is_negative_sidechain_atom(atom: &AtomRecord, res: &ResidueRecord) -> bool {
+    if let Some(aa) = res.kind.amino_acid() {
+        let aname = std::str::from_utf8(&atom.atom_name).unwrap_or("");
+        aa.is_negative_functional_atom(aname)
+    } else {
+        false
+    }
+}
+
+fn is_opposite_charged_atoms(
+    atom_a: &AtomRecord,
+    res_a: &ResidueRecord,
+    atom_b: &AtomRecord,
+    res_b: &ResidueRecord,
+) -> bool {
+    (is_positive_sidechain_atom(atom_a, res_a) && is_negative_sidechain_atom(atom_b, res_b))
+        || (is_negative_sidechain_atom(atom_a, res_a) && is_positive_sidechain_atom(atom_b, res_b))
+}
+
+/// Returns the intrinsic apolar/aliphatic weight $w_j \in [0, 1]$ of an atom for local hydrophobic
+/// packing density calculations:
+/// - Sidechain carbon/sulfur on an Aliphatic residue (`Ala, Val, Leu, Ile, Met`): `1.0`
+/// - Sidechain carbon on an Aromatic or Proline residue (`Phe, Tyr, Trp, Pro`): `0.85`
+/// - Non-carbonyl sidechain carbon on a polar/charged residue (e.g. `CB, CG` methylene stem): `0.5`
+/// - Backbone `CA`: `0.25`
+/// - Polar `N, O`, carbonyl `C`, or charged functional carbons (`CZ` of Arg, `CG` of Asp, `CD` of Glu): `0.0`
+pub fn intrinsic_aliphatic_weight(atom: &AtomRecord, res: &ResidueRecord) -> f32 {
+    if !matches!(atom.element, Element::C | Element::S) {
+        return 0.0;
+    }
+    let aname = std::str::from_utf8(&atom.atom_name).unwrap_or("").trim();
+    if aname == "C" {
+        return 0.0; // Backbone carbonyl carbon is partially positive/polar
+    }
+    if aname == "CA" {
+        return 0.25;
+    }
+
+    if let Some(aa) = res.kind.amino_acid() {
+        match aa.chemistry_class() {
+            ChemistryClass::Aliphatic => 1.0,
+            ChemistryClass::Aromatic => {
+                // Exclude Tyr phenolic CZ adjacent to OH
+                if aa == crate::amino_acids::AminoAcid::Tyr && aname == "CZ" {
+                    0.3
+                } else {
+                    0.85
+                }
+            }
+            ChemistryClass::SpecialGlyPro => 0.85,
+            ChemistryClass::PolarNeutral | ChemistryClass::Positive | ChemistryClass::Negative => {
+                // Terminal functional carbons directly bonded to O/N carry partial charge
+                if matches!(
+                    (aa, aname),
+                    (crate::amino_acids::AminoAcid::Asp, "CG")
+                        | (crate::amino_acids::AminoAcid::Asn, "CG")
+                        | (crate::amino_acids::AminoAcid::Glu, "CD")
+                        | (crate::amino_acids::AminoAcid::Gln, "CD")
+                        | (crate::amino_acids::AminoAcid::Arg, "CZ")
+                ) {
+                    0.0
+                } else {
+                    0.50
+                }
+            }
+        }
+    } else {
+        0.50
+    }
+}
+
+/// Evaluates the normalized Laguerre et al. (1997) / UCSF ChimeraX `mlp` Fermi distance-decay function:
+/// (1 + exp(-a * d0)) / (1 + exp(a * (d - d0)))
+/// where d0 = 4.50 A ([`FERMI_HALF_DIST_A`]) and a = 1.50 A^-1 ([`FERMI_STEEPNESS_INV_A`]).
+#[inline]
+pub fn fermi_distance_kernel(dist_a: f32) -> f32 {
+    let num = 1.0 + (-FERMI_STEEPNESS_INV_A * FERMI_HALF_DIST_A).exp();
+    let den = 1.0 + (FERMI_STEEPNESS_INV_A * (dist_a - FERMI_HALF_DIST_A)).exp();
+    num / den
+}
+
+/// Computes the local 3D aliphatic/hydrophobic packing density score for every atom in `complex`.
+///
+/// Combines non-negative apolar carbon/sulfur weights [`intrinsic_aliphatic_weight`] (wj in [0, 1])
+/// with the exact **UCSF ChimeraX / Laguerre et al. (1997) Fermi distance-decay kernel** [`fermi_distance_kernel`]
+/// over all neighboring non-same-residue apolar atoms within [`ALIPHATIC_ENV_RADIUS_A`]:
+pub fn compute_aliphatic_packing_scores(complex: &ComplexStructure) -> Vec<f32> {
+    let n_atoms = complex.atoms.len();
+    let mut scores = vec![0.0_f32; n_atoms];
+    let mut weights = vec![0.0_f32; n_atoms];
+
+    let mut grid = SpatialGrid::new(ALIPHATIC_ENV_RADIUS_A);
+    for (i, atom) in complex.atoms.iter().enumerate() {
+        if !atom.role.is_assigned() {
+            continue;
+        }
+        let res = &complex.residues[atom.residue_idx.0 as usize];
+        let w = intrinsic_aliphatic_weight(atom, res);
+        weights[i] = w;
+        if w > 0.0 {
+            grid.insert(i as u32, atom.pos_3d);
+        }
+    }
+
+    for (i, atom) in complex.atoms.iter().enumerate() {
+        if !atom.role.is_assigned() {
+            continue;
+        }
+        let mut env_sum = weights[i];
+        let res_i = atom.residue_idx;
+
+        grid.query_radius(atom.pos_3d, ALIPHATIC_ENV_RADIUS_A, |j_u32, _pos_j, d2| {
+            let j = j_u32 as usize;
+            if complex.atoms[j].residue_idx == res_i {
+                return;
+            }
+            let dist = d2.sqrt();
+            env_sum += weights[j] * fermi_distance_kernel(dist);
+        });
+
+        scores[i] = env_sum;
+    }
+
+    scores
+}

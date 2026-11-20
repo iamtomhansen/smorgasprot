@@ -1,0 +1,468 @@
+//! Amino acid definitions, physicochemical properties, and PDB/mmCIF residue classification.
+//! [`pdbtbx::Element`] provides most of the data, while this module provides convenience methods
+//! and high-level classifications.
+//!
+//! ## Works referenced:
+//! 1. **Hydropathy Index:** Kyte, J., & Doolittle, R. F. (1982). A simple method for displaying
+//!    the hydropathic character of a protein. *Journal of Molecular Biology*, 157(1), 105–132.
+//! 2. **Van der Waals Radii:** Bondi, A. (1964). van der Waals Volumes and Radii.
+//!    *The Journal of Physical Chemistry*, 68(3), 441–451; Mantina, M. et al. (2009).
+//!    Consistent van der Waals Radii for the Whole Main Group. *J. Phys. Chem. A*, 113(19), 5806–5812.
+
+use pdbtbx::Element;
+use serde::{Deserialize, Serialize};
+use std::str::FromStr;
+
+/// Extension methods on [`pdbtbx::Element`] for biophysical classification and van der Waals radii.
+pub trait ElementExt {
+    /// Returns true if the element is hydrogen (`Element::H`).
+    fn is_hydrogen_atom(self) -> bool;
+
+    /// Returns true if the element is a non-hydrogen heavy atom.
+    fn is_heavy_atom(self) -> bool;
+
+    /// Returns true if the element is a polar hydrogen-bond donor/acceptor heavy atom (`N` or `O`).
+    fn is_h_bond_partner(self) -> bool;
+
+    /// Returns true if the element is a biologically common metal ion (`Zn`, `Mg`, `Ca`, `Fe`, `Cu`, `Co`, `Mn`, `Ni`, `Na`, `K`, etc.).
+    fn is_metal_ion(self) -> bool;
+
+    /// Returns the Bondi (1964) / Mantina (2009) van der Waals radius in Angstroms via `pdbtbx::Element::atomic_radius()`.
+    fn vdw_radius_a(self) -> f32;
+}
+
+impl ElementExt for Element {
+    #[inline]
+    fn is_hydrogen_atom(self) -> bool {
+        self == Element::H
+    }
+
+    #[inline]
+    fn is_heavy_atom(self) -> bool {
+        self != Element::H
+    }
+
+    #[inline]
+    fn is_h_bond_partner(self) -> bool {
+        matches!(self, Element::N | Element::O)
+    }
+
+    #[inline]
+    fn is_metal_ion(self) -> bool {
+        matches!(
+            self,
+            Element::Li
+                | Element::Na
+                | Element::K
+                | Element::Rb
+                | Element::Cs
+                | Element::Mg
+                | Element::Ca
+                | Element::Sr
+                | Element::Ba
+                | Element::V
+                | Element::Cr
+                | Element::Mn
+                | Element::Fe
+                | Element::Co
+                | Element::Ni
+                | Element::Cu
+                | Element::Zn
+                | Element::Mo
+                | Element::Cd
+                | Element::Pt
+                | Element::Au
+                | Element::Hg
+        )
+    }
+
+    #[inline]
+    fn vdw_radius_a(self) -> f32 {
+        self.atomic_radius().van_der_waals.unwrap_or(1.75) as f32
+    }
+}
+
+/// High-level chemical grouping for presentation lenses and mutation matrices.
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ChemistryClass {
+    Aliphatic,
+    Aromatic,
+    PolarNeutral,
+    Positive,
+    Negative,
+    SpecialGlyPro,
+}
+
+/// The 20 canonical amino acids.
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AminoAcid {
+    Ala,
+    Arg,
+    Asn,
+    Asp,
+    Cys,
+    Gln,
+    Glu,
+    Gly,
+    His,
+    Ile,
+    Leu,
+    Lys,
+    Met,
+    Phe,
+    Pro,
+    Ser,
+    Thr,
+    Trp,
+    Tyr,
+    Val,
+}
+
+impl AminoAcid {
+    /// All 20 canonical amino acids in alphabetical order of their 3-letter codes.
+    pub const ALL: [Self; 20] = [
+        Self::Ala,
+        Self::Arg,
+        Self::Asn,
+        Self::Asp,
+        Self::Cys,
+        Self::Gln,
+        Self::Glu,
+        Self::Gly,
+        Self::His,
+        Self::Ile,
+        Self::Leu,
+        Self::Lys,
+        Self::Met,
+        Self::Phe,
+        Self::Pro,
+        Self::Ser,
+        Self::Thr,
+        Self::Trp,
+        Self::Tyr,
+        Self::Val,
+    ];
+
+    /// Parses a 3-letter amino acid string (e.g. `"GLU"` or `"Glu"`).
+    pub fn from_three_letter(code: &str) -> Option<Self> {
+        match code.trim().to_ascii_uppercase().as_str() {
+            "ALA" => Some(Self::Ala),
+            "ARG" => Some(Self::Arg),
+            "ASN" => Some(Self::Asn),
+            "ASP" => Some(Self::Asp),
+            "CYS" => Some(Self::Cys),
+            "GLN" => Some(Self::Gln),
+            "GLU" => Some(Self::Glu),
+            "GLY" => Some(Self::Gly),
+            "HIS" | "HID" | "HIE" | "HIP" => Some(Self::His),
+            "ILE" => Some(Self::Ile),
+            "LEU" => Some(Self::Leu),
+            "LYS" => Some(Self::Lys),
+            "MET" => Some(Self::Met),
+            "PHE" => Some(Self::Phe),
+            "PRO" => Some(Self::Pro),
+            "SER" => Some(Self::Ser),
+            "THR" => Some(Self::Thr),
+            "TRP" => Some(Self::Trp),
+            "TYR" => Some(Self::Tyr),
+            "VAL" => Some(Self::Val),
+            _ => None,
+        }
+    }
+
+    /// Parses a 3-byte ASCII array (e.g. `b"GLU"`).
+    pub fn from_bytes(bytes: &[u8; 3]) -> Option<Self> {
+        std::str::from_utf8(bytes)
+            .ok()
+            .and_then(Self::from_three_letter)
+    }
+
+    /// 3-letter PDB/mmCIF code, upper-case (`"ALA"`, `"GLU"`, ...).
+    pub const fn three_letter(self) -> &'static str {
+        match self {
+            Self::Ala => "ALA",
+            Self::Arg => "ARG",
+            Self::Asn => "ASN",
+            Self::Asp => "ASP",
+            Self::Cys => "CYS",
+            Self::Gln => "GLN",
+            Self::Glu => "GLU",
+            Self::Gly => "GLY",
+            Self::His => "HIS",
+            Self::Ile => "ILE",
+            Self::Leu => "LEU",
+            Self::Lys => "LYS",
+            Self::Met => "MET",
+            Self::Phe => "PHE",
+            Self::Pro => "PRO",
+            Self::Ser => "SER",
+            Self::Thr => "THR",
+            Self::Trp => "TRP",
+            Self::Tyr => "TYR",
+            Self::Val => "VAL",
+        }
+    }
+
+    /// Fixed 3-byte ASCII representation (`*b"ALA"`, `*b"GLU"`, ...).
+    pub const fn three_letter_bytes(self) -> [u8; 3] {
+        match self {
+            Self::Ala => *b"ALA",
+            Self::Arg => *b"ARG",
+            Self::Asn => *b"ASN",
+            Self::Asp => *b"ASP",
+            Self::Cys => *b"CYS",
+            Self::Gln => *b"GLN",
+            Self::Glu => *b"GLU",
+            Self::Gly => *b"GLY",
+            Self::His => *b"HIS",
+            Self::Ile => *b"ILE",
+            Self::Leu => *b"LEU",
+            Self::Lys => *b"LYS",
+            Self::Met => *b"MET",
+            Self::Phe => *b"PHE",
+            Self::Pro => *b"PRO",
+            Self::Ser => *b"SER",
+            Self::Thr => *b"THR",
+            Self::Trp => *b"TRP",
+            Self::Tyr => *b"TYR",
+            Self::Val => *b"VAL",
+        }
+    }
+
+    /// Title-case 3-letter code for UI territory badges (`"Ala"`, `"Glu"`, ...).
+    pub const fn title_case(self) -> &'static str {
+        match self {
+            Self::Ala => "Ala",
+            Self::Arg => "Arg",
+            Self::Asn => "Asn",
+            Self::Asp => "Asp",
+            Self::Cys => "Cys",
+            Self::Gln => "Gln",
+            Self::Glu => "Glu",
+            Self::Gly => "Gly",
+            Self::His => "His",
+            Self::Ile => "Ile",
+            Self::Leu => "Leu",
+            Self::Lys => "Lys",
+            Self::Met => "Met",
+            Self::Phe => "Phe",
+            Self::Pro => "Pro",
+            Self::Ser => "Ser",
+            Self::Thr => "Thr",
+            Self::Trp => "Trp",
+            Self::Tyr => "Tyr",
+            Self::Val => "Val",
+        }
+    }
+
+    /// 1-letter IUPAC code (`'A'`, `'E'`, ...).
+    pub const fn one_letter(self) -> char {
+        match self {
+            Self::Ala => 'A',
+            Self::Arg => 'R',
+            Self::Asn => 'N',
+            Self::Asp => 'D',
+            Self::Cys => 'C',
+            Self::Gln => 'Q',
+            Self::Glu => 'E',
+            Self::Gly => 'G',
+            Self::His => 'H',
+            Self::Ile => 'I',
+            Self::Leu => 'L',
+            Self::Lys => 'K',
+            Self::Met => 'M',
+            Self::Phe => 'F',
+            Self::Pro => 'P',
+            Self::Ser => 'S',
+            Self::Thr => 'T',
+            Self::Trp => 'W',
+            Self::Tyr => 'Y',
+            Self::Val => 'V',
+        }
+    }
+
+    /// Physicochemical sidechain class.
+    pub const fn chemistry_class(self) -> ChemistryClass {
+        match self {
+            Self::Ala | Self::Val | Self::Leu | Self::Ile | Self::Met => ChemistryClass::Aliphatic,
+            Self::Phe | Self::Tyr | Self::Trp => ChemistryClass::Aromatic,
+            Self::Ser | Self::Thr | Self::Asn | Self::Gln | Self::Cys => {
+                ChemistryClass::PolarNeutral
+            }
+            Self::Lys | Self::Arg | Self::His => ChemistryClass::Positive,
+            Self::Asp | Self::Glu => ChemistryClass::Negative,
+            Self::Gly | Self::Pro => ChemistryClass::SpecialGlyPro,
+        }
+    }
+
+    /// Kyte & Doolittle (1982) hydropathy index (*J. Mol. Biol.* 157:105–132).
+    pub const fn hydropathy_kyte_doolittle(self) -> f32 {
+        match self {
+            Self::Ile => 4.5,
+            Self::Val => 4.2,
+            Self::Leu => 3.8,
+            Self::Phe => 2.8,
+            Self::Cys => 2.5,
+            Self::Met => 1.9,
+            Self::Ala => 1.8,
+            Self::Gly => -0.4,
+            Self::Thr => -0.7,
+            Self::Ser => -0.8,
+            Self::Trp => -0.9,
+            Self::Tyr => -1.3,
+            Self::Pro => -1.6,
+            Self::His => -3.2,
+            Self::Glu => -3.5,
+            Self::Gln => -3.5,
+            Self::Asp => -3.5,
+            Self::Asn => -3.5,
+            Self::Lys => -3.9,
+            Self::Arg => -4.5,
+        }
+    }
+
+    /// Returns true if `atom_name` is a positively charged sidechain atom on this residue.
+    pub fn is_positive_functional_atom(self, atom_name: &str) -> bool {
+        let trimmed = atom_name.trim();
+        match self {
+            Self::Arg => matches!(trimmed, "NE" | "NH1" | "NH2"),
+            Self::Lys => trimmed == "NZ",
+            Self::His => matches!(trimmed, "ND1" | "NE2"),
+            _ => false,
+        }
+    }
+
+    /// Returns true if `atom_name` is a negatively charged sidechain atom on this residue.
+    pub fn is_negative_functional_atom(self, atom_name: &str) -> bool {
+        let trimmed = atom_name.trim();
+        match self {
+            Self::Asp => matches!(trimmed, "OD1" | "OD2"),
+            Self::Glu => matches!(trimmed, "OE1" | "OE2"),
+            _ => false,
+        }
+    }
+}
+
+impl FromStr for AminoAcid {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_three_letter(s).ok_or("Unknown canonical amino acid code")
+    }
+}
+
+/// Classification of any residue/component encountered in a PDB or mmCIF file.
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ResidueKind {
+    /// Standard canonical proteinogenic amino acid.
+    CanonicalAminoAcid(AminoAcid),
+    /// Non-standard / post-translationally modified amino acid (e.g. `MSE` selenomethionine, `SEP`, `TPO`, `PTR`, `CSO`).
+    ModifiedAminoAcid(Option<AminoAcid>),
+    /// Coordinating or structural metal ion (e.g. `ZN`, `MG`, `CA`).
+    MetalIon,
+    /// Non-protein ligand, cofactor, glycan, etc. (e.g. `HEM`, `NAG`, `ATP`).
+    Ligand,
+    /// Water or crystallization buffer ion/cryoprotectant (e.g. `HOH`, `PO4`, `GOL`).
+    SolventOrBuffer,
+}
+
+impl ResidueKind {
+    /// Classifies a PDB/mmCIF 3-letter component code and its constituent element profile.
+    pub fn classify(res_name: &str, has_metal_element: bool) -> Self {
+        let code = res_name.trim().to_ascii_uppercase();
+        if let Some(aa) = AminoAcid::from_three_letter(&code) {
+            return Self::CanonicalAminoAcid(aa);
+        }
+
+        // Common post-translational or crystallographic amino acid modifications
+        match code.as_str() {
+            "MSE" => return Self::ModifiedAminoAcid(Some(AminoAcid::Met)),
+            "SEP" => return Self::ModifiedAminoAcid(Some(AminoAcid::Ser)),
+            "TPO" => return Self::ModifiedAminoAcid(Some(AminoAcid::Thr)),
+            "PTR" => return Self::ModifiedAminoAcid(Some(AminoAcid::Tyr)),
+            "CSO" | "CME" | "CSS" | "CYX" => return Self::ModifiedAminoAcid(Some(AminoAcid::Cys)),
+            "HYP" => return Self::ModifiedAminoAcid(Some(AminoAcid::Pro)),
+            "MLY" => return Self::ModifiedAminoAcid(Some(AminoAcid::Lys)),
+            "PCA" => return Self::ModifiedAminoAcid(Some(AminoAcid::Glu)),
+            _ => {}
+        }
+
+        // Common waters, crystallization buffers, salts, and cryoprotectants
+        if matches!(
+            code.as_str(),
+            "HOH"
+                | "WAT"
+                | "DOD"
+                | "CAC"
+                | "SO4"
+                | "PO4"
+                | "GOL"
+                | "EDO"
+                | "PEG"
+                | "ACT"
+                | "FMT"
+                | "DMS"
+                | "CL"
+                | "BR"
+                | "IOD"
+                | "TRS"
+                | "MES"
+                | "EPE"
+        ) {
+            return Self::SolventOrBuffer;
+        }
+
+        if has_metal_element
+            || matches!(
+                code.as_str(),
+                "ZN" | "MG" | "CA" | "FE" | "FE2" | "CU" | "CO" | "MN" | "NI" | "NA" | "K" | "CD"
+            )
+        {
+            return Self::MetalIon;
+        }
+
+        Self::Ligand
+    }
+
+    /// Returns the associated canonical (or parent) [`AminoAcid`] if this residue is part of the polypeptide chain.
+    pub const fn amino_acid(self) -> Option<AminoAcid> {
+        match self {
+            Self::CanonicalAminoAcid(aa) => Some(aa),
+            Self::ModifiedAminoAcid(aa) => aa,
+            _ => None,
+        }
+    }
+
+    /// Returns true if this component is part of the polypeptide chain (canonical or modified amino acid).
+    pub const fn is_polypeptide(self) -> bool {
+        matches!(
+            self,
+            Self::CanonicalAminoAcid(_) | Self::ModifiedAminoAcid(_)
+        )
+    }
+
+    /// Returns true if this component is water or a crystallization buffer artifact.
+    pub const fn is_solvent_or_buffer(self) -> bool {
+        matches!(self, Self::SolventOrBuffer)
+    }
+}
+
+/// Formats any 3-byte residue name into Title Case (using a zero-allocation static string for canonical amino acids).
+pub fn print_three_letter_code(res_name: &[u8; 3]) -> String {
+    if let Some(aa) = AminoAcid::from_bytes(res_name) {
+        return aa.title_case().to_string();
+    }
+    let s = std::str::from_utf8(res_name).unwrap_or("Unk").trim();
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => {
+            let mut out = String::with_capacity(3);
+            out.extend(first.to_uppercase());
+            for c in chars {
+                out.extend(c.to_lowercase());
+            }
+            out
+        }
+        None => "Unk".to_string(),
+    }
+}

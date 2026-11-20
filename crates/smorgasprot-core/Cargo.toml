@@ -1,0 +1,12 @@
+[package]
+name = "smorgasprot-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Core geometry, SASA, 2D tangent-plane relaxation, and sidechain physics engine for Smorgasprot"
+
+[dependencies]
+glam.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+pdbtbx.workspace = true

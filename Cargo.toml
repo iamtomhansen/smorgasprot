@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/smorgasprot-core",
+    "crates/smorgasprot-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+glam = { version = "0.29", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+pdbtbx = { version = "0.12", default-features = false, features = ["compression", "serde"] }
+smorgasprot-core = { path = "crates/smorgasprot-core" }
+
+[profile.dev]
+incremental = false
+
+[profile.test]
+incremental = false
