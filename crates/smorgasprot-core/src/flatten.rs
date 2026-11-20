@@ -1,21 +1,15 @@
 //! Shared projection-plane singular value decomposition (SVD) basis, coupled 2D spring/repulsion
 //! solver, and bas-relief/butterfly kinematics.
 
-use crate::amino_acids::{ElementExt, print_three_letter_code};
 use crate::contour::compute_territory_contours;
 use crate::model::{
-    AtomInteraction, AtomNode, AtomNodeIdx, ComplexStructure, EdgeKind, GlobalAtomIdx,
-    GlobalResidueIdx, InterfaceEdge, InterfaceMap, InterfaceSide, ProjectionPlane,
-    ResidueTerritory, SecStruct, TerritoryIdx,
+    AtomNode, ComplexStructure, EdgeKind, InterfaceEdge, InterfaceMap, InterfaceSide,
+    ProjectionPlane, ResidueTerritory,
 };
-use crate::physics::{
-    classify_pair_edge, compute_aliphatic_packing_scores, precompute_covalent_base_positions,
-};
-use crate::sasa::{compute_complex_sasa, is_interfacial_atom};
+use crate::physics::extract_3d_interface_graph;
 use crate::surface::build_interface_sheet_mesh;
 use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// Number of damped gradient-descent iterations for 2D node position relaxation.
 const NODE_RELAX_ITERATIONS: usize = 160;
@@ -78,189 +72,19 @@ pub struct FlatteningStats {
     pub overlaps_after: usize,
 }
 
-/// Extracts the dual-side interface patch (`SideA` + `SideB`), computes the shared SVD [`ProjectionPlane`],
-/// relaxes the 2D coordinates `(u, v)`, builds Voronoi-clipped residue territory contours, and
-/// computes the 3D inter-chain interface separator sheet mesh.
+/// Extracts the dual-side 3D interface graph via [`extract_3d_interface_graph`], computes the shared
+/// SVD [`ProjectionPlane`], relaxes the 2D coordinates `(u, v)`, builds ΔSASA-weighted Voronoi
+/// residue territory contours, and generates the 3D inter-chain interface separator sheet mesh.
 pub fn build_interface_map(
     complex: &ComplexStructure,
 ) -> Result<(InterfaceMap, FlatteningStats), String> {
-    let sasa_vec = compute_complex_sasa(complex);
-    let aliphatic_scores = compute_aliphatic_packing_scores(complex);
+    // 1. Extract the 3D biophysical interface graph (SASA, aliphatic scores, classified 3D edges)
+    let (mut territories, mut nodes, mut edges) = extract_3d_interface_graph(complex)?;
 
-    let multi_chain_a = complex.group_a_chains.len() > 1;
-    let multi_chain_b = complex.group_b_chains.len() > 1;
+    let cross_contacts_count = edges.iter().filter(|e| e.is_cross_interface).count();
+    let intra_edges_count = edges.len() - cross_contacts_count;
 
-    // 1. Identify all interfacial atoms on SideA and SideB
-    let mut global_to_patch: HashMap<GlobalAtomIdx, AtomNodeIdx> = HashMap::new();
-    let mut res_to_territory: HashMap<GlobalResidueIdx, TerritoryIdx> = HashMap::new();
-    let mut territories: Vec<ResidueTerritory> = Vec::new();
-    let mut nodes: Vec<AtomNode> = Vec::new();
-
-    for (a_idx, atom) in complex.atoms.iter().enumerate() {
-        let side = atom.role;
-        if !side.is_assigned() {
-            continue;
-        }
-        let sasa = &sasa_vec[a_idx];
-        if !is_interfacial_atom(side, sasa) {
-            continue;
-        }
-
-        let terr_idx = *res_to_territory.entry(atom.residue_idx).or_insert_with(|| {
-            let t_idx = TerritoryIdx(territories.len() as u32);
-            let res = &complex.residues[atom.residue_idx.0 as usize];
-            let title_name = print_three_letter_code(&res.res_name);
-            let ins_str = if res.ins_code == ' ' {
-                String::new()
-            } else {
-                res.ins_code.to_string()
-            };
-            let prefix_chain = match side {
-                InterfaceSide::SideA => multi_chain_a,
-                InterfaceSide::SideB => multi_chain_b,
-                InterfaceSide::None => false,
-            };
-            let label_top = if prefix_chain {
-                format!("{}:{title_name} {}{ins_str}", res.chain_id, res.seq_num)
-            } else {
-                format!("{title_name} {}{ins_str}", res.seq_num)
-            };
-            let label_bottom = match res.sec_struct {
-                SecStruct::Helix => "helix".to_string(),
-                SecStruct::Sheet => "sheet".to_string(),
-                SecStruct::Loop => "loop".to_string(),
-            };
-            territories.push(ResidueTerritory {
-                idx: t_idx,
-                global_residue: atom.residue_idx,
-                role: side,
-                chain_id: res.chain_id.clone(),
-                label_top,
-                label_bottom,
-                patch_atoms: Vec::new(),
-                buried_sasa_a2: 0.0,
-                has_unsatisfied_polar: false,
-                contour_uv: Vec::new(),
-                label_center_uv: [0.0, 0.0],
-                local_uv_anchor: [0.0, 0.0],
-            });
-            t_idx
-        });
-
-        let p_idx = AtomNodeIdx(nodes.len() as u32);
-        global_to_patch.insert(atom.idx, p_idx);
-        territories[terr_idx.0 as usize].patch_atoms.push(p_idx);
-        territories[terr_idx.0 as usize].buried_sasa_a2 += sasa.buried_sasa_a2;
-
-        nodes.push(AtomNode {
-            idx: p_idx,
-            global_atom: atom.idx,
-            territory: terr_idx,
-            role: side,
-            free_sasa_a2: sasa.free_sasa_a2,
-            complex_sasa_a2: sasa.complex_sasa_a2,
-            buried_sasa_a2: sasa.buried_sasa_a2,
-            aliphatic_score: aliphatic_scores[a_idx],
-            pos_3d: atom.pos_3d,
-            pos_uv_raw: [0.0, 0.0],
-            pos_uv: [0.0, 0.0],
-            is_unsatisfied_buried_polar: false,
-            interactions: Vec::new(),
-        });
-    }
-
-    if nodes.is_empty() {
-        return Err("No interfacial atoms found between Side A and Side B chains".to_string());
-    }
-
-    // 2. Build unified InterfaceEdge list and populate vectorized node.interactions
-    let covalent_bases = precompute_covalent_base_positions(complex);
-    let mut edges = Vec::new();
-    let mut intra_edges_count = 0usize;
-    let mut cross_contacts_count = 0usize;
-
-    for i in 0..nodes.len() {
-        let pi = Vec3::from(nodes[i].pos_3d);
-        let g_i = nodes[i].global_atom.0 as usize;
-        let atom_i = &complex.atoms[g_i];
-        let res_i = &complex.residues[atom_i.residue_idx.0 as usize];
-        let base_i = covalent_bases[g_i];
-
-        for j in (i + 1)..nodes.len() {
-            let pj = Vec3::from(nodes[j].pos_3d);
-            let dist = pi.distance(pj);
-            if dist > 4.5 {
-                continue;
-            }
-
-            let g_j = nodes[j].global_atom.0 as usize;
-            let atom_j = &complex.atoms[g_j];
-            let res_j = &complex.residues[atom_j.residue_idx.0 as usize];
-            let base_j = covalent_bases[g_j];
-
-            let Some((kind, overlap_a)) =
-                classify_pair_edge(atom_i, res_i, base_i, atom_j, res_j, base_j, dist)
-            else {
-                continue;
-            };
-
-            let is_cross = nodes[i].role != nodes[j].role;
-            if is_cross {
-                cross_contacts_count += 1;
-            } else {
-                intra_edges_count += 1;
-            }
-
-            let p_i = AtomNodeIdx(i as u32);
-            let p_j = AtomNodeIdx(j as u32);
-
-            edges.push(InterfaceEdge {
-                a: p_i,
-                b: p_j,
-                is_cross_interface: is_cross,
-                kind,
-                dist_3d_a: dist,
-                dist_2d_a: dist,
-                strain_2d_a: 0.0,
-                overlap_a,
-            });
-
-            nodes[i].interactions.push(AtomInteraction {
-                partner: p_j,
-                is_cross_interface: is_cross,
-                kind,
-                dist_3d_a: dist,
-                overlap_a,
-            });
-            nodes[j].interactions.push(AtomInteraction {
-                partner: p_i,
-                is_cross_interface: is_cross,
-                kind,
-                dist_3d_a: dist,
-                overlap_a,
-            });
-        }
-    }
-
-    // Mark buried unsatisfied polar atoms (polar N/O buried at interface with 0 H-bonds or salt bridges)
-    for node in &mut nodes {
-        let atom = &complex.atoms[node.global_atom.0 as usize];
-        let has_polar_satisfaction = node
-            .interactions
-            .iter()
-            .any(|inter| matches!(inter.kind, EdgeKind::HBond | EdgeKind::SaltBridge));
-
-        if atom.element.is_h_bond_partner()
-            && node.buried_sasa_a2 > 2.0
-            && node.complex_sasa_a2 < 1.5
-            && !has_polar_satisfaction
-        {
-            node.is_unsatisfied_buried_polar = true;
-            territories[node.territory.0 as usize].has_unsatisfied_polar = true;
-        }
-    }
-
-    // 3. Compute shared SVD projection plane Π = (origin, axis_u, axis_v, normal)
+    // 2. Compute shared SVD projection plane Π = (origin, axis_u, axis_v, normal)
     let mut plane = compute_shared_tangent_plane(&nodes);
 
     // 4. Project atoms onto initial (u^(0), v^(0)) coordinates
@@ -302,8 +126,8 @@ pub fn build_interface_map(
     let edge_rmse_after_a = compute_intra_edge_rmse_2d(&nodes, &edges);
     let overlaps_after = count_same_side_overlaps(&nodes, OVERLAP_DIAGNOSTIC_DIST_A);
 
-    // 6. Compute Voronoi-clipped smooth residue territory contours
-    compute_territory_contours(&mut territories, &nodes);
+    // 6. Compute Voronoi-clipped smooth concave residue territory contours & 3D relief outlines
+    compute_territory_contours(&mut territories, &nodes, &plane);
 
     // 7. Compute 3D inter-chain interface separator sheet mesh (for Cartoon mode in Complex tab)
     let interface_sheet_mesh = build_interface_sheet_mesh(&plane, &nodes, &edges);
@@ -761,6 +585,10 @@ mod tests {
         // Verify that bas-relief (t = 0.5) has even lower edge distortion than full 2D (t = 1.0)
         assert!(stats_7jvb.edge_rmse_halfway_a < stats_7jvb.edge_rmse_after_a);
         assert!(!map_7jvb.territories[0].contour_uv.is_empty());
+        for t in &map_7jvb.territories {
+            assert_eq!(t.contour_uv.len(), t.contour_3d.len());
+            assert!(t.contour_uv.len() >= 12);
+        }
         assert!(!map_7jvb.interface_sheet_mesh.vertices.is_empty());
 
         let c_lx = load_complex(

@@ -1077,9 +1077,9 @@ function renderInterfaceTab(W, H, ds) {
     }
   }
 
-  // 2. Draw Residue Territory Contours (SideB first, then SideA)
-  if (state.showTerritories && state.flattenT > 0.15 && state.useRelaxedUv) {
-    const contourBlend = Math.min(1.0, (state.flattenT - 0.15) / 0.55);
+  // 2. Draw 3D-to-2D Residue Territory Contours (SideB first, then SideA)
+  if (state.showTerritories) {
+    const contourBlend = 0.45 + 0.55 * state.flattenT;
     for (const rolePass of ["SideB", "SideA"]) {
       const roleAlpha = rolePass === "SideA" ? state.sideAAlpha : state.sideBAlpha;
       if (roleAlpha <= 0.02) continue;
@@ -1091,7 +1091,8 @@ function renderInterfaceTab(W, H, ds) {
         ctx.globalAlpha = contourBlend * roleAlpha;
         ctx.beginPath();
         terr.contour_uv.forEach((uv, idx) => {
-          const loc = computeInterfaceAtomLocal3D(plane.origin, uv, terr.role, plane, 1.0, state.bookTheta);
+          const pos3d = (terr.contour_3d && terr.contour_3d[idx]) ? terr.contour_3d[idx] : plane.origin;
+          const loc = computeInterfaceAtomLocal3D(pos3d, uv, terr.role, plane, state.flattenT, state.bookTheta);
           const scr = projectLocalPoint(loc, W, H);
           if (idx === 0) ctx.moveTo(scr[0], scr[1]);
           else ctx.lineTo(scr[0], scr[1]);
@@ -1235,9 +1236,9 @@ function renderInterfaceTab(W, H, ds) {
     ctx.restore();
   }
 
-  // 5. Draw Two-Line Residue Labels
-  if (state.showTerritories && state.flattenT > 0.35 && state.useRelaxedUv) {
-    const lblAlpha = Math.min(1.0, (state.flattenT - 0.35) / 0.45);
+  // 5. Draw Two-Line Residue Labels (interpolating from 3D relief pole to 2D pole)
+  if (state.showTerritories && state.flattenT > 0.2) {
+    const lblAlpha = Math.min(1.0, (state.flattenT - 0.2) / 0.45);
     for (const terr of map.territories) {
       const roleAlpha = terr.role === "SideA" ? state.sideAAlpha : state.sideBAlpha;
       if (roleAlpha <= 0.15) continue;
@@ -1245,7 +1246,8 @@ function renderInterfaceTab(W, H, ds) {
         continue;
       }
 
-      const loc = computeInterfaceAtomLocal3D(plane.origin, terr.label_center_uv, terr.role, plane, 1.0, state.bookTheta);
+      const lbl3d = terr.label_center_3d || plane.origin;
+      const loc = computeInterfaceAtomLocal3D(lbl3d, terr.label_center_uv, terr.role, plane, state.flattenT, state.bookTheta);
       const scr = projectLocalPoint(loc, W, H);
 
       ctx.save();

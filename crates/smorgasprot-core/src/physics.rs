@@ -24,10 +24,16 @@
 //!    Bogan, A. A., & Thorn, K. S. (1998). Anatomy of hot spots in protein interfaces.
 //!    *Journal of Molecular Biology*, 280(1), 1–9.
 
-use crate::amino_acids::{ChemistryClass, ElementExt};
-use crate::model::{AtomRecord, ComplexStructure, EdgeKind, Element, ResidueRecord};
+use crate::amino_acids::{ChemistryClass, ElementExt, print_three_letter_code};
+use crate::model::{
+    AtomInteraction, AtomNode, AtomNodeIdx, AtomRecord, ComplexStructure, EdgeKind, Element,
+    GlobalResidueIdx, InterfaceEdge, InterfaceSide, ResidueRecord, ResidueTerritory, SecStruct,
+    TerritoryIdx,
+};
+use crate::sasa::{compute_complex_sasa, is_interfacial_atom};
 use crate::spatial::SpatialGrid;
 use glam::Vec3;
+use std::collections::HashMap;
 
 /// Maximum center-to-center distance for first-shell interaction edges (in Angstroms).
 pub const FIRST_SHELL_CUTOFF_A: f32 = 4.50;
@@ -351,4 +357,179 @@ pub fn compute_aliphatic_packing_scores(complex: &ComplexStructure) -> Vec<f32> 
     }
 
     scores
+}
+
+/// Extracts the 3D interfacial atom nodes, residue groups, and classified 3D interaction edges
+/// from `complex`.
+pub fn extract_3d_interface_graph(
+    complex: &ComplexStructure,
+) -> Result<(Vec<ResidueTerritory>, Vec<AtomNode>, Vec<InterfaceEdge>), String> {
+    let sasa_vec = compute_complex_sasa(complex);
+    let aliphatic_scores = compute_aliphatic_packing_scores(complex);
+
+    let multi_chain_a = complex.group_a_chains.len() > 1;
+    let multi_chain_b = complex.group_b_chains.len() > 1;
+
+    let mut res_to_territory: HashMap<GlobalResidueIdx, TerritoryIdx> = HashMap::new();
+    let mut territories: Vec<ResidueTerritory> = Vec::new();
+    let mut nodes: Vec<AtomNode> = Vec::new();
+
+    for (a_idx, atom) in complex.atoms.iter().enumerate() {
+        let side = atom.role;
+        if !side.is_assigned() {
+            continue;
+        }
+        let sasa = &sasa_vec[a_idx];
+        if !is_interfacial_atom(side, sasa) {
+            continue;
+        }
+
+        let terr_idx = *res_to_territory.entry(atom.residue_idx).or_insert_with(|| {
+            let t_idx = TerritoryIdx(territories.len() as u32);
+            let res = &complex.residues[atom.residue_idx.0 as usize];
+            let title_name = print_three_letter_code(&res.res_name);
+            let ins_str = if res.ins_code == ' ' {
+                String::new()
+            } else {
+                res.ins_code.to_string()
+            };
+            let prefix_chain = match side {
+                InterfaceSide::SideA => multi_chain_a,
+                InterfaceSide::SideB => multi_chain_b,
+                InterfaceSide::None => false,
+            };
+            let label_top = if prefix_chain {
+                format!("{}:{title_name} {}{ins_str}", res.chain_id, res.seq_num)
+            } else {
+                format!("{title_name} {}{ins_str}", res.seq_num)
+            };
+            let label_bottom = match res.sec_struct {
+                SecStruct::Helix => "helix".to_string(),
+                SecStruct::Sheet => "sheet".to_string(),
+                SecStruct::Loop => "loop".to_string(),
+            };
+            territories.push(ResidueTerritory {
+                idx: t_idx,
+                global_residue: atom.residue_idx,
+                role: side,
+                chain_id: res.chain_id.clone(),
+                label_top,
+                label_bottom,
+                patch_atoms: Vec::new(),
+                buried_sasa_a2: 0.0,
+                has_unsatisfied_polar: false,
+                contour_uv: Vec::new(),
+                contour_3d: Vec::new(),
+                label_center_uv: [0.0, 0.0],
+                label_center_3d: [0.0, 0.0, 0.0],
+                local_uv_anchor: [0.0, 0.0],
+            });
+            t_idx
+        });
+
+        let p_idx = AtomNodeIdx(nodes.len() as u32);
+        territories[terr_idx.0 as usize].patch_atoms.push(p_idx);
+        territories[terr_idx.0 as usize].buried_sasa_a2 += sasa.buried_sasa_a2;
+
+        nodes.push(AtomNode {
+            idx: p_idx,
+            global_atom: atom.idx,
+            territory: terr_idx,
+            role: side,
+            free_sasa_a2: sasa.free_sasa_a2,
+            complex_sasa_a2: sasa.complex_sasa_a2,
+            buried_sasa_a2: sasa.buried_sasa_a2,
+            aliphatic_score: aliphatic_scores[a_idx],
+            pos_3d: atom.pos_3d,
+            pos_uv_raw: [0.0, 0.0],
+            pos_uv: [0.0, 0.0],
+            is_unsatisfied_buried_polar: false,
+            interactions: Vec::new(),
+        });
+    }
+
+    if nodes.is_empty() {
+        return Err("No interfacial atoms found between Side A and Side B chains".to_string());
+    }
+
+    // Classify all 3D first-shell pairs and populate vectorized node.interactions
+    let covalent_bases = precompute_covalent_base_positions(complex);
+    let mut edges = Vec::new();
+
+    for i in 0..nodes.len() {
+        let pi = Vec3::from(nodes[i].pos_3d);
+        let g_i = nodes[i].global_atom.0 as usize;
+        let atom_i = &complex.atoms[g_i];
+        let res_i = &complex.residues[atom_i.residue_idx.0 as usize];
+        let base_i = covalent_bases[g_i];
+
+        for j in (i + 1)..nodes.len() {
+            let pj = Vec3::from(nodes[j].pos_3d);
+            let dist = pi.distance(pj);
+            if dist > FIRST_SHELL_CUTOFF_A {
+                continue;
+            }
+
+            let g_j = nodes[j].global_atom.0 as usize;
+            let atom_j = &complex.atoms[g_j];
+            let res_j = &complex.residues[atom_j.residue_idx.0 as usize];
+            let base_j = covalent_bases[g_j];
+
+            let Some((kind, overlap_a)) =
+                classify_pair_edge(atom_i, res_i, base_i, atom_j, res_j, base_j, dist)
+            else {
+                continue;
+            };
+
+            let is_cross = nodes[i].role != nodes[j].role;
+            let p_i = AtomNodeIdx(i as u32);
+            let p_j = AtomNodeIdx(j as u32);
+
+            edges.push(InterfaceEdge {
+                a: p_i,
+                b: p_j,
+                is_cross_interface: is_cross,
+                kind,
+                dist_3d_a: dist,
+                dist_2d_a: dist,
+                strain_2d_a: 0.0,
+                overlap_a,
+            });
+
+            nodes[i].interactions.push(AtomInteraction {
+                partner: p_j,
+                is_cross_interface: is_cross,
+                kind,
+                dist_3d_a: dist,
+                overlap_a,
+            });
+            nodes[j].interactions.push(AtomInteraction {
+                partner: p_i,
+                is_cross_interface: is_cross,
+                kind,
+                dist_3d_a: dist,
+                overlap_a,
+            });
+        }
+    }
+
+    // Mark buried unsatisfied polar atoms (polar N/O buried at interface with 0 H-bonds or salt bridges)
+    for node in &mut nodes {
+        let atom = &complex.atoms[node.global_atom.0 as usize];
+        let has_polar_satisfaction = node
+            .interactions
+            .iter()
+            .any(|inter| matches!(inter.kind, EdgeKind::HBond | EdgeKind::SaltBridge));
+
+        if atom.element.is_h_bond_partner()
+            && node.buried_sasa_a2 > 2.0
+            && node.complex_sasa_a2 < 1.5
+            && !has_polar_satisfaction
+        {
+            node.is_unsatisfied_buried_polar = true;
+            territories[node.territory.0 as usize].has_unsatisfied_polar = true;
+        }
+    }
+
+    Ok((territories, nodes, edges))
 }

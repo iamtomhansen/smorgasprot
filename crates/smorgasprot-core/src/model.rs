@@ -159,7 +159,7 @@ pub struct InterfaceMap {
     pub interface_sheet_mesh: SurfaceMesh,
 }
 
-/// The bounded 2D territory on the interface map corresponding to a single residue.
+/// The bounded 2D/3D territory on the interface map corresponding to a single residue.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ResidueTerritory {
     pub idx: TerritoryIdx,
@@ -171,8 +171,14 @@ pub struct ResidueTerritory {
     pub patch_atoms: Vec<AtomNodeIdx>,
     pub buried_sasa_a2: f32,
     pub has_unsatisfied_polar: bool,
+    /// Relaxed 2D contour polygon vertices `(u, v)` on `ProjectionPlane` (at `flatten_t = 1.0`).
     pub contour_uv: Vec<[f32; 2]>,
+    /// True 3D contour polygon vertices `(x, y, z)` draped over the residue's 3D atoms (at `flatten_t = 0.0`).
+    pub contour_3d: Vec<[f32; 3]>,
+    /// Pole of inaccessibility in 2D `(u, v)` space for label placement (at `flatten_t = 1.0`).
     pub label_center_uv: [f32; 2],
+    /// Pole of inaccessibility in 3D `(x, y, z)` space for label placement (at `flatten_t = 0.0`).
+    pub label_center_3d: [f32; 3],
     pub local_uv_anchor: [f32; 2],
 }
 
