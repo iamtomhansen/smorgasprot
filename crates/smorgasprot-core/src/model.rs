@@ -191,6 +191,8 @@ pub struct AtomNode {
     pub global_atom: GlobalAtomIdx,
     pub territory: TerritoryIdx,
     pub role: InterfaceSide,
+    /// Crystallographic isotropic B-factor (temperature factor, in A^2) or AlphaFold pLDDT (0-100).
+    pub b_factor: f32,
     pub free_sasa_a2: f32,
     pub complex_sasa_a2: f32,
     pub buried_sasa_a2: f32,

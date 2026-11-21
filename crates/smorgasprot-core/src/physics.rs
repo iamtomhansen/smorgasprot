@@ -436,6 +436,7 @@ pub fn extract_3d_interface_graph(
             global_atom: atom.idx,
             territory: terr_idx,
             role: side,
+            b_factor: atom.b_factor,
             free_sasa_a2: sasa.free_sasa_a2,
             complex_sasa_a2: sasa.complex_sasa_a2,
             buried_sasa_a2: sasa.buried_sasa_a2,

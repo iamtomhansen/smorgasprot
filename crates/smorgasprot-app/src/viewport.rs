@@ -603,6 +603,13 @@ const HTML_TEMPLATE: &str = r##"<!DOCTYPE html>
             <option value="Bfactor">B-Factor / pLDDT</option>
           </select>
         </label>
+        <label id="bfactor-mode-row" style="display:none;">
+          <span>B-Factor Interpretation</span>
+          <select id="bfactor-mode-select">
+            <option value="Crystallographic">Crystallographic B-Factor (Rigid Blue → Labile Red)</option>
+            <option value="AlphaFold">AlphaFold pLDDT (Confident Blue → Low Red)</option>
+          </select>
+        </label>
         <label>
           <span>Atom Radius</span>
           <select id="size-select">
@@ -704,6 +711,7 @@ const state = {
   targetBookTheta: 0.0,
   useRelaxedUv: true,
   lens: "Interactions",
+  bFactorMode: "Crystallographic",
   sizeMode: "SqrtSasa",
   sideAAlpha: 1.0,
   sideBAlpha: 0.35,
@@ -819,12 +827,20 @@ function getAtomFillColor(node, meta) {
     if (meta.element === "S") return "#d97706";
     return "#475569";
   } else {
-    const b = Math.max(20, Math.min(100, meta.b_factor));
-    const norm = (b - 20) / 80;
-    if (norm > 0.75) return "#0053d6";
-    if (norm > 0.5) return "#65cbf3";
-    if (norm > 0.25) return "#ffdb13";
-    return "#ff7d45";
+    const b = node.b_factor !== undefined ? node.b_factor : meta.b_factor;
+    if (state.bFactorMode === "AlphaFold") {
+      // AlphaFold pLDDT: >90 Very High (Blue) -> <50 Very Low (Orange/Red)
+      if (b >= 90) return "#0053d6";
+      if (b >= 70) return "#65cbf3";
+      if (b >= 50) return "#ffdb13";
+      return "#ff7d45";
+    } else {
+      // Crystallographic B-Factor: <=30 Rigid (Blue) -> >70 Labile (Orange/Red)
+      if (b <= 30) return "#0053d6";
+      if (b <= 50) return "#65cbf3";
+      if (b <= 70) return "#ffdb13";
+      return "#ff7d45";
+    }
   }
 }
 
@@ -1517,11 +1533,16 @@ function updateInspector() {
   if (atomIdx !== null) {
     const node = map.nodes[atomIdx];
     const meta = ds.atom_meta[atomIdx];
+    const bVal = node.b_factor !== undefined ? node.b_factor : meta.b_factor;
+    const bText = state.bFactorMode === "AlphaFold"
+      ? `pLDDT: <strong>${bVal.toFixed(1)}</strong>`
+      : `B-Factor: <strong>${bVal.toFixed(1)} Å²</strong>`;
     atomDetailHtml = `
       <div class="stat-box" style="border-color:var(--accent);">
         <div style="font-weight:700; color:#fff;">Atom ${meta.atom_name} (${meta.element}) — ${terr.label_top} (Chain ${meta.chain_id})</div>
         <div style="margin-top:4px; color:#cbd5e1;">
           ΔSASA: <strong>${node.buried_sasa_a2.toFixed(1)} Å²</strong> (Unbound ${node.free_sasa_a2.toFixed(1)} → Bound ${node.complex_sasa_a2.toFixed(1)} Å²)<br>
+          ${bText}<br>
           2D Relaxed (u, v): <code>(${node.pos_uv[0].toFixed(2)}, ${node.pos_uv[1].toFixed(2)})</code>
         </div>
       </div>
@@ -1631,15 +1652,24 @@ function updateLegend() {
       ["#dc2626", "Oxygen"],
       ["#d97706", "Sulfur"]
     ],
-    Bfactor: [
-      ["#0053d6", "High (>80)"],
-      ["#65cbf3", "Med (60-80)"],
-      ["#ffdb13", "Low (40-60)"],
-      ["#ff7d45", "Very Low (<40)"]
+    Bfactor: state.bFactorMode === "AlphaFold" ? [
+      ["#0053d6", "Very High (>90)"],
+      ["#65cbf3", "Confident (70-90)"],
+      ["#ffdb13", "Low (50-70)"],
+      ["#ff7d45", "Very Low (<50)"]
+    ] : [
+      ["#0053d6", "Rigid (≤30)"],
+      ["#65cbf3", "Ordered (30-50)"],
+      ["#ffdb13", "Flexible (50-70)"],
+      ["#ff7d45", "Labile (>70)"]
     ]
   }[state.lens] || [];
 
   el.innerHTML = items.map(([c, lbl]) => `<span><i class="swatch" style="background:${c}"></i>${lbl}</span>`).join("");
+  const bRow = document.getElementById("bfactor-mode-row");
+  if (bRow) {
+    bRow.style.display = state.lens === "Bfactor" ? "flex" : "none";
+  }
 }
 
 function stepAnimation() {
@@ -1873,6 +1903,12 @@ document.getElementById("use-relaxed-uv").addEventListener("change", (e) => {
 
 document.getElementById("lens-select").addEventListener("change", (e) => {
   state.lens = e.target.value;
+  updateLegend();
+  render();
+});
+
+document.getElementById("bfactor-mode-select").addEventListener("change", (e) => {
+  state.bFactorMode = e.target.value;
   updateLegend();
   render();
 });
