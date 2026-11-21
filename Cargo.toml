@@ -4,6 +4,9 @@ members = [
     "crates/smorgasprot-core",
     "crates/smorgasprot-app",
 ]
+default-members = [
+    "crates/smorgasprot-app",
+]
 
 [workspace.package]
 version = "0.1.0"

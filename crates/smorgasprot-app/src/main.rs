@@ -1,9 +1,16 @@
 //! Smorgasprot interactive 2D/3D protein interface cartography & triage application.
 
+pub mod app;
+pub mod camera;
+pub mod dataset;
+pub mod export;
+pub mod panels;
 pub mod state;
-pub mod ui;
+pub mod style;
 pub mod viewport;
 
+use dataset::{AtomMeta, ViewerDataset};
+use export::generate_viewer_html;
 use serde::{Deserialize, Serialize};
 use smorgasprot_core::{
     ComplexStructure,
@@ -15,7 +22,6 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
-use viewport::{ViewerDataset, generate_viewer_html};
 
 struct ComplexSpec {
     id: String,
@@ -39,7 +45,7 @@ struct RecomputeRequest {
 #[derive(Serialize)]
 struct RecomputeResponse {
     map: smorgasprot_core::InterfaceMap,
-    atom_meta: Vec<viewport::AtomMeta>,
+    atom_meta: Vec<AtomMeta>,
     stats: smorgasprot_core::flatten::FlatteningStats,
 }
 
@@ -50,6 +56,7 @@ fn main() {
     let mut group_b_chain: Option<String> = None;
     let mut out_path = "viewer.html".to_string();
     let mut serve_port: Option<u16> = None;
+    let mut export_html_only = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -66,16 +73,29 @@ fn main() {
                 group_b_chain = Some(args[i + 1].clone());
                 i += 2;
             }
-            "--out" | "-o" if i + 1 < args.len() => {
-                out_path = args[i + 1].clone();
-                i += 2;
+            "--export-html" => {
+                export_html_only = true;
+                if i + 1 < args.len() && (args[i + 1].ends_with(".html") || args[i + 1].ends_with(".htm")) {
+                    out_path = args[i + 1].clone();
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--headless" => {
+                export_html_only = true;
+                i += 1;
             }
             "--serve" => {
                 serve_port = Some(7878);
                 i += 1;
             }
             arg if !arg.starts_with('-') && custom_cif.is_none() => {
-                custom_cif = Some(arg.to_string());
+                if arg.ends_with(".html") || arg.ends_with(".htm") {
+                    out_path = arg.to_string();
+                } else {
+                    custom_cif = Some(arg.to_string());
+                }
                 i += 1;
             }
             _ => {
@@ -126,7 +146,7 @@ fn main() {
 
     if specs.is_empty() {
         eprintln!(
-            "Usage: cargo run -p smorgasprot-app -- [path.cif] [--group-a A] [--group-b C] [--out viewer.html] [--serve]"
+            "Usage: cargo run -p smorgasprot-app -- [path.cif] [--group-a A] [--group-b C] [--out viewer.html] [--export-html] [--serve]"
         );
         std::process::exit(1);
     }
@@ -180,17 +200,36 @@ fn main() {
         datasets.push(ds);
     }
 
-    let html = generate_viewer_html(&datasets).expect("Failed to generate HTML viewer");
-    fs::write(&out_path, &html).expect("Failed to write HTML viewer file");
-    let abs_out = fs::canonicalize(&out_path).unwrap_or_else(|_| out_path.clone().into());
-    println!(
-        "\nGenerated interactive HTML5 Canvas viewer: {}",
-        abs_out.display()
-    );
-    println!("Open in your browser: file://{}", abs_out.display());
+    if export_html_only || serve_port.is_some() {
+        let html = generate_viewer_html(&datasets).expect("Failed to generate HTML viewer");
+        fs::write(&out_path, &html).expect("Failed to write HTML viewer file");
+        let abs_out = fs::canonicalize(&out_path).unwrap_or_else(|_| out_path.clone().into());
+        println!(
+            "\nGenerated interactive HTML5 Canvas viewer: {}",
+            abs_out.display()
+        );
+        println!("Open in your browser: file://{}", abs_out.display());
 
-    if let Some(port) = serve_port {
-        run_live_rust_server(port, html, loaded_complexes);
+        if let Some(port) = serve_port {
+            run_live_rust_server(port, html, loaded_complexes);
+        }
+    } else {
+        println!("\nLaunching Smorgasprot desktop application (egui)...");
+        let native_options = eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size([1400.0, 900.0])
+                .with_min_inner_size([960.0, 600.0])
+                .with_title("Smorgasprot — Macromolecular Interface Cartography"),
+            ..Default::default()
+        };
+        let res = eframe::run_native(
+            "Smorgasprot",
+            native_options,
+            Box::new(|_cc| Ok(Box::new(app::SmorgasprotApp::new(datasets)))),
+        );
+        if let Err(e) = res {
+            eprintln!("Error running native Smorgasprot app: {e}");
+        }
     }
 }
 

@@ -1,59 +1,38 @@
-//! Application state, visual lens configuration (`RenderConfig`), and selection/edit history.
+//! Application session state, workspace tabs, and active display modes.
 
 use serde::{Deserialize, Serialize};
-use smorgasprot_core::{ComplexStructure, InterfaceMap, AtomNodeIdx, TerritoryIdx};
+
+pub use crate::camera::{CameraState, compute_interface_atom_local_3d, get_explode_offset_local, world_to_plane_local};
+pub use crate::style::{AtomSizeMode, BFactorMode, ColorLens, get_atom_fill_color, get_atom_radius_px, has_interaction_kind, worst_clash_on_node};
 
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq)]
-pub enum ColorLens {
-    Interactions,
-    Chemistry,
-    ModernCpk,
-    PlddtOrBfactor,
+pub enum WorkspaceTab {
+    Complex,
+    Interface,
 }
 
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq)]
-pub enum AtomSizeMode {
-    SqrtBuriedSasa,
-    Uniform,
-    ClashSeverity,
+pub enum InterfaceDisplayMode {
+    SmoothedSdf,
+    ContactEnvelope,
+    NegativeSpace,
+    Off,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct RenderConfig {
-    /// Continuous 3D (0.0) <-> Bas-Relief (0.5) <-> 2D Flattened (1.0) slider.
-    pub flatten_t: f32,
-    /// Continuous Overlay (0.0) <-> Open-Book Butterfly (1.0) hinge angle slider.
-    pub book_theta: f32,
-    pub color_lens: ColorLens,
-    pub size_mode: AtomSizeMode,
-    pub show_binder: bool,
-    pub show_target: bool,
-    pub binder_alpha: f32,
-    pub target_alpha: f32,
-    pub show_cross_contact_arcs: bool,
-}
+impl InterfaceDisplayMode {
+    pub const ALL: [Self; 4] = [
+        Self::SmoothedSdf,
+        Self::ContactEnvelope,
+        Self::NegativeSpace,
+        Self::Off,
+    ];
 
-impl Default for RenderConfig {
-    fn default() -> Self {
-        Self {
-            flatten_t: 0.0,
-            book_theta: 0.0,
-            color_lens: ColorLens::Interactions,
-            size_mode: AtomSizeMode::SqrtBuriedSasa,
-            show_binder: true,
-            show_target: true,
-            binder_alpha: 1.0,
-            target_alpha: 0.35,
-            show_cross_contact_arcs: true,
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SmoothedSdf => "Smoothed SDF Sheet",
+            Self::ContactEnvelope => "2-Sided Contact Envelope",
+            Self::NegativeSpace => "Negative Space (Sub-Solvent Voids)",
+            Self::Off => "Off",
         }
     }
-}
-
-#[derive(Default, Debug)]
-pub struct AppState {
-    pub complex: Option<ComplexStructure>,
-    pub interface_map: Option<InterfaceMap>,
-    pub render_config: RenderConfig,
-    pub selected_territory: Option<TerritoryIdx>,
-    pub hovered_atom: Option<AtomNodeIdx>,
 }

@@ -5,27 +5,27 @@ pub use pdbtbx::Element;
 use serde::{Deserialize, Serialize};
 
 /// Dense index into `ComplexStructure::atoms`.
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 #[serde(transparent)]
 pub struct GlobalAtomIdx(pub u32);
 
 /// Dense index into `ComplexStructure::residues`.
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 #[serde(transparent)]
 pub struct GlobalResidueIdx(pub u32);
 
 /// Dense index into `ComplexStructure::chains`.
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 #[serde(transparent)]
 pub struct ChainIdx(pub u32);
 
 /// Dense index into `InterfaceMap::nodes`.
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 #[serde(transparent)]
 pub struct AtomNodeIdx(pub u32);
 
 /// Dense index into `InterfaceMap::territories`.
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 #[serde(transparent)]
 pub struct TerritoryIdx(pub u32);
 

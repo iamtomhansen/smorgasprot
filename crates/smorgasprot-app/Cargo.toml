@@ -10,3 +10,5 @@ smorgasprot-core.workspace = true
 glam.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+eframe = "0.31"
+egui = "0.31"
