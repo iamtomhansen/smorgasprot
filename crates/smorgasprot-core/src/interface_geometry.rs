@@ -14,40 +14,27 @@ use crate::model::{
 };
 use glam::{Vec2, Vec3};
 
-/// Bounding-box UV margin (in Angstroms) added around cross-interface contact midpoints
-/// when constructing the interface separator sheet mesh.
-pub const SHEET_UV_PADDING_A: f32 = 2.0;
-
-/// Grid resolution (N x N) of the interface separator sheet mesh.
-pub const SHEET_GRID_RES: usize = 18;
-
-/// Standard deviation sigma (in Angstroms) of the Gaussian kernel used to interpolate the 3D normal
-/// height h(u, v) of the inter-chain separator sheet across contact midpoints.
-pub const SHEET_GAUSSIAN_SIGMA_A: f32 = 2.5;
-
-/// Maximum UV distance (in Angstroms) from an active cross-interface contact midpoint within which
-/// sheet mesh vertices are emitted. Leaves true physical holes in the sheet where the interface has
-/// an internal cavity.
-pub const SHEET_FOOTPRINT_RADIUS_A: f32 = 3.2;
-
-/// Maximum surface-to-surface gap width (in Angstroms) between Side A and Side B heavy atoms
-/// considered part of the interface negative space / sub-solvent void.
-///
-/// A threshold of 2.8 A corresponds to the diameter of a spherical water probe (1.4 A radius).
-/// Any gap narrower than 2.8 A cannot permit free passage of bulk water and represents a
-/// trapped interfacial void or packing defect.
-pub const INTERFACE_VOID_MAX_GAP_A: f32 = 2.8;
-
-/// Polynomial smooth-minimum blending parameter (in Angstroms) for combining overlapping atomic
-/// spheres into the per-side signed-distance field.
-pub const INTERFACE_VOID_SMOOTH_K_A: f32 = 0.55;
-
-/// Voxel grid step (in Angstroms) for the interface negative space 3D isosurface grid.
-/// 0.95 A gives fine, sub-Angstrom resolution of narrow interfacial crevices and pockets.
-pub const INTERFACE_VOID_GRID_STEP_A: f32 = 0.95;
-
-/// Margin (in Angstroms) added around the 3D bounding box of interfacial contact atoms.
-pub const INTERFACE_VOID_BOUNDING_MARGIN_A: f32 = 3.5;
+crate::param_group! {
+    /// Derived interface meshes: SDF sheet, contact envelope, and sub-solvent voids.
+    pub struct GeometryParams("geometry", "Interface Geometry") {
+        /// Padding around the contact footprint in (u, v) (Å).
+        sheet_uv_padding_a: f32 = 2.0, 0.0..=8.0, "Sheet footprint (u,v) padding", "Å";
+        /// Sheet grid resolution (cells per side).
+        sheet_grid_res: usize = 18, 4..=96, "Sheet height-field grid resolution", "";
+        /// Gaussian width of the sheet height field (Å).
+        sheet_gaussian_sigma_a: f32 = 2.5, 0.5..=8.0, "Sheet height-field Gaussian width", "Å";
+        /// Grid cells farther than this from any contact are dropped (Å).
+        sheet_footprint_radius_a: f32 = 3.2, 0.5..=10.0, "Sheet contact footprint radius", "Å";
+        /// Largest gap between the two surfaces still counted as a void (Å).
+        void_max_gap_a: f32 = 2.8, 0.5..=8.0, "Inter-surface max void gap", "Å";
+        /// Smooth-union blend radius for the void field (Å).
+        void_smooth_k_a: f32 = 0.55, 0.0..=2.0, "Void field smooth-union blend", "Å";
+        /// Void grid spacing (Å); smaller is finer and slower.
+        void_grid_step_a: f32 = 0.95, 0.3..=3.0, "Void grid voxel step", "Å";
+        /// Margin around the interface for the void grid (Å).
+        void_bounding_margin_a: f32 = 3.5, 0.5..=10.0, "Void bounding grid margin", "Å";
+    }
+}
 
 /// Builds an approximated 3D inter-chain interface surface sheet mesh separating `SideA` and `SideB`.
 ///
@@ -57,6 +44,7 @@ pub fn build_interface_sheet_mesh(
     plane: &ProjectionPlane,
     nodes: &[AtomNode],
     edges: &[InterfaceEdge],
+    p: &GeometryParams,
 ) -> SurfaceMesh {
     let origin = Vec3::from(plane.origin);
     let axis_u = Vec3::from(plane.axis_u);
@@ -88,14 +76,14 @@ pub fn build_interface_sheet_mesh(
         min_uv = min_uv.min(uv);
         max_uv = max_uv.max(uv);
     }
-    min_uv -= Vec2::splat(SHEET_UV_PADDING_A);
-    max_uv += Vec2::splat(SHEET_UV_PADDING_A);
+    min_uv -= Vec2::splat(p.sheet_uv_padding_a);
+    max_uv += Vec2::splat(p.sheet_uv_padding_a);
 
-    let grid_n = SHEET_GRID_RES;
+    let grid_n = p.sheet_grid_res;
     let step_u = (max_uv.x - min_uv.x).max(1.0) / ((grid_n - 1) as f32);
     let step_v = (max_uv.y - min_uv.y).max(1.0) / ((grid_n - 1) as f32);
-    let sigma_sq = SHEET_GAUSSIAN_SIGMA_A * SHEET_GAUSSIAN_SIGMA_A;
-    let footprint_r2 = SHEET_FOOTPRINT_RADIUS_A * SHEET_FOOTPRINT_RADIUS_A;
+    let sigma_sq = p.sheet_gaussian_sigma_a * p.sheet_gaussian_sigma_a;
+    let footprint_r2 = p.sheet_footprint_radius_a * p.sheet_footprint_radius_a;
 
     let mut mesh = SurfaceMesh::default();
     let mut grid_to_vert = vec![u32::MAX; grid_n * grid_n];
@@ -270,6 +258,7 @@ fn emit_quad(triangles: &mut Vec<[u32; 3]>, v0: u32, v1: u32, v2: u32, v3: u32, 
 pub fn build_interface_negative_mesh(
     complex: &ComplexStructure,
     nodes: &[AtomNode],
+    p: &GeometryParams,
 ) -> SurfaceMesh {
     if nodes.is_empty() {
         return SurfaceMesh::default();
@@ -302,10 +291,10 @@ pub fn build_interface_negative_mesh(
         return SurfaceMesh::default();
     }
 
-    min_pt -= Vec3::splat(INTERFACE_VOID_BOUNDING_MARGIN_A);
-    max_pt += Vec3::splat(INTERFACE_VOID_BOUNDING_MARGIN_A);
+    min_pt -= Vec3::splat(p.void_bounding_margin_a);
+    max_pt += Vec3::splat(p.void_bounding_margin_a);
 
-    let step = INTERFACE_VOID_GRID_STEP_A;
+    let step = p.void_grid_step_a;
     let inv_step = 1.0 / step;
     let nx = (((max_pt.x - min_pt.x) * inv_step).ceil() as usize + 1).max(4);
     let ny = (((max_pt.y - min_pt.y) * inv_step).ceil() as usize + 1).max(4);
@@ -322,7 +311,7 @@ pub fn build_interface_negative_mesh(
 
     let mut splat_atoms = |atoms: &[(Vec3, f32, GlobalAtomIdx)], phi: &mut [f32]| {
         for &(center, r_i, g_atom) in atoms {
-            let reach = r_i + INTERFACE_VOID_MAX_GAP_A + step * 1.5;
+            let reach = r_i + p.void_max_gap_a + step * 1.5;
             let ix_min = (((center.x - reach - min_pt.x) * inv_step).floor() as isize).max(0) as usize;
             let ix_max = (((center.x + reach - min_pt.x) * inv_step).ceil() as usize).min(nx.saturating_sub(1));
             let iy_min = (((center.y - reach - min_pt.y) * inv_step).floor() as isize).max(0) as usize;
@@ -345,7 +334,7 @@ pub fn build_interface_negative_mesh(
                         }
                         let d_surf = d2.sqrt() - r_i;
                         let g_idx = base_idx + iz;
-                        phi[g_idx] = smin_poly(phi[g_idx], d_surf, INTERFACE_VOID_SMOOTH_K_A);
+                        phi[g_idx] = smin_poly(phi[g_idx], d_surf, p.void_smooth_k_a);
                         let abs_d = d_surf.abs();
                         if abs_d < best_dist_grid[g_idx] {
                             best_dist_grid[g_idx] = abs_d;
@@ -367,7 +356,7 @@ pub fn build_interface_negative_mesh(
         let db = phi_b[g];
         let d_min = da.min(db);
         let d_max = da.max(db);
-        psi[g] = (-d_min).max(d_max - INTERFACE_VOID_MAX_GAP_A);
+        psi[g] = (-d_min).max(d_max - p.void_max_gap_a);
     }
 
     // Extract zero-isosurface via Dual Surface Nets
@@ -614,10 +603,11 @@ pub fn build_interface_geometry(
     complex: &ComplexStructure,
     map: &InterfaceMap,
     chain_meshes: &[SurfaceMesh],
+    p: &GeometryParams,
 ) -> InterfaceGeometry {
-    let sheet_mesh = build_interface_sheet_mesh(&map.plane, &map.nodes, &map.edges);
+    let sheet_mesh = build_interface_sheet_mesh(&map.plane, &map.nodes, &map.edges, p);
     let envelope_mesh = extract_interface_envelope_mesh(chain_meshes, complex, &map.nodes);
-    let negative_mesh = build_interface_negative_mesh(complex, &map.nodes);
+    let negative_mesh = build_interface_negative_mesh(complex, &map.nodes, p);
     let void_volume_a3 = compute_mesh_volume_a3(&negative_mesh);
 
     InterfaceGeometry {
@@ -642,7 +632,7 @@ mod tests {
             normal: [0.0, 0.0, 1.0],
             hinge_u: -10.0,
         };
-        let mesh = build_interface_sheet_mesh(&plane, &[], &[]);
+        let mesh = build_interface_sheet_mesh(&plane, &[], &[], &Default::default());
         assert!(mesh.vertices.is_empty());
         assert!(mesh.triangles.is_empty());
     }
@@ -701,7 +691,7 @@ mod tests {
             overlap_a: 0.0,
         }];
 
-        let mesh = build_interface_sheet_mesh(&plane, &nodes, &edges);
+        let mesh = build_interface_sheet_mesh(&plane, &nodes, &edges, &Default::default());
         assert!(!mesh.vertices.is_empty());
         assert!(!mesh.triangles.is_empty());
         // Normal of the sheet should point along plane normal [0, 0, 1]

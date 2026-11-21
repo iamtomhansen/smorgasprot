@@ -1,138 +1,159 @@
-//! Visual lenses for biochemical properties, contacts, CPK elements, and B-Factor / pLDDT mobility.
+//! Color lenses: per-atom fill colors and their matching legends.
+//! Each lens defines its categories once, so atom colors and legend entries cannot drift apart.
 
 use crate::dataset::AtomMeta;
+use crate::state::{BFactorMode, ColorLens};
+use crate::style::palette;
 use egui::Color32;
-use serde::{Deserialize, Serialize};
-use smorgasprot_core::{AtomNode, EdgeKind, InterfaceSide};
+use smorgasprot_core::{AtomNode, EdgeKind, Element, InterfaceSide};
 
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq)]
-pub enum ColorLens {
-    Interactions,
-    Chemistry,
-    ModernCpk,
-    Bfactor,
-}
+/// Aliphatic score above which an atom is colored as aliphatic in the Chemistry lens.
+const ALIPHATIC_THRESHOLD: f32 = 0.75;
+/// Overlap (Å) above which an atom counts as clashing in the Interactions lens.
+const CLASH_THRESHOLD_A: f32 = 0.05;
 
-impl ColorLens {
-    pub const ALL: [Self; 4] = [
-        Self::Interactions,
-        Self::Chemistry,
-        Self::ModernCpk,
-        Self::Bfactor,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Interactions => "1. Specific Interactions (H-Bonds / Salt Bridges / Clashes)",
-            Self::Chemistry => "2. Chemical Category (Aliphatic / Polar / Charge / Aromatic)",
-            Self::ModernCpk => "3. Modern CPK (Elemental Core Colors)",
-            Self::Bfactor => "4. B-Factor & Crystallographic Mobility / pLDDT",
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq)]
-pub enum BFactorMode {
-    Crystallographic,
-    AlphaFold,
-}
-
-impl BFactorMode {
-    pub const ALL: [Self; 2] = [Self::Crystallographic, Self::AlphaFold];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Crystallographic => "Crystallographic B-Factor (Rigid Blue <= 30 -> Labile Red > 70)",
-            Self::AlphaFold => "AlphaFold pLDDT (High Blue > 90 -> Low Red < 50)",
-        }
-    }
-}
-
-/// Returns the worst steric clash overlap (in Å) on a given atom node.
-pub fn worst_clash_on_node(node: &AtomNode) -> f32 {
-    let mut w = 0.0_f32;
-    for inter in &node.interactions {
-        if inter.kind == EdgeKind::Clash && inter.overlap_a > w {
-            w = inter.overlap_a;
-        }
-    }
-    w
-}
-
-/// Checks if an atom node participates in a given interaction kind.
-pub fn has_interaction_kind(node: &AtomNode, kind: EdgeKind, cross_only: bool) -> bool {
-    node.interactions
-        .iter()
-        .any(|inter| (!cross_only || inter.is_cross_interface) && inter.kind == kind)
-}
-
-/// Computes the atom fill color based on the selected visual lens.
-pub fn get_atom_fill_color(
-    node: &AtomNode,
-    meta: &AtomMeta,
-    lens: ColorLens,
-    bfactor_mode: BFactorMode,
-) -> Color32 {
+/// Fill color for an interface atom under the active lens.
+pub fn atom_fill_color(node: &AtomNode, meta: &AtomMeta, lens: ColorLens, bfactor_mode: BFactorMode) -> Color32 {
     match lens {
         ColorLens::Interactions => {
-            if worst_clash_on_node(node) > 0.05 {
-                Color32::from_rgb(242, 20, 20) // Clash red
-            } else if has_interaction_kind(node, EdgeKind::SaltBridge, true) {
-                Color32::from_rgb(157, 20, 255) // Salt bridge purple
-            } else if has_interaction_kind(node, EdgeKind::HBond, true) {
-                Color32::from_rgb(37, 99, 235) // H-bond blue
+            // Priority: clash > salt bridge > H-bond > plain side color.
+            if worst_clash_overlap(node) > CLASH_THRESHOLD_A {
+                palette::CLASH
+            } else if has_cross_interaction(node, EdgeKind::SaltBridge) {
+                palette::SALT_BRIDGE
+            } else if has_cross_interaction(node, EdgeKind::HBond) {
+                palette::HBOND
             } else if node.role == InterfaceSide::SideA {
-                Color32::from_rgb(14, 165, 233) // Group A sky blue
+                palette::SIDE_A
             } else {
-                Color32::from_rgb(251, 146, 60) // Group B orange
+                palette::SIDE_B_LIGHT
             }
         }
         ColorLens::Chemistry => {
-            if node.aliphatic_score >= 0.75 {
-                Color32::from_rgb(148, 163, 184) // Aliphatic slate
-            } else if meta.res_name == "PHE" || meta.res_name == "TYR" || meta.res_name == "TRP" {
-                Color32::from_rgb(245, 158, 11) // Aromatic amber
-            } else if meta.res_name == "ARG" || meta.res_name == "LYS" || meta.res_name == "HIS" {
-                Color32::from_rgb(59, 130, 246) // Positive blue
-            } else if meta.res_name == "ASP" || meta.res_name == "GLU" {
-                Color32::from_rgb(239, 68, 68) // Negative red
-            } else if meta.res_name == "GLY" || meta.res_name == "PRO" {
-                Color32::from_rgb(168, 85, 247) // Special purple
-            } else {
-                Color32::from_rgb(6, 182, 212) // Polar cyan
+            if node.aliphatic_score >= ALIPHATIC_THRESHOLD {
+                return palette::ALIPHATIC;
+            }
+            match meta.res_name.as_str() {
+                "PHE" | "TYR" | "TRP" => palette::AROMATIC,
+                "ARG" | "LYS" | "HIS" => palette::POSITIVE,
+                "ASP" | "GLU" => palette::NEGATIVE,
+                "GLY" | "PRO" => palette::GLY_PRO,
+                _ => palette::POLAR,
             }
         }
         ColorLens::ModernCpk => match meta.element {
-            smorgasprot_core::Element::C => Color32::from_rgb(71, 85, 105),
-            smorgasprot_core::Element::N => Color32::from_rgb(37, 99, 235),
-            smorgasprot_core::Element::O => Color32::from_rgb(220, 38, 38),
-            smorgasprot_core::Element::S => Color32::from_rgb(217, 119, 6),
-            smorgasprot_core::Element::P => Color32::from_rgb(234, 88, 12),
-            _ => Color32::from_rgb(100, 116, 139),
+            Element::C => palette::CPK_C,
+            Element::N => palette::CPK_N,
+            Element::O => palette::CPK_O,
+            Element::S => palette::CPK_S,
+            Element::P => palette::CPK_P,
+            _ => palette::CPK_OTHER,
         },
-        ColorLens::Bfactor => {
-            let b = node.b_factor;
-            if bfactor_mode == BFactorMode::AlphaFold {
-                if b >= 90.0 {
-                    Color32::from_rgb(0, 83, 214) // Very high pLDDT blue
-                } else if b >= 70.0 {
-                    Color32::from_rgb(101, 203, 243) // Confident light blue
-                } else if b >= 50.0 {
-                    Color32::from_rgb(255, 219, 19) // Low yellow
-                } else {
-                    Color32::from_rgb(255, 125, 69) // Very low orange
-                }
-            } else {
-                if b <= 30.0 {
-                    Color32::from_rgb(0, 83, 214) // Rigid dark blue
-                } else if b <= 50.0 {
-                    Color32::from_rgb(101, 203, 243) // Ordered light blue
-                } else if b <= 70.0 {
-                    Color32::from_rgb(255, 219, 19) // Flexible yellow
-                } else {
-                    Color32::from_rgb(255, 125, 69) // Labile orange
-                }
-            }
-        }
+        ColorLens::Bfactor => palette::MOBILITY_BINS[mobility_bin(node.b_factor, bfactor_mode)],
     }
+}
+
+/// Legend entries `(color, label)` for the active lens; group names label the side colors.
+pub fn legend(lens: ColorLens, bfactor_mode: BFactorMode, group_a: &str, group_b: &str) -> Vec<(Color32, String)> {
+    let entries: Vec<(Color32, &str)> = match lens {
+        ColorLens::Interactions => vec![
+            (palette::CLASH, "VdW Clash"),
+            (palette::HBOND, "H-Bond"),
+            (palette::SALT_BRIDGE, "Salt Bridge"),
+            (palette::SIDE_A, group_a),
+            (palette::SIDE_B_LIGHT, group_b),
+        ],
+        ColorLens::Chemistry => vec![
+            (palette::ALIPHATIC, "Aliphatic"),
+            (palette::AROMATIC, "Aromatic"),
+            (palette::POLAR, "Polar"),
+            (palette::POSITIVE, "Positive"),
+            (palette::NEGATIVE, "Negative"),
+            (palette::GLY_PRO, "Gly / Pro"),
+        ],
+        ColorLens::ModernCpk => vec![
+            (palette::CPK_C, "Carbon (C)"),
+            (palette::CPK_N, "Nitrogen (N)"),
+            (palette::CPK_O, "Oxygen (O)"),
+            (palette::CPK_S, "Sulfur (S)"),
+        ],
+        ColorLens::Bfactor => {
+            let labels = mobility_bin_labels(bfactor_mode);
+            palette::MOBILITY_BINS.iter().copied().zip(labels).collect()
+        }
+    };
+    entries.into_iter().map(|(c, l)| (c, l.to_string())).collect()
+}
+
+/// Bins a B-factor (Å²) or pLDDT value into `0` (ordered/confident) … `3` (mobile/low confidence).
+fn mobility_bin(value: f32, mode: BFactorMode) -> usize {
+    match mode {
+        // pLDDT: higher is more confident.
+        BFactorMode::AlphaFold => match value {
+            v if v >= 90.0 => 0,
+            v if v >= 70.0 => 1,
+            v if v >= 50.0 => 2,
+            _ => 3,
+        },
+        // B-factor: lower is more rigid.
+        BFactorMode::Crystallographic => match value {
+            v if v <= 30.0 => 0,
+            v if v <= 50.0 => 1,
+            v if v <= 70.0 => 2,
+            _ => 3,
+        },
+    }
+}
+
+/// Legend labels matching [`mobility_bin`] thresholds.
+fn mobility_bin_labels(mode: BFactorMode) -> [&'static str; 4] {
+    match mode {
+        BFactorMode::AlphaFold => ["Very High (>90)", "Confident (70-90)", "Low (50-70)", "Very Low (<50)"],
+        BFactorMode::Crystallographic => ["Rigid (≤30)", "Ordered (30-50)", "Flexible (50-70)", "Labile (>70)"],
+    }
+}
+
+/// Color encoding for a contact edge (arcs and inspector tags).
+pub fn contact_color(kind: EdgeKind) -> Color32 {
+    match kind {
+        EdgeKind::Clash => palette::CLASH,
+        EdgeKind::SaltBridge => palette::SALT_BRIDGE,
+        EdgeKind::HBond => palette::HBOND,
+        EdgeKind::VanDerWaalsContact | EdgeKind::SameResidue => palette::CONTACT,
+    }
+}
+
+/// Stroke width (px) for a contact arc; specific interactions draw heavier.
+pub fn contact_width(kind: EdgeKind) -> f32 {
+    match kind {
+        EdgeKind::Clash => 2.2,
+        EdgeKind::SaltBridge => 2.0,
+        EdgeKind::HBond => 1.8,
+        EdgeKind::VanDerWaalsContact | EdgeKind::SameResidue => 1.0,
+    }
+}
+
+/// Short human-readable name for a contact kind.
+pub fn contact_label(kind: EdgeKind) -> &'static str {
+    match kind {
+        EdgeKind::Clash => "Clash",
+        EdgeKind::SaltBridge => "Salt bridge",
+        EdgeKind::HBond => "H-bond",
+        EdgeKind::VanDerWaalsContact => "vdW contact",
+        EdgeKind::SameResidue => "Same residue",
+    }
+}
+
+/// Largest steric overlap (Å) among an atom's clash interactions, or `0`.
+pub fn worst_clash_overlap(node: &AtomNode) -> f32 {
+    node.interactions
+        .iter()
+        .filter(|i| i.kind == EdgeKind::Clash)
+        .map(|i| i.overlap_a)
+        .fold(0.0, f32::max)
+}
+
+/// Whether an atom has at least one cross-interface interaction of `kind`.
+fn has_cross_interaction(node: &AtomNode, kind: EdgeKind) -> bool {
+    node.interactions.iter().any(|i| i.is_cross_interface && i.kind == kind)
 }

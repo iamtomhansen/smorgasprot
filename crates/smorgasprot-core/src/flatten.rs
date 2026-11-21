@@ -6,52 +6,50 @@ use crate::model::{
     AtomNode, ComplexStructure, EdgeKind, InterfaceEdge, InterfaceMap, InterfaceSide,
     ProjectionPlane, ResidueTerritory,
 };
+use crate::params::AnalysisParams;
 use crate::physics::extract_3d_interface_graph;
 use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 
-/// Number of damped gradient-descent iterations for 2D node position relaxation.
-const NODE_RELAX_ITERATIONS: usize = 160;
-/// Initial step size for the annealed 2D relaxation solver.
-const RELAX_INITIAL_STEP: f32 = 0.08;
-/// Annealing decay factor applied to `RELAX_INITIAL_STEP` across `0..NODE_RELAX_ITERATIONS`.
-const RELAX_STEP_DECAY: f32 = 0.65;
-/// Maximum displacement per atom in a single relaxation iteration (in Angstroms).
-const RELAX_MAX_STEP_A: f32 = 0.45;
-
-/// TODO: Handle covalently bonded antecedent heavy atoms (e.g. disulfide, glycan links).
-/// Intra-side spring stiffness for atoms belonging to the same residue (preserves covalent/sidechain geometry).
-const K_SPRING_SAME_RES: f32 = 1.40;
-/// Intra-side spring stiffness for hydrogen-bonded or salt-bridged atoms on the same side.
-const K_SPRING_INTRA_POLAR: f32 = 0.90;
-/// Intra-side spring stiffness for general first-shell spatial neighbors (`<= 4.5 A`) on the same side.
-const K_SPRING_FIRST_SHELL: f32 = 0.45;
-
-/// Cross-interface registration spring stiffness for polar contacts (`HBond | SaltBridge`) and clashes.
-const K_REG_CROSS_POLAR: f32 = 0.30;
-/// Cross-interface registration spring stiffness for apolar van der Waals contacts.
-const K_REG_CROSS_APOLAR: f32 = 0.10;
-/// Deadzone radius below which cross-interface registration springs exert zero lateral pull (in Angstroms).
-const CROSS_REG_DEADZONE_A: f32 = 1.20;
-/// Target 2D lateral offset for cross-interface interacting pairs in Overlay mode (in Angstroms).
-/// Intentional misalignment by this const allows the 2D map to be readable.
-const CROSS_REG_TARGET_A: f32 = 0.80;
-
-/// Hard-core repulsion stiffness preventing same-side nodes from overlapping in 2D.
-const K_REPEL_HARD_CORE: f32 = 2.20;
-/// Minimum allowed 2D distance between two nodes in the same residue territory (in Angstroms).
-const EDGE_MIN_DIST_SAME_RES: f32 = 1.45;
-/// Minimum allowed 2D distance between two nodes in different residue territories on the same side (in Angstroms).
-const EDGE_MIN_DIST_DIFF_RES: f32 = 2.15;
-/// Distance threshold used to count severe visual 2D node overlaps between different residues
-/// (`EDGE_MIN_DIST_DIFF_RES` minus `0.25 A` soft-spring equilibrium compression slack).
-const OVERLAP_DIAGNOSTIC_DIST_A: f32 = 1.90;
-
-/// Cohesion stiffness pulling atoms of the same residue toward their shared 2D residue centroid.
-const K_TERRITORY_COHESION: f32 = 0.18;
-/// Gentle tether stiffness anchoring each atom toward its initial orthographic projection `(u^(0), v^(0))`
-/// to prevent global translation or rotation of the 2D map.
-const K_ANCHOR_TETHER: f32 = 0.08;
+crate::param_group! {
+    /// Coupled 2D spring/repulsion solver that unrolls the interface onto the tangent plane.
+    pub struct RelaxParams("relax", "2D Map Relaxation") {
+        /// Solver iterations.
+        iterations: usize = 160, 0..=2000, "Solver iterations", "";
+        /// Initial integration step.
+        initial_step: f32 = 0.08, 0.001..=0.5, "Initial step size", "";
+        /// Step multiplier applied over the schedule.
+        step_decay: f32 = 0.65, 0.1..=1.0, "Step decay rate", "";
+        /// Maximum per-iteration node displacement (Å).
+        max_step_a: f32 = 0.45, 0.05..=2.0, "Max displacement per step", "Å";
+        /// Spring stiffness between atoms of the same residue.
+        k_spring_same_res: f32 = 1.40, 0.0..=5.0, "Same-residue spring stiffness", "";
+        /// Spring stiffness for intra-side polar contacts.
+        k_spring_intra_polar: f32 = 0.90, 0.0..=5.0, "Intra-polar spring stiffness", "";
+        /// Spring stiffness for other first-shell neighbors.
+        k_spring_first_shell: f32 = 0.45, 0.0..=5.0, "First-shell spring stiffness", "";
+        /// Registration stiffness pulling polar cross-interface partners together.
+        k_reg_cross_polar: f32 = 0.30, 0.0..=2.0, "Cross-polar registration stiffness", "";
+        /// Registration stiffness for apolar cross-interface partners.
+        k_reg_cross_apolar: f32 = 0.10, 0.0..=2.0, "Cross-apolar registration stiffness", "";
+        /// Cross partners closer than this in 2D feel no registration force (Å).
+        cross_reg_deadzone_a: f32 = 1.20, 0.0..=5.0, "Cross registration deadzone", "Å";
+        /// Target 2D separation for registered cross partners (Å).
+        cross_reg_target_a: f32 = 0.80, 0.0..=5.0, "Cross registration target distance", "Å";
+        /// Hard-core repulsion stiffness between same-side atoms.
+        k_repel_hard_core: f32 = 2.20, 0.0..=10.0, "Hard-core repulsion stiffness", "";
+        /// Minimum 2D separation for atoms of the same residue (Å).
+        min_dist_same_res_a: f32 = 1.45, 0.5..=4.0, "Same-residue min separation", "Å";
+        /// Minimum 2D separation for atoms of different residues (Å).
+        min_dist_diff_res_a: f32 = 2.15, 0.5..=4.0, "Diff-residue min separation", "Å";
+        /// 2D distance below which a pair is reported as an overlap (Å).
+        overlap_diagnostic_dist_a: f32 = 1.90, 0.5..=4.0, "Overlap diagnostic threshold", "Å";
+        /// Pull of each atom toward its residue's 2D centroid.
+        k_territory_cohesion: f32 = 0.18, 0.0..=2.0, "Territory centroid cohesion", "";
+        /// Tether of each atom to its initial tangent-plane projection.
+        k_anchor_tether: f32 = 0.08, 0.0..=2.0, "Initial tangent-plane tether", "";
+    }
+}
 
 /// Diagnostics summarizing the quality of the 3D -> 2D metric unwrapping.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
@@ -76,9 +74,11 @@ pub struct FlatteningStats {
 /// residue territory contours, and generates the 3D inter-chain interface separator sheet mesh.
 pub fn build_interface_map(
     complex: &ComplexStructure,
+    params: &AnalysisParams,
 ) -> Result<(InterfaceMap, FlatteningStats), String> {
     // 1. Extract the 3D biophysical interface graph (SASA, aliphatic scores, classified 3D edges)
-    let (mut territories, mut nodes, mut edges) = extract_3d_interface_graph(complex)?;
+    let (mut territories, mut nodes, mut edges) =
+        extract_3d_interface_graph(complex, &params.sasa, &params.contacts)?;
 
     let cross_contacts_count = edges.iter().filter(|e| e.is_cross_interface).count();
     let intra_edges_count = edges.len() - cross_contacts_count;
@@ -101,10 +101,10 @@ pub fn build_interface_map(
     }
 
     let edge_rmse_before_a = compute_intra_edge_rmse_2d(&nodes, &edges);
-    let overlaps_before = count_same_side_overlaps(&nodes, OVERLAP_DIAGNOSTIC_DIST_A);
+    let overlaps_before = count_same_side_overlaps(&nodes, params.relax.overlap_diagnostic_dist_a);
 
     // 5. Run coupled 2D spring + hard-core repulsion + contact registration relaxation
-    relax_interface_uv(&mut nodes, &territories, &edges, &initial_uv);
+    relax_interface_uv(&mut nodes, &territories, &edges, &initial_uv, &params.relax);
 
     let min_u = nodes
         .iter()
@@ -123,10 +123,10 @@ pub fn build_interface_map(
 
     let edge_rmse_bas_relief_a = compute_intra_edge_rmse_at_t(&nodes, &edges, &plane, 0.5);
     let edge_rmse_after_a = compute_intra_edge_rmse_2d(&nodes, &edges);
-    let overlaps_after = count_same_side_overlaps(&nodes, OVERLAP_DIAGNOSTIC_DIST_A);
+    let overlaps_after = count_same_side_overlaps(&nodes, params.relax.overlap_diagnostic_dist_a);
 
     // 6. Compute Voronoi-clipped smooth concave residue territory contours & 3D relief outlines
-    compute_territory_contours(&mut territories, &nodes, &plane);
+    compute_territory_contours(&mut territories, &nodes, &plane, &params.contour);
 
     let side_a_atoms = nodes
         .iter()
@@ -318,14 +318,15 @@ fn relax_interface_uv(
     territories: &[ResidueTerritory],
     edges: &[InterfaceEdge],
     initial_uv: &[Vec2],
+    p: &RelaxParams,
 ) {
     let n = nodes.len();
     let mut pos: Vec<Vec2> = nodes.iter().map(|node| Vec2::from(node.pos_uv)).collect();
     let mut forces = vec![Vec2::ZERO; n];
 
-    for iter in 0..NODE_RELAX_ITERATIONS {
-        let progress = (iter as f32) / (NODE_RELAX_ITERATIONS as f32);
-        let step_size = RELAX_INITIAL_STEP * (1.0 - RELAX_STEP_DECAY * progress);
+    for iter in 0..p.iterations {
+        let progress = (iter as f32) / (p.iterations as f32);
+        let step_size = p.initial_step * (1.0 - p.step_decay * progress);
         forces.fill(Vec2::ZERO);
 
         // 1. Intra-side first-shell metric springs & cross-interface contact registration springs
@@ -336,20 +337,21 @@ fn relax_interface_uv(
             let dist = delta.length().max(1e-4);
 
             if !edge.is_cross_interface {
+                // TODO: Handle covalently bonded antecedent heavy atoms (e.g. disulfide, glycan links).
                 let k = match edge.kind {
-                    EdgeKind::SameResidue => K_SPRING_SAME_RES,
-                    EdgeKind::HBond | EdgeKind::SaltBridge => K_SPRING_INTRA_POLAR,
-                    EdgeKind::Clash | EdgeKind::VanDerWaalsContact => K_SPRING_FIRST_SHELL,
+                    EdgeKind::SameResidue => p.k_spring_same_res,
+                    EdgeKind::HBond | EdgeKind::SaltBridge => p.k_spring_intra_polar,
+                    EdgeKind::Clash | EdgeKind::VanDerWaalsContact => p.k_spring_first_shell,
                 };
                 let f = k * (dist - edge.dist_3d_a) * (delta / dist);
                 forces[i] += f;
                 forces[j] -= f;
-            } else if dist > CROSS_REG_DEADZONE_A {
+            } else if dist > p.cross_reg_deadzone_a {
                 let k_reg = match edge.kind {
-                    EdgeKind::HBond | EdgeKind::SaltBridge | EdgeKind::Clash => K_REG_CROSS_POLAR,
-                    EdgeKind::VanDerWaalsContact | EdgeKind::SameResidue => K_REG_CROSS_APOLAR,
+                    EdgeKind::HBond | EdgeKind::SaltBridge | EdgeKind::Clash => p.k_reg_cross_polar,
+                    EdgeKind::VanDerWaalsContact | EdgeKind::SameResidue => p.k_reg_cross_apolar,
                 };
-                let f = k_reg * (dist - CROSS_REG_TARGET_A) * (delta / dist);
+                let f = k_reg * (dist - p.cross_reg_target_a) * (delta / dist);
                 forces[i] += f;
                 forces[j] -= f;
             }
@@ -362,9 +364,9 @@ fn relax_interface_uv(
                     continue;
                 }
                 let d_min = if nodes[i].territory == nodes[j].territory {
-                    EDGE_MIN_DIST_SAME_RES
+                    p.min_dist_same_res_a
                 } else {
-                    EDGE_MIN_DIST_DIFF_RES
+                    p.min_dist_diff_res_a
                 };
                 let delta = pos[j] - pos[i];
                 let dist_sq = delta.length_squared();
@@ -378,7 +380,7 @@ fn relax_interface_uv(
                             ((i * 11 + j * 17) as f32).sin(),
                         )
                     };
-                    let f = K_REPEL_HARD_CORE * (d_min - dist) * dir;
+                    let f = p.k_repel_hard_core * (d_min - dist) * dir;
                     forces[i] -= f;
                     forces[j] += f;
                 }
@@ -398,17 +400,17 @@ fn relax_interface_uv(
                 / (terr.patch_atoms.len() as f32);
             for &idx in &terr.patch_atoms {
                 let i = idx.0 as usize;
-                forces[i] += K_TERRITORY_COHESION * (centroid - pos[i]);
+                forces[i] += p.k_territory_cohesion * (centroid - pos[i]);
             }
         }
 
         // 4. Gentle anchor tether to projection-plane initial coordinates
         for i in 0..n {
-            forces[i] += K_ANCHOR_TETHER * (initial_uv[i] - pos[i]);
+            forces[i] += p.k_anchor_tether * (initial_uv[i] - pos[i]);
         }
 
         for i in 0..n {
-            let disp = (step_size * forces[i]).clamp_length_max(RELAX_MAX_STEP_A);
+            let disp = (step_size * forces[i]).clamp_length_max(p.max_step_a);
             pos[i] += disp;
         }
     }
@@ -572,7 +574,7 @@ mod tests {
             load_complex("../../examples/7JVB.cif", &["A".to_string()], &["C".to_string()])
                 .unwrap();
         assert_eq!(c_7jvb.chains.len(), 4);
-        let (map_7jvb, stats_7jvb) = build_interface_map(&c_7jvb).unwrap();
+        let (map_7jvb, stats_7jvb) = build_interface_map(&c_7jvb, &Default::default()).unwrap();
         println!("7JVB stats: {stats_7jvb:?}");
         assert!(stats_7jvb.side_a_atoms > 30);
         assert!(stats_7jvb.side_b_atoms > 30);
@@ -593,7 +595,7 @@ mod tests {
             &["A".to_string()],
         )
         .unwrap();
-        let (_map_lx, stats_lx) = build_interface_map(&c_lx).unwrap();
+        let (_map_lx, stats_lx) = build_interface_map(&c_lx, &Default::default()).unwrap();
         println!("LatentX stats: {stats_lx:?}");
         assert!(stats_lx.side_a_atoms > 20);
         assert!(stats_lx.side_b_atoms > 20);

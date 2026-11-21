@@ -1,254 +1,164 @@
-//! 3D macromolecular complex scene: depth-sorted dual surfaces, interface representations, ribbons, and spheres.
+//! Complex tab scene: chain surfaces, derived interface geometry, Cα cartoon, and interface spheres.
+//! All primitives go through one [`DrawList`] so they depth-sort against each other.
 
-use crate::camera::{CameraState, get_explode_offset_local, world_to_plane_local};
+use super::draw_list::DrawList;
+use super::plane_space::{PlaneFrame, explode_offset};
+use crate::camera::CameraState;
 use crate::dataset::ViewerDataset;
-use crate::state::InterfaceDisplayMode;
-use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke};
-use smorgasprot_core::InterfaceSide;
+use crate::state::{ComplexViewSettings, InterfaceDisplayMode};
+use crate::style::palette;
+use egui::{Color32, Painter, Pos2, Rect, Stroke};
+use glam::Vec3;
+use smorgasprot_core::{InterfaceSide, SurfaceMesh};
 
-pub struct DrawTriangle {
-    pub p0: Pos2,
-    pub p1: Pos2,
-    pub p2: Pos2,
-    pub depth: f32,
-    pub fill: Color32,
-    pub stroke: Stroke,
+/// Layers at or below this opacity are skipped entirely.
+const MIN_VISIBLE_ALPHA: f32 = 0.02;
+/// Opacity multiplier for chains in neither group, so the active sandwich stands out.
+const UNASSIGNED_ALPHA_SCALE: f32 = 0.45;
+/// Fixed world-space light direction for Lambert shading (not normalized; matches the HTML viewer).
+const LIGHT_DIR: Vec3 = Vec3::new(0.3, 0.5, 0.8);
+
+/// Paints the Complex tab for the active dataset.
+pub fn paint(painter: &Painter, rect: Rect, ds: &ViewerDataset, camera: &CameraState, s: &ComplexViewSettings) {
+    let view = View { frame: PlaneFrame::from(&ds.map.plane), camera, rect };
+    let mut list = DrawList::default();
+
+    if s.show_surface && s.surface_alpha > MIN_VISIBLE_ALPHA {
+        add_chain_surfaces(&mut list, &view, ds, s);
+    }
+    if s.interface_mode != InterfaceDisplayMode::Off && s.interface_alpha > MIN_VISIBLE_ALPHA {
+        add_interface_geometry(&mut list, &view, ds, s);
+    }
+    if s.show_cartoon && s.cartoon_alpha > MIN_VISIBLE_ALPHA {
+        add_cartoon(&mut list, &view, ds, s);
+    }
+    if s.show_spheres && s.spheres_alpha > MIN_VISIBLE_ALPHA {
+        add_spheres(&mut list, &view, ds, s);
+    }
+    list.paint(painter);
 }
 
-pub fn render_complex_scene(
-    painter: &Painter,
+/// Per-frame world → screen pipeline shared by every layer.
+struct View<'a> {
+    frame: PlaneFrame,
+    camera: &'a CameraState,
     rect: Rect,
-    ds: &ViewerDataset,
-    camera: &CameraState,
-    show_surface: bool,
-    surface_alpha: f32,
-    cull_backfaces: bool,
-    show_cartoon: bool,
-    cartoon_alpha: f32,
-    interface_mode: InterfaceDisplayMode,
-    interface_alpha: f32,
-    show_spheres: bool,
-    spheres_alpha: f32,
-    explode_t: f32,
-) {
-    let plane = &ds.map.plane;
-    let mut draw_triangles = Vec::new();
+}
 
-    // 1. Chain Surface Meshes
-    if show_surface && surface_alpha > 0.02 {
-        for ch in &ds.chains {
-            let role = if ds.group_a_chains.iter().any(|c| c == &ch.chain_id) {
-                InterfaceSide::SideA
-            } else if ds.group_b_chains.iter().any(|c| c == &ch.chain_id) {
-                InterfaceSide::SideB
-            } else {
-                InterfaceSide::None
-            };
+impl View<'_> {
+    /// World point (+ plane-local offset) → `(screen position, depth)`.
+    fn project(&self, world: [f32; 3], offset: Vec3) -> (Pos2, f32) {
+        self.camera.project(self.frame.to_local(world) + offset, self.rect)
+    }
+}
 
-            let explode_shift = get_explode_offset_local(role, explode_t);
-            let mesh = &ch.surface_mesh;
+/// Molecular surface per chain, pushed apart along ±n by the explode slider.
+fn add_chain_surfaces(list: &mut DrawList, view: &View, ds: &ViewerDataset, s: &ComplexViewSettings) {
+    for ch in &ds.chains {
+        let offset = explode_offset(ch.side, s.explode.value);
+        let alpha = match ch.side {
+            InterfaceSide::None => s.surface_alpha * UNASSIGNED_ALPHA_SCALE,
+            _ => s.surface_alpha,
+        };
+        let base = palette::side(ch.side);
+        add_mesh(list, view, &ch.surface_mesh, offset, s.cull_backfaces, |_, shade| {
+            (palette::shaded(base, shade, alpha), Stroke::NONE)
+        });
+    }
+}
 
-            let proj_verts: Vec<_> = mesh.vertices.iter().enumerate().map(|(v_idx, &v3d)| {
-                let loc = glam::Vec3::from(world_to_plane_local(v3d, plane)) + glam::Vec3::from(explode_shift);
-                let (screen, depth) = camera.project_local_point(loc.to_array(), rect);
-                (screen, depth, mesh.normals[v_idx])
-            }).collect();
-
-            for &[i0, i1, i2] in &mesh.triangles {
-                let u0 = i0 as usize;
-                let u1 = i1 as usize;
-                let u2 = i2 as usize;
-                if u0 >= proj_verts.len() || u1 >= proj_verts.len() || u2 >= proj_verts.len() {
-                    continue;
-                }
-                let (p0, d0, n0) = proj_verts[u0];
-                let (p1, d1, n1) = proj_verts[u1];
-                let (p2, d2, n2) = proj_verts[u2];
-
-                if cull_backfaces {
-                    let cross_z = (p1.x - p0.x) * (p2.y - p0.y) - (p1.y - p0.y) * (p2.x - p0.x);
-                    if cross_z >= 0.0 {
-                        continue;
-                    }
-                }
-
-                let depth = (d0 + d1 + d2) / 3.0;
-                let nx = (n0[0] + n1[0] + n2[0]) / 3.0;
-                let ny = (n0[1] + n1[1] + n2[1]) / 3.0;
-                let nz = (n0[2] + n1[2] + n2[2]) / 3.0;
-                let shade = (0.65 + 0.35 * (nx * 0.3 + ny * 0.5 + nz * 0.8)).clamp(0.35, 1.0);
-
-                let fill = match role {
-                    InterfaceSide::SideA => {
-                        let r = (14.0 * shade) as u8;
-                        let g = (165.0 * shade) as u8;
-                        let b = (233.0 * shade) as u8;
-                        Color32::from_rgba_unmultiplied(r, g, b, (surface_alpha * 255.0) as u8)
-                    }
-                    InterfaceSide::SideB => {
-                        let r = (249.0 * shade) as u8;
-                        let g = (115.0 * shade) as u8;
-                        let b = (22.0 * shade) as u8;
-                        Color32::from_rgba_unmultiplied(r, g, b, (surface_alpha * 255.0) as u8)
-                    }
-                    InterfaceSide::None => {
-                        let g = (165.0 * shade) as u8;
-                        Color32::from_rgba_unmultiplied(g, g + 5, g + 12, (surface_alpha * 0.45 * 255.0) as u8)
-                    }
+/// The selected derived interface mesh; anchored at the interface, so it ignores explode.
+fn add_interface_geometry(list: &mut DrawList, view: &View, ds: &ViewerDataset, s: &ComplexViewSettings) {
+    let a = s.interface_alpha;
+    let geo = &ds.geometry;
+    match s.interface_mode {
+        InterfaceDisplayMode::SmoothedSdf => {
+            // Flat (unshaded) fill with a fine wireframe.
+            let fill = palette::with_alpha(palette::SHEET_FILL, a * 0.78);
+            let edge = Stroke::new(0.5_f32, palette::with_alpha(palette::SHEET_EDGE, 0.86));
+            add_mesh(list, view, &geo.sheet_mesh, Vec3::ZERO, false, |_, _| (fill, edge));
+        }
+        InterfaceDisplayMode::ContactEnvelope => {
+            // Color each triangle by the side of its first vertex's nearest atom.
+            add_mesh(list, view, &geo.envelope_mesh, Vec3::ZERO, false, |v0, shade| {
+                let side = ds.envelope_sides.get(v0).copied().unwrap_or(InterfaceSide::None);
+                let (fill, edge) = match side {
+                    InterfaceSide::SideA => (palette::ENVELOPE_A, palette::ENVELOPE_A_EDGE),
+                    _ => (palette::ENVELOPE_B, palette::ENVELOPE_B_EDGE),
                 };
+                (palette::shaded(fill, shade, a), Stroke::new(0.6_f32, palette::with_alpha(edge, 0.63)))
+            });
+        }
+        InterfaceDisplayMode::NegativeSpace => {
+            let edge = Stroke::new(0.5_f32, palette::with_alpha(palette::VOID_EDGE, 0.78));
+            add_mesh(list, view, &geo.negative_mesh, Vec3::ZERO, false, |_, shade| {
+                (palette::shaded(palette::VOID, shade, a), edge)
+            });
+        }
+        InterfaceDisplayMode::Off => {}
+    }
+}
 
-                draw_triangles.push(DrawTriangle {
-                    p0, p1, p2, depth, fill, stroke: Stroke::NONE,
-                });
-            }
+/// Cα trace per chain as thick segments.
+fn add_cartoon(list: &mut DrawList, view: &View, ds: &ViewerDataset, s: &ComplexViewSettings) {
+    let width = (view.camera.zoom * 0.28).max(3.0);
+    for ch in &ds.chains {
+        let offset = explode_offset(ch.side, s.explode.value);
+        let (color, alpha) = match ch.side {
+            InterfaceSide::None => (palette::UNASSIGNED, s.cartoon_alpha * UNASSIGNED_ALPHA_SCALE),
+            side => (palette::side_dark(side), s.cartoon_alpha),
+        };
+        let stroke = Stroke::new(width, palette::with_alpha(color, alpha));
+        let pts: Vec<(Pos2, f32)> = ch.ca_positions.iter().map(|&p| view.project(p, offset)).collect();
+        for w in pts.windows(2) {
+            list.segment(w[0].0, w[1].0, 0.5 * (w[0].1 + w[1].1), stroke);
         }
     }
+}
 
-    // 2. Standalone Interface Models
-    if interface_mode != InterfaceDisplayMode::Off && interface_alpha > 0.02 {
-        match interface_mode {
-            InterfaceDisplayMode::SmoothedSdf => {
-                let sheet = &ds.geometry.sheet_mesh;
-                let proj: Vec<_> = sheet.vertices.iter().map(|&v3d| {
-                    let loc = world_to_plane_local(v3d, plane);
-                    camera.project_local_point(loc, rect)
-                }).collect();
+/// Interface heavy atoms as van der Waals–scaled discs.
+fn add_spheres(list: &mut DrawList, view: &View, ds: &ViewerDataset, s: &ComplexViewSettings) {
+    let outline = Stroke::new(1.0_f32, palette::INK);
+    for (node, meta) in ds.map.nodes.iter().zip(&ds.atom_meta) {
+        let (center, depth) = view.project(node.pos_3d, explode_offset(node.role, s.explode.value));
+        let radius = (meta.vdw_radius_a * view.camera.zoom * 0.35).max(3.5);
+        let fill = palette::with_alpha(palette::side_light(node.role), s.spheres_alpha);
+        list.disc(center, radius, depth, fill, outline);
+    }
+}
 
-                for &[i0, i1, i2] in &sheet.triangles {
-                    let (p0, d0) = proj[i0 as usize];
-                    let (p1, d1) = proj[i1 as usize];
-                    let (p2, d2) = proj[i2 as usize];
-                    draw_triangles.push(DrawTriangle {
-                        p0, p1, p2,
-                        depth: (d0 + d1 + d2) / 3.0,
-                        fill: Color32::from_rgba_unmultiplied(250, 204, 21, (interface_alpha * 200.0) as u8),
-                        stroke: Stroke::new(0.5_f32, Color32::from_rgba_unmultiplied(217, 119, 6, 220)),
-                    });
-                }
-            }
-            InterfaceDisplayMode::ContactEnvelope => {
-                let env = &ds.geometry.envelope_mesh;
-                let proj: Vec<_> = env.vertices.iter().enumerate().map(|(v_idx, &v3d)| {
-                    let loc = world_to_plane_local(v3d, plane);
-                    let (scr, depth) = camera.project_local_point(loc, rect);
-                    let g_atom = env.nearest_atom.get(v_idx).copied().unwrap_or_default();
-                    (scr, depth, env.normals[v_idx], g_atom)
-                }).collect();
+/// Projects a mesh and pushes one shaded triangle per face.
+/// `style(first_vertex_index, lambert_shade)` returns the fill and edge stroke.
+fn add_mesh(
+    list: &mut DrawList,
+    view: &View,
+    mesh: &SurfaceMesh,
+    offset: Vec3,
+    cull_backfaces: bool,
+    style: impl Fn(usize, f32) -> (Color32, Stroke),
+) {
+    let proj: Vec<(Pos2, f32)> = mesh.vertices.iter().map(|&v| view.project(v, offset)).collect();
 
-                for &[i0, i1, i2] in &env.triangles {
-                    let (p0, d0, n0, g0) = proj[i0 as usize];
-                    let (p1, d1, n1, _) = proj[i1 as usize];
-                    let (p2, d2, n2, _) = proj[i2 as usize];
-                    let depth = (d0 + d1 + d2) / 3.0;
+    for &[i0, i1, i2] in &mesh.triangles {
+        let idx = [i0 as usize, i1 as usize, i2 as usize];
+        let (Some(&(p0, d0)), Some(&(p1, d1)), Some(&(p2, d2))) =
+            (proj.get(idx[0]), proj.get(idx[1]), proj.get(idx[2]))
+        else {
+            continue;
+        };
 
-                    let nx = (n0[0] + n1[0] + n2[0]) / 3.0;
-                    let ny = (n0[1] + n1[1] + n2[1]) / 3.0;
-                    let nz = (n0[2] + n1[2] + n2[2]) / 3.0;
-                    let shade = (0.65 + 0.35 * (nx * 0.3 + ny * 0.5 + nz * 0.8)).clamp(0.35, 1.0);
-
-                    // Check which side this atom belongs to
-                    let is_side_a = ds.map.nodes.iter().any(|n| n.global_atom == g0 && n.role == InterfaceSide::SideA);
-                    let (fill, stroke) = if is_side_a {
-                        let r = (250.0 * shade) as u8;
-                        let g = (204.0 * shade) as u8;
-                        let b = (21.0 * shade) as u8;
-                        (Color32::from_rgba_unmultiplied(r, g, b, (interface_alpha * 255.0) as u8),
-                         Stroke::new(0.6_f32, Color32::from_rgba_unmultiplied(180, 83, 9, 160)))
-                    } else {
-                        let r = (168.0 * shade) as u8;
-                        let g = (85.0 * shade) as u8;
-                        let b = (247.0 * shade) as u8;
-                        (Color32::from_rgba_unmultiplied(r, g, b, (interface_alpha * 255.0) as u8),
-                         Stroke::new(0.6_f32, Color32::from_rgba_unmultiplied(107, 33, 168, 160)))
-                    };
-
-                    draw_triangles.push(DrawTriangle { p0, p1, p2, depth, fill, stroke });
-                }
-            }
-            InterfaceDisplayMode::NegativeSpace => {
-                let neg = &ds.geometry.negative_mesh;
-                let proj: Vec<_> = neg.vertices.iter().enumerate().map(|(v_idx, &v3d)| {
-                    let loc = world_to_plane_local(v3d, plane);
-                    let (scr, depth) = camera.project_local_point(loc, rect);
-                    (scr, depth, neg.normals[v_idx])
-                }).collect();
-
-                for &[i0, i1, i2] in &neg.triangles {
-                    let (p0, d0, n0) = proj[i0 as usize];
-                    let (p1, d1, n1) = proj[i1 as usize];
-                    let (p2, d2, n2) = proj[i2 as usize];
-                    let depth = (d0 + d1 + d2) / 3.0;
-
-                    let nx = (n0[0] + n1[0] + n2[0]) / 3.0;
-                    let ny = (n0[1] + n1[1] + n2[1]) / 3.0;
-                    let nz = (n0[2] + n1[2] + n2[2]) / 3.0;
-                    let shade = (0.65 + 0.35 * (nx * 0.3 + ny * 0.5 + nz * 0.8)).clamp(0.35, 1.0);
-
-                    let r = (6.0 * shade) as u8;
-                    let g = (182.0 * shade) as u8;
-                    let b = (212.0 * shade) as u8;
-                    let fill = Color32::from_rgba_unmultiplied(r, g, b, (interface_alpha * 255.0) as u8);
-                    let stroke = Stroke::new(0.5_f32, Color32::from_rgba_unmultiplied(14, 116, 144, 200));
-
-                    draw_triangles.push(DrawTriangle { p0, p1, p2, depth, fill, stroke });
-                }
-            }
-            InterfaceDisplayMode::Off => {}
+        // Screen-space winding test; counter-clockwise on screen faces away.
+        if cull_backfaces && (p1.x - p0.x) * (p2.y - p0.y) - (p1.y - p0.y) * (p2.x - p0.x) >= 0.0 {
+            continue;
         }
+
+        let (fill, edge) = style(idx[0], lambert_shade(mesh, idx));
+        list.triangle([p0, p1, p2], (d0 + d1 + d2) / 3.0, fill, edge);
     }
+}
 
-    // Sort depth ascending (back to front) and draw
-    draw_triangles.sort_by(|a, b| a.depth.partial_cmp(&b.depth).unwrap_or(std::cmp::Ordering::Equal));
-    for tri in draw_triangles {
-        painter.add(Shape::convex_polygon(vec![tri.p0, tri.p1, tri.p2], tri.fill, tri.stroke));
-    }
-
-    // 3. Draw Cartoon Backbone traces
-    if show_cartoon && cartoon_alpha > 0.02 {
-        for ch in &ds.chains {
-            if ch.ca_positions.len() < 2 { continue; }
-            let role = if ds.group_a_chains.iter().any(|c| c == &ch.chain_id) {
-                InterfaceSide::SideA
-            } else if ds.group_b_chains.iter().any(|c| c == &ch.chain_id) {
-                InterfaceSide::SideB
-            } else {
-                InterfaceSide::None
-            };
-            let explode_shift = get_explode_offset_local(role, explode_t);
-
-            let stroke_color = match role {
-                InterfaceSide::SideA => Color32::from_rgba_unmultiplied(2, 132, 199, (cartoon_alpha * 255.0) as u8),
-                InterfaceSide::SideB => Color32::from_rgba_unmultiplied(234, 88, 12, (cartoon_alpha * 255.0) as u8),
-                InterfaceSide::None => Color32::from_rgba_unmultiplied(148, 163, 184, (cartoon_alpha * 0.45 * 255.0) as u8),
-            };
-            let stroke = Stroke::new((camera.zoom * 0.28).max(3.0), stroke_color);
-
-            let pts: Vec<_> = ch.ca_positions.iter().map(|&pos3d| {
-                let loc = glam::Vec3::from(world_to_plane_local(pos3d, plane)) + glam::Vec3::from(explode_shift);
-                let (scr, _) = camera.project_local_point(loc.to_array(), rect);
-                scr
-            }).collect();
-
-            for pair in pts.windows(2) {
-                painter.line_segment([pair[0], pair[1]], stroke);
-            }
-        }
-    }
-
-    // 4. Draw Interfacial Heavy Atom Spheres
-    if show_spheres && spheres_alpha > 0.02 {
-        for (i, node) in ds.map.nodes.iter().enumerate() {
-            let explode_shift = get_explode_offset_local(node.role, explode_t);
-            let loc = glam::Vec3::from(world_to_plane_local(node.pos_3d, plane)) + glam::Vec3::from(explode_shift);
-            let (scr, _) = camera.project_local_point(loc.to_array(), rect);
-            let meta = &ds.atom_meta[i];
-            let r = (meta.vdw_radius_a * camera.zoom * 0.35).max(3.5);
-            let fill = if node.role == InterfaceSide::SideA {
-                Color32::from_rgba_unmultiplied(56, 189, 248, (spheres_alpha * 255.0) as u8)
-            } else {
-                Color32::from_rgba_unmultiplied(251, 146, 60, (spheres_alpha * 255.0) as u8)
-            };
-            painter.circle(scr, r, fill, Stroke::new(1.0_f32, Color32::from_rgb(15, 23, 42)));
-        }
-    }
+/// Ambient + diffuse shade from the face's averaged vertex normals, in `[0.35, 1]`.
+fn lambert_shade(mesh: &SurfaceMesh, idx: [usize; 3]) -> f32 {
+    let n: Vec3 = idx.iter().filter_map(|&i| mesh.normals.get(i)).map(|&n| Vec3::from(n)).sum::<Vec3>() / 3.0;
+    (0.65 + 0.35 * n.dot(LIGHT_DIR)).clamp(0.35, 1.0)
 }

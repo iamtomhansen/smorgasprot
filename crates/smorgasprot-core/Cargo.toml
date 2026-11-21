@@ -10,3 +10,4 @@ glam.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 pdbtbx.workspace = true
+flate2 = "1.1"

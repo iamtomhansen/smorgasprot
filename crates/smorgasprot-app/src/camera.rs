@@ -1,110 +1,142 @@
-//! Interactive 3D camera, arcball rotation, coordinate transforms, and projection math.
+//! Orbit camera: maps plane-local 3D coordinates to screen pixels.
+//! Owns orbit/pan/zoom state, pointer handling, and axis-aligned view snapping.
 
-use egui::{Pos2, Rect};
-use smorgasprot_core::{InterfaceSide, ProjectionPlane};
+use egui::{PointerButton, Pos2, Rect, Response, Ui, Vec2};
+use glam::Vec3;
+use std::f32::consts::{FRAC_PI_2, PI};
 
-/// Interactive 3D camera with yaw/pitch orbit, screen pan, and exponential zoom.
+/// Default zoom in screen pixels per Ångström.
+const DEFAULT_ZOOM: f32 = 14.5;
+/// Zoom limits in screen pixels per Ångström.
+const ZOOM_RANGE: std::ops::RangeInclusive<f32> = 4.0..=75.0;
+/// Orbit sensitivity in radians per dragged pixel.
+const ORBIT_RAD_PER_PX: f32 = 0.008;
+/// Zoom sensitivity per scrolled point (exponential).
+const ZOOM_PER_SCROLL: f32 = 0.002;
+
+/// One of the six signed plane axes `(±u, ±v, ±n)`, used for gizmo caps and view snapping.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ViewAxis {
+    PosU,
+    NegU,
+    PosV,
+    NegV,
+    PosN,
+    NegN,
+}
+
+impl ViewAxis {
+    pub const ALL: [Self; 6] = [Self::PosU, Self::NegU, Self::PosV, Self::NegV, Self::PosN, Self::NegN];
+
+    /// Unit direction of this axis in plane-local space.
+    pub fn dir(self) -> Vec3 {
+        match self {
+            Self::PosU => Vec3::X,
+            Self::NegU => Vec3::NEG_X,
+            Self::PosV => Vec3::Y,
+            Self::NegV => Vec3::NEG_Y,
+            Self::PosN => Vec3::Z,
+            Self::NegN => Vec3::NEG_Z,
+        }
+    }
+
+    /// Short label drawn on the gizmo cap.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::PosU => "u",
+            Self::NegU => "-u",
+            Self::PosV => "v",
+            Self::NegV => "-v",
+            Self::PosN => "n",
+            Self::NegN => "-n",
+        }
+    }
+
+    pub fn is_positive(self) -> bool {
+        matches!(self, Self::PosU | Self::PosV | Self::PosN)
+    }
+}
+
+/// Yaw/pitch orbit camera with screen-space pan and orthographic zoom.
+/// Plane-local axes at rest: `u` right, `v` up, `n` toward the viewer.
 #[derive(Clone, Debug)]
 pub struct CameraState {
+    /// Rotation about the screen-vertical axis (radians).
     pub yaw: f32,
+    /// Rotation about the screen-horizontal axis (radians), clamped to ±π/2.
     pub pitch: f32,
-    pub pan: [f32; 2],
+    /// Screen-space pan offset in pixels.
+    pub pan: Vec2,
+    /// Scale in screen pixels per Ångström.
     pub zoom: f32,
 }
 
 impl Default for CameraState {
     fn default() -> Self {
-        Self {
-            yaw: 0.0,
-            pitch: 0.0,
-            pan: [0.0, 0.0],
-            zoom: 14.5,
-        }
+        Self { yaw: 0.0, pitch: 0.0, pan: Vec2::ZERO, zoom: DEFAULT_ZOOM }
     }
 }
 
 impl CameraState {
-    /// Projects a 3D coordinate in tangent plane local space `[x, y, z]` to screen position `(Pos2, depth)`.
-    pub fn project_local_point(&self, local_pt: [f32; 3], rect: Rect) -> (Pos2, f32) {
-        let cy = self.yaw.cos();
-        let sy = self.yaw.sin();
-        let cp = self.pitch.cos();
-        let sp = self.pitch.sin();
-        let x0 = local_pt[0];
-        let y0 = local_pt[1];
-        let z0 = local_pt[2];
-        let x1 = x0 * cy + z0 * sy;
-        let z1 = -x0 * sy + z0 * cy;
-        let y2 = y0 * cp - z1 * sp;
-        let z2 = y0 * sp + z1 * cp;
-
-        let center = rect.center();
-        let sx = center.x + self.pan[0] + x1 * self.zoom;
-        let sy = center.y + self.pan[1] - y2 * self.zoom;
-        (Pos2::new(sx, sy), z2)
+    /// Rotates a plane-local vector into view space (`z` toward the viewer).
+    pub fn rotate(&self, p: Vec3) -> Vec3 {
+        let (sy, cy) = self.yaw.sin_cos();
+        let (sp, cp) = self.pitch.sin_cos();
+        // Yaw about v, then pitch about the rotated u.
+        let x1 = p.x * cy + p.z * sy;
+        let z1 = -p.x * sy + p.z * cy;
+        Vec3::new(x1, p.y * cp - z1 * sp, p.y * sp + z1 * cp)
     }
 
-    /// Rotates a 3D vector for the orientation gizmo.
-    pub fn rotate_axis_for_gizmo(&self, vec: [f32; 3]) -> [f32; 3] {
-        let cy = self.yaw.cos();
-        let sy = self.yaw.sin();
-        let cp = self.pitch.cos();
-        let sp = self.pitch.sin();
-        let x0 = vec[0];
-        let y0 = vec[1];
-        let z0 = vec[2];
-        let x1 = x0 * cy + z0 * sy;
-        let z1 = -x0 * sy + z0 * cy;
-        let y2 = y0 * cp - z1 * sp;
-        let z2 = y0 * sp + z1 * cp;
-        [x1, y2, z2]
+    /// Projects a plane-local point to `(screen position, depth)`; larger depth is nearer.
+    pub fn project(&self, local: Vec3, rect: Rect) -> (Pos2, f32) {
+        let r = self.rotate(local);
+        let c = rect.center() + self.pan;
+        (Pos2::new(c.x + r.x * self.zoom, c.y - r.y * self.zoom), r.z)
     }
-}
 
-/// Transforms a world-space 3D coordinate into tangent plane local coordinates `(u, v, normal)`.
-pub fn world_to_plane_local(pos3d: [f32; 3], plane: &ProjectionPlane) -> [f32; 3] {
-    let p = glam::Vec3::from(pos3d);
-    let orig = glam::Vec3::from(plane.origin);
-    let u = glam::Vec3::from(plane.axis_u);
-    let v = glam::Vec3::from(plane.axis_v);
-    let n = glam::Vec3::from(plane.normal);
-    let rel = p - orig;
-    [rel.dot(u), rel.dot(v), rel.dot(n)]
-}
+    /// Restores the default face-on view of the tangent plane.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
 
-/// Computes the 3D local coordinate of an atom during continuous 3D -> Bas-Relief -> 2D interpolation
-/// and open-book butterfly rotation.
-pub fn compute_interface_atom_local_3d(
-    pos_3d: [f32; 3],
-    pos_uv: [f32; 2],
-    role: InterfaceSide,
-    plane: &ProjectionPlane,
-    flatten_t: f32,
-    book_theta: f32,
-) -> [f32; 3] {
-    let p3_local = glam::Vec3::from(world_to_plane_local(pos_3d, plane));
-    let u = pos_uv[0];
-    let v = pos_uv[1];
-    let sheet_offset = 0.08_f32;
-    let p_flat_local = if role == InterfaceSide::SideA {
-        glam::Vec3::new(u, v, sheet_offset)
-    } else {
-        let phi = book_theta * std::f32::consts::PI;
-        let du = u - plane.hinge_u;
-        let u_rot = plane.hinge_u + du * phi.cos();
-        let n_rot = -du * phi.sin() - sheet_offset * phi.cos();
-        glam::Vec3::new(u_rot, v, n_rot)
-    };
-    p3_local.lerp(p_flat_local, flatten_t).to_array()
-}
+    /// Orients the camera so `axis` points straight at the viewer.
+    pub fn snap_to(&mut self, axis: ViewAxis) {
+        let (yaw, pitch) = match axis {
+            ViewAxis::PosN => (0.0, 0.0),
+            ViewAxis::NegN => (PI, 0.0),
+            ViewAxis::PosU => (-FRAC_PI_2, 0.0),
+            ViewAxis::NegU => (FRAC_PI_2, 0.0),
+            ViewAxis::PosV => (0.0, FRAC_PI_2),
+            ViewAxis::NegV => (0.0, -FRAC_PI_2),
+        };
+        self.yaw = yaw;
+        self.pitch = pitch;
+    }
 
-/// Computes the explode translation offset along the tangent plane normal `±n`.
-pub fn get_explode_offset_local(role: InterfaceSide, explode_t: f32) -> [f32; 3] {
-    let max_explode_a = 24.0_f32;
-    let d = 0.5 * explode_t * max_explode_a;
-    match role {
-        InterfaceSide::SideA => [0.0, 0.0, d],
-        InterfaceSide::SideB => [0.0, 0.0, -d],
-        InterfaceSide::None => [0.0, 0.0, 0.0],
+    /// Applies drag/scroll/pinch input from the viewport `response`.
+    /// `primary_pans` makes left-drag pan instead of orbit (used for the flat 2D map).
+    pub fn handle_input(&mut self, ui: &Ui, response: &Response, primary_pans: bool) {
+        let delta = response.drag_delta();
+        let shift = ui.input(|i| i.modifiers.shift);
+
+        // Left drag orbits (or pans); right/middle drag always pans.
+        if response.dragged_by(PointerButton::Primary) {
+            if shift || primary_pans {
+                self.pan += delta;
+            } else {
+                self.yaw += delta.x * ORBIT_RAD_PER_PX;
+                self.pitch = (self.pitch + delta.y * ORBIT_RAD_PER_PX).clamp(-FRAC_PI_2, FRAC_PI_2);
+            }
+        } else if response.dragged_by(PointerButton::Secondary) || response.dragged_by(PointerButton::Middle) {
+            self.pan += delta;
+        }
+
+        // Zoom only when the pointer is over the viewport, so side-panel scrolling is unaffected.
+        if response.hovered() {
+            let (scroll, pinch) = ui.input(|i| (i.smooth_scroll_delta.y, i.zoom_delta()));
+            let factor = pinch * (scroll * ZOOM_PER_SCROLL).exp();
+            self.zoom = (self.zoom * factor).clamp(*ZOOM_RANGE.start(), *ZOOM_RANGE.end());
+        }
     }
 }

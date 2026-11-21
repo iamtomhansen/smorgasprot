@@ -18,30 +18,34 @@
 use crate::model::{AtomNode, ProjectionPlane, ResidueTerritory};
 use glam::{Vec2, Vec3};
 
-/// Minimum contour padding radius around an interfacial atom with ~0 ΔSASA (in Angstroms).
-const MIN_PADDING_RADIUS_A: f32 = 0.5;
-/// Maximum contour padding radius around a deeply buried interfacial atom (in Angstroms).
-const MAX_PADDING_RADIUS_A: f32 = 2.15;
-/// Scaling factor mapping sqrt(delta SASA) to territory contour radius.
-const SASA_PADDING_SCALE: f32 = 0.22;
-/// Smooth-union blend radius `k_blend` fusing adjacent bonded atoms in the same residue.
-/// Keeps non-bonded C-shaped bays concave (in Angstroms).
-const SMIN_BLEND_A: f32 = 0.65;
-/// Half-width of thin spanning-tree bridge capsules ensuring all atoms of a residue form a single connected contour.
-const BRIDGE_CAPSULE_RADIUS_A: f32 = 0.58;
-/// Half-gap clearance left between adjacent same-side residue territory contours (in Angstroms).
-const VORONOI_GAP_A: f32 = 0.05;
-/// Grid resolution (N x N) used per residue bounding box for Marching Squares contour extraction.
-const SDF_GRID_RES: usize = 36;
-/// Gaussian kernel width sigma (in Angstroms) used to drape 2D contour vertices onto 3D atomic relief.
-const RELIEF_DRAPE_SIGMA_A: f32 = 1.85;
+crate::param_group! {
+    /// Padded, Voronoi-clipped residue territory contours on the 2D map.
+    pub struct ContourParams("contour", "Residue Territories") {
+        /// Smallest padding disc around an atom (Å).
+        min_padding_radius_a: f32 = 0.5, 0.0..=3.0, "Min atom padding radius", "Å";
+        /// Largest padding disc around an atom (Å).
+        max_padding_radius_a: f32 = 2.15, 0.5..=5.0, "Max atom padding radius", "Å";
+        /// Padding growth per square root of buried area.
+        sasa_padding_scale: f32 = 0.22, 0.0..=1.0, "ΔSASA padding growth scale", "";
+        /// Smooth-minimum blend radius joining atom discs (Å).
+        smin_blend_a: f32 = 0.65, 0.0..=3.0, "Smooth-minimum blend radius", "Å";
+        /// Radius of capsules bridging bonded atoms (Å).
+        bridge_capsule_radius_a: f32 = 0.58, 0.0..=2.0, "Bonded bridge capsule radius", "Å";
+        /// Gap left between neighboring territories (Å).
+        voronoi_gap_a: f32 = 0.05, 0.0..=1.0, "Inter-territory Voronoi gap", "Å";
+        /// Resolution of the per-residue SDF grid (cells per side).
+        sdf_grid_res: usize = 36, 8..=128, "Per-residue SDF grid resolution", "";
+        /// Gaussian width for draping contours onto 3D atoms (Å).
+        relief_drape_sigma_a: f32 = 1.85, 0.1..=5.0, "3D relief drape Gaussian width", "Å";
+    }
+}
 
 /// Computes an atom's 2D territory splat radius from its buried surface area (`delta_SASA_i`):
 /// r_text i = clamp(r_min + scale * squrt(delta SASA_i), r_min, r_max)
 #[inline]
-pub fn atom_padding_radius_a(buried_sasa_a2: f32) -> f32 {
-    (MIN_PADDING_RADIUS_A + SASA_PADDING_SCALE * buried_sasa_a2.max(0.0).sqrt())
-        .clamp(MIN_PADDING_RADIUS_A, MAX_PADDING_RADIUS_A)
+pub fn atom_padding_radius_a(buried_sasa_a2: f32, p: &ContourParams) -> f32 {
+    (p.min_padding_radius_a + p.sasa_padding_scale * buried_sasa_a2.max(0.0).sqrt())
+        .clamp(p.min_padding_radius_a, p.max_padding_radius_a)
 }
 
 /// Polynomial C^1 smooth minimum of two signed distances `a` and `b` with blend radius `k`.
@@ -67,8 +71,10 @@ pub fn compute_territory_contours(
     territories: &mut [ResidueTerritory],
     nodes: &[AtomNode],
     plane: &ProjectionPlane,
+    params: &ContourParams,
 ) {
     let n_terr = territories.len();
+    let res = params.sdf_grid_res;
     let origin = Vec3::from(plane.origin);
     let axis_u = Vec3::from(plane.axis_u);
     let axis_v = Vec3::from(plane.axis_v);
@@ -86,7 +92,7 @@ pub fn compute_territory_contours(
                 let uv = Vec2::from(n.pos_uv);
                 let flat_3d = origin + uv.x * axis_u + uv.y * axis_v;
                 let delta_3d = Vec3::from(n.pos_3d) - flat_3d;
-                (uv, atom_padding_radius_a(n.buried_sasa_a2), delta_3d)
+                (uv, atom_padding_radius_a(n.buried_sasa_a2, params), delta_3d)
             })
             .collect();
 
@@ -105,7 +111,7 @@ pub fn compute_territory_contours(
         let other_atoms: Vec<(Vec2, f32)> = nodes
             .iter()
             .filter(|n| n.role == role && n.territory.0 as usize != t_idx)
-            .map(|n| (Vec2::from(n.pos_uv), atom_padding_radius_a(n.buried_sasa_a2)))
+            .map(|n| (Vec2::from(n.pos_uv), atom_padding_radius_a(n.buried_sasa_a2, params)))
             .filter(|&(p, _)| p.distance_squared(centroid) <= 169.0)
             .collect();
 
@@ -113,26 +119,26 @@ pub fn compute_territory_contours(
         let mut min_bb = Vec2::splat(f32::INFINITY);
         let mut max_bb = Vec2::splat(f32::NEG_INFINITY);
         for &(p, r, _) in &my_atoms {
-            let reach = r + SMIN_BLEND_A + 0.45;
+            let reach = r + params.smin_blend_a + 0.45;
             min_bb = min_bb.min(p - Vec2::splat(reach));
             max_bb = max_bb.max(p + Vec2::splat(reach));
         }
 
-        let step = (max_bb - min_bb) / ((SDF_GRID_RES - 1) as f32);
-        let mut sdf = [0.0_f32; SDF_GRID_RES * SDF_GRID_RES];
+        let step = (max_bb - min_bb) / ((res - 1) as f32);
+        let mut sdf = vec![0.0_f32; res * res];
 
         // Track the grid point with the deepest negative SDF value (Pole of Inaccessibility)
         let mut best_poi_uv = centroid;
         let mut min_sdf_val = f32::INFINITY;
 
-        for iy in 0..SDF_GRID_RES {
-            for ix in 0..SDF_GRID_RES {
+        for iy in 0..res {
+            for ix in 0..res {
                 let p = Vec2::new(
                     min_bb.x + (ix as f32) * step.x,
                     min_bb.y + (iy as f32) * step.y,
                 );
-                let val = evaluate_territory_sdf(p, &my_atoms, &bridges, &other_atoms);
-                sdf[iy * SDF_GRID_RES + ix] = val;
+                let val = evaluate_territory_sdf(p, &my_atoms, &bridges, &other_atoms, params);
+                sdf[iy * res + ix] = val;
                 if val < min_sdf_val {
                     min_sdf_val = val;
                     best_poi_uv = p;
@@ -141,7 +147,7 @@ pub fn compute_territory_contours(
         }
 
         // Extract the closed counter-clockwise zero-contour loop via Marching Squares
-        let raw_loop = extract_marching_squares_loop(&sdf, min_bb, step);
+        let raw_loop = extract_marching_squares_loop(&sdf, res, min_bb, step);
 
         // Apply 2 passes of Chaikin corner-cutting for an organic contour
         let smooth1 = chaikin_smooth(&raw_loop);
@@ -150,10 +156,10 @@ pub fn compute_territory_contours(
         // Drape every 2D contour vertex and the Pole of Inaccessibility onto the 3D atomic relief
         let contour_3d: Vec<[f32; 3]> = smooth2
             .iter()
-            .map(|&uv| drape_uv_to_3d(uv, &my_atoms, origin, axis_u, axis_v).to_array())
+            .map(|&uv| drape_uv_to_3d(uv, &my_atoms, origin, axis_u, axis_v, params).to_array())
             .collect();
         let label_center_3d =
-            drape_uv_to_3d(best_poi_uv, &my_atoms, origin, axis_u, axis_v).to_array();
+            drape_uv_to_3d(best_poi_uv, &my_atoms, origin, axis_u, axis_v, params).to_array();
 
         territories[t_idx].contour_uv = smooth2.into_iter().map(|v| v.to_array()).collect();
         territories[t_idx].contour_3d = contour_3d;
@@ -170,6 +176,7 @@ fn evaluate_territory_sdf(
     my_atoms: &[(Vec2, f32, Vec3)],
     bridges: &[(Vec2, Vec2)],
     other_atoms: &[(Vec2, f32)],
+    params: &ContourParams,
 ) -> f32 {
     // 1. Smooth union of our residue's ΔSASA-scaled atom circles + spanning-tree bridges.
     let mut d_my = f32::INFINITY;
@@ -187,13 +194,13 @@ fn evaluate_territory_sdf(
         d_my = if d_my.is_infinite() {
             sd
         } else {
-            smin_poly(d_my, sd, SMIN_BLEND_A)
+            smin_poly(d_my, sd, params.smin_blend_a)
         };
     }
 
     for &(a, b) in bridges {
-        let sd_cap = sd_capsule(p, a, b, BRIDGE_CAPSULE_RADIUS_A);
-        d_my = smin_poly(d_my, sd_cap, SMIN_BLEND_A * 0.7);
+        let sd_cap = sd_capsule(p, a, b, params.bridge_capsule_radius_a);
+        d_my = smin_poly(d_my, sd_cap, params.smin_blend_a * 0.7);
     }
 
     // Fast exit if already well outside our own smooth union.
@@ -211,7 +218,7 @@ fn evaluate_territory_sdf(
         }
         let unit_dir = dir / dist;
         let weight_fraction = best_atom_rad / (best_atom_rad + other_rad).max(1e-4);
-        let max_proj = weight_fraction * dist - VORONOI_GAP_A;
+        let max_proj = weight_fraction * dist - params.voronoi_gap_a;
         let cur_proj = (p - best_atom_pos).dot(unit_dir);
         let clip_sd = cur_proj - max_proj;
         if clip_sd > voronoi_clip {
@@ -266,9 +273,10 @@ fn drape_uv_to_3d(
     origin: Vec3,
     axis_u: Vec3,
     axis_v: Vec3,
+    p: &ContourParams,
 ) -> Vec3 {
     let base_flat = origin + uv.x * axis_u + uv.y * axis_v;
-    let inv_two_sigma_sq = 1.0 / (2.0 * RELIEF_DRAPE_SIGMA_A * RELIEF_DRAPE_SIGMA_A);
+    let inv_two_sigma_sq = 1.0 / (2.0 * p.relief_drape_sigma_a * p.relief_drape_sigma_a);
 
     let mut w_sum = 0.0_f32;
     let mut delta_sum = Vec3::ZERO;
@@ -286,17 +294,14 @@ fn drape_uv_to_3d(
     }
 }
 
-/// Extracts the primary closed counter-clockwise zero-contour polygon from an `SDF_GRID_RES x SDF_GRID_RES`
+/// Extracts the primary closed counter-clockwise zero-contour polygon from a `res x res`
 /// scalar field using Marching Squares with linear edge interpolation.
-fn extract_marching_squares_loop(
-    sdf: &[f32; SDF_GRID_RES * SDF_GRID_RES],
-    min_bb: Vec2,
-    step: Vec2,
-) -> Vec<Vec2> {
+fn extract_marching_squares_loop(sdf: &[f32], res: usize, min_bb: Vec2, step: Vec2) -> Vec<Vec2> {
     // Directed segments (from_edge_id, to_edge_id, to_pos)
-    // Edge ID encoding:
-    //   Horizontal edge (ix, iy) -> (ix+1, iy):   id = iy * SDF_GRID_RES + ix
-    //   Vertical edge   (ix, iy) -> (ix, iy+1):   id = 10000 + iy * SDF_GRID_RES + ix
+    // Edge ID encoding (`vert` = res * res keeps the two ranges disjoint):
+    //   Horizontal edge (ix, iy) -> (ix+1, iy):   id = iy * res + ix
+    //   Vertical edge   (ix, iy) -> (ix, iy+1):   id = vert + iy * res + ix
+    let vert = res * res;
     let mut directed_edges: Vec<(usize, usize, Vec2, Vec2)> = Vec::new();
 
     let interp = |p0: Vec2, p1: Vec2, v0: f32, v1: f32| -> Vec2 {
@@ -309,12 +314,12 @@ fn extract_marching_squares_loop(
         p0.lerp(p1, t)
     };
 
-    for iy in 0..(SDF_GRID_RES - 1) {
-        for ix in 0..(SDF_GRID_RES - 1) {
-            let v00 = sdf[iy * SDF_GRID_RES + ix];
-            let v10 = sdf[iy * SDF_GRID_RES + (ix + 1)];
-            let v11 = sdf[(iy + 1) * SDF_GRID_RES + (ix + 1)];
-            let v01 = sdf[(iy + 1) * SDF_GRID_RES + ix];
+    for iy in 0..(res - 1) {
+        for ix in 0..(res - 1) {
+            let v00 = sdf[iy * res + ix];
+            let v10 = sdf[iy * res + (ix + 1)];
+            let v11 = sdf[(iy + 1) * res + (ix + 1)];
+            let v01 = sdf[(iy + 1) * res + ix];
 
             // Bitmask: bit 1 = inside (sdf < 0.0)
             let mut mask = 0u8;
@@ -340,10 +345,10 @@ fn extract_marching_squares_loop(
             let p01 = Vec2::new(p00.x, p00.y + step.y);
 
             // 4 cell edges: Bottom (B), Right (R), Top (T), Left (L)
-            let id_b = iy * SDF_GRID_RES + ix;
-            let id_r = 10000 + iy * SDF_GRID_RES + (ix + 1);
-            let id_t = (iy + 1) * SDF_GRID_RES + ix;
-            let id_l = 10000 + iy * SDF_GRID_RES + ix;
+            let id_b = iy * res + ix;
+            let id_r = vert + iy * res + (ix + 1);
+            let id_t = (iy + 1) * res + ix;
+            let id_l = vert + iy * res + ix;
 
             let pt_b = interp(p00, p10, v00, v10);
             let pt_r = interp(p10, p11, v10, v11);

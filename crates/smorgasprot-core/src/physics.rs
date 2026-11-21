@@ -30,35 +30,40 @@ use crate::model::{
     GlobalResidueIdx, InterfaceEdge, InterfaceSide, ResidueRecord, ResidueTerritory, SecStruct,
     TerritoryIdx,
 };
-use crate::sasa::{compute_complex_sasa, is_interfacial_atom};
+use crate::sasa::{SasaParams, compute_complex_sasa, is_interfacial_atom};
 use crate::spatial::SpatialGrid;
 use glam::Vec3;
 use std::collections::HashMap;
 
-/// Maximum center-to-center distance for first-shell interaction edges (in Angstroms).
-pub const FIRST_SHELL_CUTOFF_A: f32 = 4.50;
-/// MolProbity / Probe van der Waals overlap threshold (`0.40 A`) for non-H-bonding atom pairs
-/// before flagging a serious steric clash (Word et al. 1999; Chen et al. 2010).
-pub const CLASH_TOLERANCE_A: f32 = 0.40;
-/// Heavy-atom donor-acceptor overlap allowance (`0.65 A`) for hydrogen-bonding N/O pairs,
-/// accounting for interpenetration of heavy-atom vdW spheres along a ~2.40 A H-bond
-/// (Word et al. 1999; UCSF ChimeraX `findclash`).
-pub const HBOND_CLASH_TOLERANCE_A: f32 = 0.65;
-/// Minimum heavy-atom donor-acceptor distance for a hydrogen bond (in Angstroms).
-pub const HBOND_MIN_DIST_A: f32 = 2.35;
-/// Maximum heavy-atom donor-acceptor distance for a hydrogen bond (`3.50 A`; Baker & Hubbard 1984).
-pub const HBOND_MAX_DIST_A: f32 = 3.50;
-/// Minimum covalent antecedent angle `<(Base-Donor...Acceptor)` and `<(Donor...Acceptor-Base)`
-/// in degrees (`100.0 deg`; Baker & Hubbard 1984; McDonald & Thornton 1994).
-pub const HBOND_MIN_ANTECEDENT_ANGLE_DEG: f32 = 100.0;
-/// Maximum heavy-atom distance between oppositely charged functional groups for a salt bridge (`4.00 A`; Barlow & Thornton 1983).
-pub const SALT_BRIDGE_MAX_DIST_A: f32 = 4.00;
-/// Cutoff radius for local 3D aliphatic/hydrophobic packing density evaluation (`8.00 A`).
-pub const ALIPHATIC_ENV_RADIUS_A: f32 = 8.00;
-/// Half-height inflection distance $d_0$ for the Laguerre (1997) / ChimeraX Fermi MLP decay kernel (`4.50 A`).
-pub const FERMI_HALF_DIST_A: f32 = 4.50;
-/// Steepness parameter $a$ for the Laguerre (1997) / ChimeraX Fermi MLP decay kernel (`1.50 A^-1`).
-pub const FERMI_STEEPNESS_INV_A: f32 = 1.50;
+crate::param_group! {
+    /// Distance and angle criteria for contacts, clashes, H-bonds, and salt bridges.
+    pub struct ContactParams("contacts", "Contacts & Interactions") {
+        /// First-shell neighbor cutoff for springs and contacts (Å).
+        first_shell_cutoff_a: f32 = 4.5, 3.0..=8.0, "First-shell neighbor cutoff", "Å";
+        /// Allowed van der Waals overlap before a pair counts as a clash (Å).
+        clash_tolerance_a: f32 = 0.40, 0.0..=1.5, "vdW clash tolerance", "Å";
+        /// Allowed overlap for H-bonded polar pairs before a clash (Å).
+        hbond_clash_tolerance_a: f32 = 0.65, 0.0..=1.5, "H-bond clash tolerance", "Å";
+        /// Minimum donor–acceptor heavy-atom distance for an H-bond (Å).
+        hbond_min_dist_a: f32 = 2.35, 2.0..=3.0, "H-bond min distance", "Å";
+        /// Maximum donor–acceptor heavy-atom distance for an H-bond (Å).
+        hbond_max_dist_a: f32 = 3.50, 2.8..=4.5, "H-bond max distance", "Å";
+        /// Minimum antecedent–donor–acceptor angle for an H-bond (degrees).
+        hbond_min_antecedent_angle_deg: f32 = 100.0, 60.0..=180.0, "H-bond min angle", "°";
+        /// Maximum distance between opposite charge centers for a salt bridge (Å).
+        salt_bridge_max_dist_a: f32 = 4.0, 3.0..=6.0, "Salt bridge max distance", "Å";
+        /// Neighborhood radius for the aliphatic packing score (Å).
+        aliphatic_env_radius_a: f32 = 8.0, 4.0..=12.0, "Aliphatic neighborhood radius", "Å";
+        /// Half-weight distance of the Fermi packing kernel (Å).
+        fermi_half_dist_a: f32 = 4.5, 2.0..=8.0, "Fermi kernel half-distance", "Å";
+        /// Steepness of the Fermi packing kernel (1/Å).
+        fermi_steepness_inv_a: f32 = 1.5, 0.1..=5.0, "Fermi kernel steepness", "1/Å";
+        /// A polar atom without H-bond or salt bridge is unsatisfied if it buries more than this (Å²) ...
+        unsat_polar_min_buried_a2: f32 = 2.0, 0.0..=20.0, "Unsat polar min buried area", "Å²";
+        /// ... and keeps less than this solvent-exposed area in the complex (Å²).
+        unsat_polar_max_exposed_a2: f32 = 1.5, 0.0..=20.0, "Unsat polar max exposed area", "Å²";
+    }
+}
 
 /// Unified biophysical classifier for any pair of interfacial heavy atoms (same- or cross-side).
 ///
@@ -66,7 +71,7 @@ pub const FERMI_STEEPNESS_INV_A: f32 = 1.50;
 /// heavy atoms attached to `atom_a` and `atom_b`, used to enforce the Baker & Hubbard (1984) angular
 /// criterion on hydrogen bonds.
 ///
-/// Returns `Some((EdgeKind, overlap_a))` if the atoms lie within [`FIRST_SHELL_CUTOFF_A`] (`<= 4.5 A`).
+/// Returns `Some((EdgeKind, overlap_a))` if the atoms lie within `p.first_shell_cutoff_a` (default `4.5 A`).
 pub fn classify_pair_edge(
     atom_a: &AtomRecord,
     res_a: &ResidueRecord,
@@ -75,8 +80,9 @@ pub fn classify_pair_edge(
     res_b: &ResidueRecord,
     base_b: Option<Vec3>,
     dist_a: f32,
+    p: &ContactParams,
 ) -> Option<(EdgeKind, f32)> {
-    if dist_a > FIRST_SHELL_CUTOFF_A {
+    if dist_a > p.first_shell_cutoff_a {
         return None;
     }
 
@@ -88,15 +94,15 @@ pub fn classify_pair_edge(
         return Some((EdgeKind::VanDerWaalsContact, 0.0));
     }
 
-    if let Some(overlap_a) = check_steric_clash(atom_a, atom_b, dist_a) {
+    if let Some(overlap_a) = check_steric_clash(atom_a, atom_b, dist_a, p) {
         return Some((EdgeKind::Clash, overlap_a));
     }
 
-    if is_salt_bridge(atom_a, res_a, atom_b, res_b, dist_a) {
+    if is_salt_bridge(atom_a, res_a, atom_b, res_b, dist_a, p) {
         return Some((EdgeKind::SaltBridge, 0.0));
     }
 
-    if is_hydrogen_bond_baker_hubbard(atom_a, base_a, atom_b, base_b, dist_a) {
+    if is_hydrogen_bond_baker_hubbard(atom_a, base_a, atom_b, base_b, dist_a, p) {
         return Some((EdgeKind::HBond, 0.0));
     }
 
@@ -151,12 +157,17 @@ pub fn is_adjacent_backbone_pair(res_a: &ResidueRecord, res_b: &ResidueRecord) -
 /// Checks if two non-bonded heavy atoms violate van der Waals steric exclusion (Word et al. 1999).
 /// Returns `Some(overlap_a)` when the penetration exceeds the allowed tolerance.
 #[inline]
-pub fn check_steric_clash(atom_a: &AtomRecord, atom_b: &AtomRecord, dist_a: f32) -> Option<f32> {
+pub fn check_steric_clash(
+    atom_a: &AtomRecord,
+    atom_b: &AtomRecord,
+    dist_a: f32,
+    p: &ContactParams,
+) -> Option<f32> {
     let is_hbond_pair = atom_a.element.is_h_bond_partner() && atom_b.element.is_h_bond_partner();
     let tol = if is_hbond_pair {
-        HBOND_CLASH_TOLERANCE_A
+        p.hbond_clash_tolerance_a
     } else {
-        CLASH_TOLERANCE_A
+        p.clash_tolerance_a
     };
     let overlap_a = (atom_a.vdw_radius_a + atom_b.vdw_radius_a - tol) - dist_a;
     if overlap_a > f32::EPSILON {
@@ -166,7 +177,7 @@ pub fn check_steric_clash(atom_a: &AtomRecord, atom_b: &AtomRecord, dist_a: f32)
     }
 }
 
-/// Returns true if `atom_a` and `atom_b` carry opposite formal charges within [`SALT_BRIDGE_MAX_DIST_A`].
+/// Returns true if `atom_a` and `atom_b` carry opposite formal charges within `p.salt_bridge_max_dist_a`.
 #[inline]
 pub fn is_salt_bridge(
     atom_a: &AtomRecord,
@@ -174,8 +185,9 @@ pub fn is_salt_bridge(
     atom_b: &AtomRecord,
     res_b: &ResidueRecord,
     dist_a: f32,
+    p: &ContactParams,
 ) -> bool {
-    dist_a <= SALT_BRIDGE_MAX_DIST_A && is_opposite_charged_atoms(atom_a, res_a, atom_b, res_b)
+    dist_a <= p.salt_bridge_max_dist_a && is_opposite_charged_atoms(atom_a, res_a, atom_b, res_b)
 }
 
 /// Baker & Hubbard (1984) / McDonald & Thornton (1994) heavy-atom hydrogen bond detector.
@@ -191,10 +203,11 @@ pub fn is_hydrogen_bond_baker_hubbard(
     atom_b: &AtomRecord,
     base_b: Option<Vec3>,
     dist_a: f32,
+    p: &ContactParams,
 ) -> bool {
     if !atom_a.element.is_h_bond_partner()
         || !atom_b.element.is_h_bond_partner()
-        || !(HBOND_MIN_DIST_A..=HBOND_MAX_DIST_A).contains(&dist_a)
+        || !(p.hbond_min_dist_a..=p.hbond_max_dist_a).contains(&dist_a)
     {
         return false;
     }
@@ -202,7 +215,7 @@ pub fn is_hydrogen_bond_baker_hubbard(
     let pa = Vec3::from(atom_a.pos_3d);
     let pb = Vec3::from(atom_b.pos_3d);
     // cos(100 deg) = -0.173648
-    let max_cos = (HBOND_MIN_ANTECEDENT_ANGLE_DEG.to_radians()).cos();
+    let max_cos = (p.hbond_min_antecedent_angle_deg.to_radians()).cos();
 
     if let Some(ba) = base_a {
         let u_ba = (ba - pa).normalize_or_zero();
@@ -306,11 +319,11 @@ pub fn intrinsic_aliphatic_weight(atom: &AtomRecord, res: &ResidueRecord) -> f32
 
 /// Evaluates the normalized Laguerre et al. (1997) / UCSF ChimeraX `mlp` Fermi distance-decay function:
 /// (1 + exp(-a * d0)) / (1 + exp(a * (d - d0)))
-/// where d0 = 4.50 A ([`FERMI_HALF_DIST_A`]) and a = 1.50 A^-1 ([`FERMI_STEEPNESS_INV_A`]).
+/// where d0 = `p.fermi_half_dist_a` (default 4.50 A) and a = `p.fermi_steepness_inv_a` (default 1.50 A^-1).
 #[inline]
-pub fn fermi_distance_kernel(dist_a: f32) -> f32 {
-    let num = 1.0 + (-FERMI_STEEPNESS_INV_A * FERMI_HALF_DIST_A).exp();
-    let den = 1.0 + (FERMI_STEEPNESS_INV_A * (dist_a - FERMI_HALF_DIST_A)).exp();
+pub fn fermi_distance_kernel(dist_a: f32, p: &ContactParams) -> f32 {
+    let num = 1.0 + (-p.fermi_steepness_inv_a * p.fermi_half_dist_a).exp();
+    let den = 1.0 + (p.fermi_steepness_inv_a * (dist_a - p.fermi_half_dist_a)).exp();
     num / den
 }
 
@@ -318,13 +331,13 @@ pub fn fermi_distance_kernel(dist_a: f32) -> f32 {
 ///
 /// Combines non-negative apolar carbon/sulfur weights [`intrinsic_aliphatic_weight`] (wj in [0, 1])
 /// with the exact **UCSF ChimeraX / Laguerre et al. (1997) Fermi distance-decay kernel** [`fermi_distance_kernel`]
-/// over all neighboring non-same-residue apolar atoms within [`ALIPHATIC_ENV_RADIUS_A`]:
-pub fn compute_aliphatic_packing_scores(complex: &ComplexStructure) -> Vec<f32> {
+/// over all neighboring non-same-residue apolar atoms within `p.aliphatic_env_radius_a`:
+pub fn compute_aliphatic_packing_scores(complex: &ComplexStructure, p: &ContactParams) -> Vec<f32> {
     let n_atoms = complex.atoms.len();
     let mut scores = vec![0.0_f32; n_atoms];
     let mut weights = vec![0.0_f32; n_atoms];
 
-    let mut grid = SpatialGrid::new(ALIPHATIC_ENV_RADIUS_A);
+    let mut grid = SpatialGrid::new(p.aliphatic_env_radius_a);
     for (i, atom) in complex.atoms.iter().enumerate() {
         if !atom.role.is_assigned() {
             continue;
@@ -344,13 +357,13 @@ pub fn compute_aliphatic_packing_scores(complex: &ComplexStructure) -> Vec<f32> 
         let mut env_sum = weights[i];
         let res_i = atom.residue_idx;
 
-        grid.query_radius(atom.pos_3d, ALIPHATIC_ENV_RADIUS_A, |j_u32, _pos_j, d2| {
+        grid.query_radius(atom.pos_3d, p.aliphatic_env_radius_a, |j_u32, _pos_j, d2| {
             let j = j_u32 as usize;
             if complex.atoms[j].residue_idx == res_i {
                 return;
             }
             let dist = d2.sqrt();
-            env_sum += weights[j] * fermi_distance_kernel(dist);
+            env_sum += weights[j] * fermi_distance_kernel(dist, p);
         });
 
         scores[i] = env_sum;
@@ -363,9 +376,11 @@ pub fn compute_aliphatic_packing_scores(complex: &ComplexStructure) -> Vec<f32> 
 /// from `complex`.
 pub fn extract_3d_interface_graph(
     complex: &ComplexStructure,
+    sasa_p: &SasaParams,
+    p: &ContactParams,
 ) -> Result<(Vec<ResidueTerritory>, Vec<AtomNode>, Vec<InterfaceEdge>), String> {
-    let sasa_vec = compute_complex_sasa(complex);
-    let aliphatic_scores = compute_aliphatic_packing_scores(complex);
+    let sasa_vec = compute_complex_sasa(complex, sasa_p);
+    let aliphatic_scores = compute_aliphatic_packing_scores(complex, p);
 
     let multi_chain_a = complex.group_a_chains.len() > 1;
     let multi_chain_b = complex.group_b_chains.len() > 1;
@@ -380,7 +395,7 @@ pub fn extract_3d_interface_graph(
             continue;
         }
         let sasa = &sasa_vec[a_idx];
-        if !is_interfacial_atom(side, sasa) {
+        if !is_interfacial_atom(side, sasa, sasa_p) {
             continue;
         }
 
@@ -467,7 +482,7 @@ pub fn extract_3d_interface_graph(
         for j in (i + 1)..nodes.len() {
             let pj = Vec3::from(nodes[j].pos_3d);
             let dist = pi.distance(pj);
-            if dist > FIRST_SHELL_CUTOFF_A {
+            if dist > p.first_shell_cutoff_a {
                 continue;
             }
 
@@ -477,7 +492,7 @@ pub fn extract_3d_interface_graph(
             let base_j = covalent_bases[g_j];
 
             let Some((kind, overlap_a)) =
-                classify_pair_edge(atom_i, res_i, base_i, atom_j, res_j, base_j, dist)
+                classify_pair_edge(atom_i, res_i, base_i, atom_j, res_j, base_j, dist, p)
             else {
                 continue;
             };
@@ -523,8 +538,8 @@ pub fn extract_3d_interface_graph(
             .any(|inter| matches!(inter.kind, EdgeKind::HBond | EdgeKind::SaltBridge));
 
         if atom.element.is_h_bond_partner()
-            && node.buried_sasa_a2 > 2.0
-            && node.complex_sasa_a2 < 1.5
+            && node.buried_sasa_a2 > p.unsat_polar_min_buried_a2
+            && node.complex_sasa_a2 < p.unsat_polar_max_exposed_a2
             && !has_polar_satisfaction
         {
             node.is_unsatisfied_buried_polar = true;

@@ -17,16 +17,27 @@ use crate::model::{ComplexStructure, InterfaceSide};
 use crate::spatial::SpatialGrid;
 use glam::Vec3;
 
-/// Radius of a water probe sphere used to evaluate solvent accessibility (in Angstroms).
-const PROBE_RADIUS_A: f32 = 1.4;
-/// Number of golden-angle Fibonacci test points sampled on each atom's expanded sphere.
-/// Higher values yield more accurate SASA estimates at the cost of linearly increased runtime.
-/// 72 points yields ~1% relative error.
-const FIBONACCI_POINTS: usize = 72;
-/// Voxel bucket width for the 3D spatial hash grid (in Angstroms).
-/// Setting this equal to the maximum two-sphere occlusion reach (~6.4 A) ensures
-/// `SpatialGrid::query_radius` checks at most `reach = 1` (a 3x3x3 = 27-voxel neighborhood).
-const GRID_RESOLUTION_A: f32 = 6.4;
+crate::param_group! {
+    /// Shrake-Rupley ΔSASA and the interface inclusion criterion.
+    #[desc = "Calculates solvent-accessible surface area loss upon complex formation via Shrake-Rupley sphere quadrature."]
+    pub struct SasaParams("sasa", "Solvent Accessibility (ΔSASA)") {
+        /// Water probe radius added to each van der Waals radius (Å).
+        #[desc = "Effective radius of a solvent water probe sphere rolling over the molecular surface."]
+        probe_radius_a: f32 = 1.4, 0.5..=3.0, "Probe radius", "Å";
+        /// Fibonacci test points per atom sphere; 72 gives about 1 % error.
+        #[desc = "Number of golden-angle Fibonacci lattice points distributed on each atom's solvent-expanded sphere."]
+        sphere_points: usize = 72, 12..=1000, "Sphere test points", "";
+        /// Spatial hash bucket width (Å); affects speed only.
+        #[desc = "Bucket width for the uniform voxel grid used to accelerate neighbor search. Affects calculation speed, not results."]
+        grid_resolution_a: f32 = 6.4, 2.0..=12.0, "Spatial grid cell size", "Å";
+        /// An atom is interfacial if it buries more than this area (Å²) ...
+        #[desc = "Minimum ΔSASA lost upon binding required for a heavy atom to be included in the interface graph."]
+        interface_min_buried_a2: f32 = 0.15, 0.0..=10.0, "Min buried area", "Å²";
+        /// ... or lies within this distance of the opposite side (Å).
+        #[desc = "Distance threshold to opposite-chain heavy atoms ensuring boundary contact atoms are retained even if burial is low."]
+        interface_max_cross_dist_a: f32 = 4.5, 2.0..=8.0, "Max cross distance", "Å";
+    }
+}
 
 /// Per-atom SASA metrics in Angstroms^2.
 #[derive(Debug, Clone, Copy, Default)]
@@ -56,7 +67,7 @@ fn fibonacci_sphere(n: usize) -> Vec<Vec3> {
 
 /// Computes `AtomSasa` (unbound SASA, bound SASA, ΔSASA, and closest cross-side distance)
 /// for all atoms assigned to `SideA` or `SideB` in `complex`, ignoring `Unassigned` (`InterfaceSide::None`) chains.
-pub fn compute_complex_sasa(complex: &ComplexStructure) -> Vec<AtomSasa> {
+pub fn compute_complex_sasa(complex: &ComplexStructure, p: &SasaParams) -> Vec<AtomSasa> {
     let n_atoms = complex.atoms.len();
     let mut results = vec![
         AtomSasa {
@@ -67,7 +78,7 @@ pub fn compute_complex_sasa(complex: &ComplexStructure) -> Vec<AtomSasa> {
     ];
 
     // 1. Index all assigned (SideA and SideB) heavy atoms into a 3D spatial grid.
-    let mut grid = SpatialGrid::new(GRID_RESOLUTION_A);
+    let mut grid = SpatialGrid::new(p.grid_resolution_a);
     for (i, atom) in complex.atoms.iter().enumerate() {
         if atom.role.is_assigned() {
             grid.insert(i as u32, atom.pos_3d);
@@ -75,8 +86,8 @@ pub fn compute_complex_sasa(complex: &ComplexStructure) -> Vec<AtomSasa> {
     }
 
     // Precompute unit sphere test directions and the solid-angle weight (4π / N) per test point.
-    let sphere_pts = fibonacci_sphere(FIBONACCI_POINTS);
-    let weight_per_pt = 4.0 * std::f32::consts::PI / (FIBONACCI_POINTS as f32);
+    let sphere_pts = fibonacci_sphere(p.sphere_points);
+    let weight_per_pt = 4.0 * std::f32::consts::PI / (p.sphere_points as f32);
 
     let mut same_neighbors: Vec<(Vec3, f32)> = Vec::with_capacity(64);
     let mut cross_neighbors: Vec<(Vec3, f32)> = Vec::with_capacity(64);
@@ -89,9 +100,9 @@ pub fn compute_complex_sasa(complex: &ComplexStructure) -> Vec<AtomSasa> {
 
         let pos_i = Vec3::from(atom.pos_3d);
         // Solvent-expanded radius R_i = r_vdW + r_probe
-        let r_i = atom.vdw_radius_a + PROBE_RADIUS_A;
+        let r_i = atom.vdw_radius_a + p.probe_radius_a;
         // Upper bound on distance at which a neighbor's expanded sphere R_j can intersect R_i
-        let query_reach = r_i + 1.85 + PROBE_RADIUS_A;
+        let query_reach = r_i + 1.85 + p.probe_radius_a;
 
         same_neighbors.clear();
         cross_neighbors.clear();
@@ -109,7 +120,7 @@ pub fn compute_complex_sasa(complex: &ComplexStructure) -> Vec<AtomSasa> {
             if !side_j.is_assigned() {
                 return;
             }
-            let r_j = other.vdw_radius_a + PROBE_RADIUS_A;
+            let r_j = other.vdw_radius_a + p.probe_radius_a;
             let max_d = r_i + r_j;
             if side_j != side_i && d2 < min_cross_d2 {
                 min_cross_d2 = d2;
@@ -182,6 +193,6 @@ pub fn compute_complex_sasa(complex: &ComplexStructure) -> Vec<AtomSasa> {
 }
 
 /// Returns true if an atom qualifies as part of the interface patch.
-pub fn is_interfacial_atom(_side: InterfaceSide, sasa: &AtomSasa) -> bool {
-    sasa.buried_sasa_a2 > 0.15 || sasa.min_cross_dist_a <= 4.5
+pub fn is_interfacial_atom(_side: InterfaceSide, sasa: &AtomSasa, p: &SasaParams) -> bool {
+    sasa.buried_sasa_a2 > p.interface_min_buried_a2 || sasa.min_cross_dist_a <= p.interface_max_cross_dist_a
 }

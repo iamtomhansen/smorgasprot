@@ -1,32 +1,27 @@
-//! Bottom status bar with active dataset diagnostics, hinge position, and input controls help.
+//! Bottom status bar: transient messages, or a one-line summary of the active dataset.
 
 use crate::dataset::ViewerDataset;
-use egui::{Color32, Ui};
-use std::time::Instant;
+use crate::state::StatusMessage;
+use crate::style::palette;
+use egui::{Align, Layout, Ui};
 
-pub fn render_status_bar(
-    ui: &mut Ui,
-    ds_opt: Option<&ViewerDataset>,
-    status_message: &mut Option<(String, Instant)>,
-) {
+/// Renders the status bar; expiry of `message` is handled by the app.
+pub fn show(ui: &mut Ui, ds: Option<&ViewerDataset>, message: Option<&StatusMessage>) {
     ui.horizontal(|ui| {
-        if let Some((msg, time)) = status_message {
-            if time.elapsed().as_secs() < 6 {
-                ui.colored_label(Color32::from_rgb(34, 197, 94), msg.as_str());
-            } else {
-                *status_message = None;
-            }
-        } else if let Some(ds) = ds_opt {
+        if let Some(msg) = message {
+            let color = if msg.is_error { palette::ERROR } else { palette::SUCCESS };
+            ui.colored_label(color, &msg.text);
+        } else if let Some(ds) = ds {
             ui.label(format!(
                 "Active Complex: {} | {} Nodes | {} Cross-Contacts | Tangent Plane Hinge: {:.1} Å",
                 ds.id,
                 ds.map.nodes.len(),
-                ds.map.edges.iter().filter(|e| e.is_cross_interface).count(),
+                ds.cross_contact_count(),
                 ds.map.plane.hinge_u,
             ));
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label("Orbit: Left Drag • Pan: Shift+Left / Right Drag • Zoom: Scroll Wheel");
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.weak("Orbit: Left Drag • Pan: Shift+Left / Right Drag • Zoom: Scroll / Pinch • Click gizmo to snap");
         });
     });
 }

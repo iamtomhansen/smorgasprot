@@ -9,6 +9,7 @@ pub mod ingest;
 pub mod interface_geometry;
 pub mod minimize;
 pub mod model;
+pub mod params;
 pub mod physics;
 pub mod rotamers;
 pub mod sasa;
@@ -17,3 +18,4 @@ pub mod surface;
 
 pub use amino_acids::*;
 pub use model::*;
+pub use params::AnalysisParams;

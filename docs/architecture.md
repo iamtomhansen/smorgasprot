@@ -1,194 +1,115 @@
-# Architecture & Data Model
+# Architecture
 
-## 1. Workspace & Crate Structure
-
-Smorgasprot uses a two-crate Rust workspace separating pure domain/physics/mesh-generation logic from the interactive tabbed viewport and application shell:
+Two-crate Rust workspace. `smorgasprot-core` is the analysis engine: pure data in, pure data out, no UI dependencies. `smorgasprot-app` is the egui GUI for native desktop and (soon) WASM, plus the frozen HTML exporter. A bare `cargo run` launches the app (`default-members`).
 
 ```
 smorgasprot/
-├── Cargo.toml                      # Workspace root
-├── design.md                       # High-level overview & entry point
-├── examples/                       # Built-in example structures
-│   ├── 7JVB.cif
-│   └── fold_r8s15_mp3_model_0.cif
-├── docs/                           # Modular technical specifications
-│   ├── architecture.md
-│   ├── algorithms.md
-│   ├── visual_grammar.md
-│   └── roadmap.md
+├── design.md                 Vision and doc map
+├── docs/                     This folder
+├── examples/                 Bundled structures (7JVB.cif, fold_r8s15_mp3_model_0.cif)
+├── viewer.html, js/          Legacy JS viewer (frozen; superseded by export/template.html)
 └── crates/
-    ├── smorgasprot-core/           # Pure Rust domain, 3D mesh, layout & physics engine
-    │   ├── Cargo.toml
-    │   └── src/
-    │       ├── lib.rs
-    │       ├── model.rs            # Indices, ComplexStructure, PartnerGroup, SurfaceMesh, InterfaceMap
-    │       ├── ingest.rs           # pdbtbx full-complex ingestion (all chains, canonical AA filter)
-    │       ├── surface.rs          # 3D Marching Cubes molecular surface & inter-chain interface mesh
-    │       ├── sasa.rs             # Shrake-Rupley Fibonacci sphere ΔSASA calculator
-    │       ├── spatial.rs          # Uniform 3D voxel hash grid for fast contact/clash queries
-    │       ├── flatten.rs          # Tangent-plane SVD basis + coupled 2D spring/repulsion solver
-    │       ├── contour.rs          # Voronoi-clipped padded hull + Chaikin contour builder
-    │       ├── physics.rs          # VdW clashes, H-bonds, salt bridges, buried polar detection
-    │       ├── rotamers.rs         # Backbone-dependent Lovell/Dunbrack library & sidechain FK
-    │       └── minimize.rs         # Local χ-angle torsion optimizer & point mutation engine
-    └── smorgasprot-app/            # Tabbed [Complex | Interface] viewer & live Rust server/WASM bridge
-        ├── Cargo.toml
-        └── src/
-            ├── main.rs             # CLI & live local Rust HTTP/RPC server (or WASM entry point)
-            ├── state.rs            # AppState, ComplexTabConfig, InterfaceTabConfig
-            ├── viewport.rs         # Tabbed HTML5 <canvas> / WebGL viewer & live RPC client
-            └── ui.rs               # Inspector & workspace controls
+    ├── smorgasprot-core/src/
+    │   ├── model.rs              Index newtypes, ComplexStructure, InterfaceMap, InterfaceGeometry, SurfaceMesh
+    │   ├── params.rs             AnalysisParams + param_group! macro (every tunable, with docs and ranges)
+    │   ├── ingest.rs             PDB/mmCIF (optionally gzipped) from path or bytes → ComplexStructure
+    │   ├── amino_acids.rs        Residue/element classification, vdW radii
+    │   ├── dssp.rs               Secondary structure (file records, else DSSP)
+    │   ├── spatial.rs            Uniform voxel hash grid
+    │   ├── sasa.rs               Shrake-Rupley ΔSASA, interface inclusion
+    │   ├── physics.rs            Clashes, H-bonds, salt bridges, aliphatic packing, interface graph
+    │   ├── flatten.rs            Projection plane (SVD), 2D relaxation → build_interface_map
+    │   ├── contour.rs            Residue territory contours (SDF, Voronoi, Chaikin)
+    │   ├── surface.rs            Per-chain molecular surface (surface nets on a smooth-union SDF)
+    │   ├── interface_geometry.rs SDF sheet, contact envelope, sub-solvent voids + volume
+    │   └── rotamers.rs, minimize.rs  Phase 5 stubs
+    └── smorgasprot-app/src/
+        ├── main.rs               Native CLI: load, then GUI / --export-html / --serve
+        ├── lib.rs                Module map and layering
+        ├── app.rs                SmorgasprotApp: frame loop, panel layout, Action dispatch
+        ├── camera.rs             Orbit camera, ViewAxis snapping
+        ├── dataset.rs            ViewerDataset: render-ready snapshot (frozen JSON contract)
+        ├── workspace.rs          Open structures: source text, groups, params snapshot, derived data
+        ├── loader.rs             Load pipeline (parse → group → map → meshes), built-in examples
+        ├── jobs.rs               Background jobs (threads natively, inline on wasm)
+        ├── files.rs              rfd dialogs, drag-and-drop, file-type detection
+        ├── persistence.rs        config.rs (preferences), session.rs (session files)
+        ├── state.rs              UiState, Action, StatusMessage; options, tween, view_params
+        ├── style.rs              palette, lenses, sizing
+        ├── panels.rs             top_bar, status_bar, complex/interface controls, inspector, parameters, widgets
+        ├── viewport.rs           Input, picking, scene dispatch; complex_scene, interface_scene, gizmo, grid, draw_list, plane_space
+        └── export.rs             html.rs + template.html (frozen viewer), server.rs (--serve)
 ```
 
-### Live Rust Computation Boundary (Zero Interface Math in JS)
+Modules use the `foo.rs` + `foo/` layout (no `mod.rs`).
 
-To guarantee scientific reproducibility and high performance, **zero** biophysical or geometric calculations run in JavaScript:
-1. When a `.pdb` or `.cif` structure is loaded, `smorgasprot-core` ingests **all chains** into `ComplexStructure` and precomputes each chain's 3D molecular `SurfaceMesh` and `CartoonTrace`.
-2. When the user toggles chains between **Group A**, **Group B**, and **Unassigned** in the **Complex** tab, the UI sends the updated `InterfaceSelection` (`group_a_chains`, `group_b_chains`) to the Rust engine (either in-process via `wasm32-unknown-unknown` or over localhost via `smorgasprot-app --serve`).
-3. The Rust engine immediately computes:
-   * Per-vertex interface membership flags on each chain's 3D `SurfaceMesh` (so interfacial surface vertices light up live in the **Complex** tab),
-   * The approximated **Inter-Chain Interface Sheet Mesh** (drawn between Group A and Group B when viewing in **Cartoon** mode),
-   * The interface normal vector $\hat{\mathbf{n}}$ (used by the **Complex** tab's 3D **"Explode" slider** to separate Group A and Group B), and
-   * The unwrapped 2D/3D `InterfaceMap` ready for immediate inspection in the **Interface** tab.
+## Load pipeline
 
----
-
-## 2. Core Data Model (`smorgasprot-core::model`)
-
-### Layer 1: Full Multi-Chain 3D Complex (`ComplexStructure`)
-
-Unlike a static pair loader, `ComplexStructure` loads **every protein chain** in the file so the user can interactively explore the full biological assembly in the **Complex** tab and assign any subset of chains to **Group A** or **Group B** (leaving any remaining chains `Unassigned` and visually desaturated):
-
-```rust
-use serde::{Deserialize, Serialize};
-
-/// Dense index into `ComplexStructure::atoms` (all heavy atoms across all chains)
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[serde(transparent)]
-pub struct GlobalAtomIdx(pub u32);
-
-/// Dense index into `ComplexStructure::residues` (all residues across all chains)
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[serde(transparent)]
-pub struct GlobalResidueIdx(pub u32);
-
-/// Dense index into `ComplexStructure::chains`
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[serde(transparent)]
-pub struct ChainIdx(pub u32);
-
-/// Dense index into `InterfaceMap::nodes`
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[serde(transparent)]
-pub struct PatchAtomIdx(pub u32);
-
-/// Dense index into `InterfaceMap::territories`
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[serde(transparent)]
-pub struct TerritoryIdx(pub u32);
-
-/// Symmetric identifier for the two opposing sides of an active interface sandwich.
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum InterfaceSide {
-    /// Primary / foreground group (+n side in Overlay mode; right page in Open-Book mode).
-    GroupA,
-    /// Secondary / opposing group (-n side in Overlay mode; hinged left page in Open-Book mode).
-    GroupB,
-}
-
-/// Assignment state of a chain in the `Complex` workspace tab.
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum ChainAssignment {
-    GroupA,
-    GroupB,
-    Unassigned, // Rendered desaturated in the Complex tab; excluded from Interface tab
-}
-
-/// User-configurable name and chain membership for one side of the interface sandwich.
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct PartnerGroup {
-    pub side: InterfaceSide,
-    pub name: String,               // User-editable: e.g. "Binder", "Target", "Toxin", "Receptor"
-    pub chain_ids: Vec<String>,     // Whole-chain selection for v1 (multi-chain supported)
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct ComplexStructure {
-    pub name: String,
-    pub chains: Vec<ChainRecord>,
-    pub residues: Vec<ResidueRecord>,
-    pub atoms: Vec<AtomRecord>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct ChainRecord {
-    pub idx: ChainIdx,
-    pub chain_id: String,
-    pub residue_range: (u32, u32),  // Contiguous slice in `ComplexStructure::residues`
-    pub atom_range: (u32, u32),     // Contiguous slice in `ComplexStructure::atoms`
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct ResidueRecord {
-    pub idx: GlobalResidueIdx,
-    pub chain_idx: ChainIdx,
-    pub chain_id: String,
-    pub seq_num: i32,
-    pub ins_code: char,
-    pub res_name: [u8; 3],          // e.g. *b"GLU"
-    pub sec_struct: SecStruct,      // Helix | Sheet | Coil
-    pub backbone_phi_psi: Option<(f32, f32)>,
-    pub atom_range: (u32, u32),     // Contiguous slice in `ComplexStructure::atoms`
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct AtomRecord {
-    pub idx: GlobalAtomIdx,
-    pub residue_idx: GlobalResidueIdx,
-    pub chain_idx: ChainIdx,
-    pub atom_name: [u8; 4],         // e.g. *b"OE1 "
-    pub element: Element,
-    pub vdw_radius_a: f32,
-    pub pos_3d: [f32; 3],
-    pub b_factor: f32,
-}
+```mermaid
+flowchart LR
+    src["StructureSource (file name + text)"] --> parse["ingest::parse_complex"]
+    parse --> groups["set_active_groups (Group A / B / unassigned)"]
+    groups --> map["flatten::build_interface_map (SASA, contacts, plane, relaxation, contours)"]
+    groups --> surf["surface::build_chain_surface_mesh (per chain)"]
+    map --> geom["interface_geometry::build_interface_geometry"]
+    surf --> geom
+    map --> ds["ViewerDataset"]
+    geom --> ds
+    surf --> ds
 ```
 
-### Layer 2: 3D Meshes for the `Complex` Workspace Tab (`surface.rs`)
+Every step takes its slice of `AnalysisParams`. Meshing dominates the cost, so loads and recomputes run as background jobs.
 
-To render the **Complex** tab with live vertex highlighting and independent representation alphas (**Surface**, **Cartoon**, **Spheres**):
+## Core data model (`model.rs`)
 
-```rust
-/// 3D triangle mesh for a chain's molecular surface (or the inter-chain interface sheet in Cartoon mode).
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct SurfaceMesh {
-    pub vertices: Vec<[f32; 3]>,
-    pub normals: Vec<[f32; 3]>,
-    /// Nearest heavy atom index for each surface vertex (enables O(1) live interface vertex highlighting!)
-    pub nearest_atom: Vec<GlobalAtomIdx>,
-    /// Triangle index triplets `(i0, i1, i2)` into `vertices`
-    pub triangles: Vec<[u32; 3]>,
-}
-```
+| Type | Role |
+| --- | --- |
+| `ComplexStructure` | All chains, residues, heavy atoms in file order. Group names and chain lists; `role: InterfaceSide` on residues and atoms. |
+| `InterfaceSide` | `SideA`, `SideB`, `None` (unassigned chains: rendered slate, excluded from the map). |
+| `InterfaceMap` | Pure topology plus cartography: `plane`, `territories`, `nodes` (`AtomNode`), `edges` (`InterfaceEdge`). Drives the Interface tab. |
+| `InterfaceGeometry` | Derived visual meshes kept out of the map: `sheet_mesh`, `envelope_mesh`, `negative_mesh`, `void_volume_a3`. |
+| `SurfaceMesh` | Vertices, normals, triangles, and `nearest_atom` per vertex (O(1) interface highlighting). |
+| Index newtypes | `GlobalAtomIdx`, `GlobalResidueIdx`, `ChainIdx`, `AtomNodeIdx`, `TerritoryIdx` (dense `u32`). |
 
-> [!TIP]
-> Storing `nearest_atom: Vec<GlobalAtomIdx>` on each precomputed chain `SurfaceMesh` means the expensive Marching Cubes triangulation only runs **once** when the `.cif`/`.pdb` file is loaded. Whenever the user reassigns chains between `GroupA` and `GroupB`, the Rust engine updates which `GlobalAtomIdx` atoms are interfacial in `< 2 ms`, and every surface vertex `v` immediately knows whether `nearest_atom[v]` is part of the active interface!
+`AtomNode.b_factor` holds the crystallographic B-factor or AlphaFold pLDDT; the UI chooses the interpretation.
 
-### Layer 3: Dual-Side Flattened Interface for the `Interface` Tab (`InterfaceMap`)
+## App architecture
 
-```rust
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct InterfaceMap {
-    pub group_a: PartnerGroup,
-    pub group_b: PartnerGroup,
-    pub frame: TangentFrame,
-    pub territories: Vec<ResidueTerritory>,
-    pub nodes: Vec<PatchAtomNode>,
-    pub intra_edges: Vec<FirstShellEdge>,
-    pub cross_contacts: Vec<CrossInterfaceContact>,
-    /// Smooth 3D mid-surface mesh separating GroupA and GroupB (displayed in Cartoon mode in Complex tab)
-    pub interface_sheet_mesh: SurfaceMesh,
-}
-```
+Dependency order, low to high: `camera`, `dataset` → `workspace`, `state` → `style` → `panels`, `viewport` → `app`. `loader`, `jobs`, `files`, `persistence`, `export` are I/O edges used by `app` and `main`. Lower layers never import higher ones.
 
-*(Note: Self-interfaces within a single chain and residue-range selectors `chain A & resi 50–150`, as well as bookmarking multiple simultaneous interfaces in the `Complex` tab, are deferred to a future iteration so v1 remains focused on whole-chain group assignments.)*
+Per frame, `SmorgasprotApp::update`:
+1. Advances tweens, expires the status message.
+2. Applies finished jobs (opened, recomputed, or session-restored structures).
+3. Takes dropped files and starts load jobs.
+4. Draws panels. Panels edit `UiState` directly and push `Action`s for app-level effects (open, save, export, recompute, select).
+5. Draws the viewport. Only `viewport.rs` mutates camera and selection; scenes only paint.
+6. Applies the queued actions.
+
+Rendering is CPU-projected and painted as one depth-sorted `egui::Mesh` per frame (`DrawList`).
+
+## Parameters
+
+Every tunable number is a field in a `param_group!` struct: one declaration gives the value, default, unit (key suffix `_a`, `_a2`, `_deg`, `_px`), doc string, and editing range. A `ParamVisitor` lets the Parameters window render any group generically, so a new field shows up in the UI with no extra code.
+
+- `AnalysisParams` (core): `sasa`, `contacts`, `relax`, `contour`, `surface`, `geometry`. Changing them requires a recompute.
+- `ViewParams` (app, `state/view_params.rs`): `lenses`, `render`, `navigation`. Applied live.
+- Layout chrome (gizmo geometry, panel widths) and physical constants (element radii) stay `const`.
+
+Defaults reproduce the reference pipeline; the HTML export at defaults is a byte-identical regression check.
+
+## Persistence
+
+| Tier | Contents | Storage |
+| --- | --- | --- |
+| Preferences (`AppConfig`) | Working `AnalysisParams`, last `UiState` (incl. `ViewParams`), recent files | eframe storage (RON file natively, `localStorage` on web), auto-saved |
+| Session (`Session`, `*.smorgasprot.json`) | Per structure: embedded file text, groups, `AnalysisParams` snapshot; plus `UiState` and active index | Explicit File → Save/Open Session |
+| HTML report | `ViewerDataset[]` JSON in the frozen viewer template | File → Export |
+
+All persisted structs use `#[serde(default)]`, so older files keep loading as fields are added. Sessions carry `format_version`; opening one recomputes each structure from its inputs, so results are reproducible across machines.
+
+## Targets
+
+- **Native**: `cargo run [-- FILE --group-a A --group-b C]`. File dialogs via `rfd` (xdg-portal on Linux).
+- **HTML export**: `--export-html [out.html]` or File → Export. `ViewerDataset`'s JSON field names are a frozen contract with `template.html`.
+- **Live server**: `--serve` hosts the HTML report and recomputes on chain reassignment (`POST /api/recompute`).
+- **WASM** (planned): same `SmorgasprotApp`; jobs run inline, files arrive by drag-and-drop or the browser picker.

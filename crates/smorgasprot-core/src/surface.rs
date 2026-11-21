@@ -20,6 +20,22 @@ use crate::model::{ChainIdx, ComplexStructure, GlobalAtomIdx, SurfaceMesh};
 use crate::spatial::SpatialGrid;
 use glam::Vec3;
 
+crate::param_group! {
+    /// Per-chain molecular surface meshing.
+    pub struct SurfaceParams("surface", "Molecular Surface") {
+        /// Inflation of the van der Waals shell before meshing (Å).
+        shell_inflate_a: f32 = 0.55, 0.0..=2.0, "Shell inflation", "Å";
+        /// Smooth-union blend radius between atom spheres (Å).
+        smooth_union_k_a: f32 = 0.65, 0.0..=2.0, "Smooth-union blend radius", "Å";
+        /// Extra empty margin around the chain's bounding box (Å).
+        grid_margin_extra_a: f32 = 2.75, 0.5..=6.0, "Bounding grid extra margin", "Å";
+        /// Laplacian smoothing passes after extraction.
+        smooth_passes: usize = 2, 0..=10, "Smoothing passes", "";
+        /// Vertices closer than this are merged (Å).
+        vertex_merge_distance_a: f32 = 0.25, 0.0..=1.0, "Vertex merge distance", "Å";
+    }
+}
+
 // ============================================================================
 // Geodesic Sphere & Molecular Surface Parameters
 // ============================================================================
@@ -44,34 +60,6 @@ pub enum GeodesicPreset {
     /// Fine resolution (66-vertex 2-subdivided octahedron template / 1.20 Å surface voxel spacing).
     Octahedron66,
 }
-
-/// Radial inflation (Å) added to each atom's van der Waals radius when evaluating the molecular
-/// surface signed-distance field.
-///
-/// - `0.0 Å` corresponds to the raw van der Waals surface.
-/// - `1.4 Å` corresponds to the Lee & Richards (1971) Solvent-Accessible Surface (SAS) probe center.
-/// - `0.55 Å` provides a tight, smooth solvent-excluded-style visual envelope where covalently
-///   bonded atoms fuse into a single continuous skin without bloating binding pockets.
-pub const SURFACE_SHELL_INFLATE_A: f32 = 0.55;
-
-/// Polynomial smooth-minimum blending radius (Å) used when combining overlapping atomic spheres
-/// into the molecular surface signed-distance field (`smin_poly_3d`).
-///
-/// A blending radius of `0.65 Å` rounds the sharp crease between bonded atoms (simulating a
-/// rolling solvent probe / Connolly re-entrant surface) while preserving atomic bumps.
-pub const SURFACE_SMOOTH_UNION_K_A: f32 = 0.65;
-
-/// Extra bounding-box margin (Å) around a chain's atomic coordinates when allocating the 3D
-/// signed-distance grid so the zero-isosurface never clips against the grid boundary.
-pub const SURFACE_GRID_MARGIN_A: f32 = MAX_VDW_RADIUS_A + SURFACE_SHELL_INFLATE_A + 2.75;
-
-/// Number of Laplacian vertex-relaxation passes applied to dual Surface Net vertices (projected
-/// back onto the exact zero-isosurface along the analytical SDF gradient) to eliminate grid
-/// staircasing and yield isotropic triangles.
-pub const SURFACE_SMOOTH_PASSES: usize = 2;
-
-/// Distance threshold (Å) for merging nearby surface vertices (`merge_mesh_vertices_by_distance`).
-pub const VERTEX_MERGE_DISTANCE_A: f32 = 0.25;
 
 // ============================================================================
 // Geodesic Sphere Generator
@@ -236,8 +224,12 @@ fn emit_quad(triangles: &mut Vec<[u32; 3]>, v0: u32, v1: u32, v2: u32, v3: u32, 
 ///
 /// Every surface vertex records its `nearest_atom: GlobalAtomIdx` so that live changes to
 /// `SideA` / `SideB` chain assignments immediately highlight interfacial surface vertices in O(1).
-pub fn build_chain_surface_mesh(complex: &ComplexStructure, chain_idx: ChainIdx) -> SurfaceMesh {
-    build_chain_surface_mesh_with_preset(complex, chain_idx, GeodesicPreset::default())
+pub fn build_chain_surface_mesh(
+    complex: &ComplexStructure,
+    chain_idx: ChainIdx,
+    p: &SurfaceParams,
+) -> SurfaceMesh {
+    build_chain_surface_mesh_with_preset(complex, chain_idx, GeodesicPreset::default(), p)
 }
 
 /// Builds a single-layer 3D molecular surface mesh for `chain_idx` by extracting the
@@ -259,6 +251,7 @@ pub fn build_chain_surface_mesh_with_preset(
     complex: &ComplexStructure,
     chain_idx: ChainIdx,
     preset: GeodesicPreset,
+    params: &SurfaceParams,
 ) -> SurfaceMesh {
     let chain = &complex.chains[chain_idx.0 as usize];
     let start_atom = chain.atom_range.0 as usize;
@@ -278,8 +271,10 @@ pub fn build_chain_surface_mesh_with_preset(
         min_pt = min_pt.min(p);
         max_pt = max_pt.max(p);
     }
-    min_pt -= Vec3::splat(SURFACE_GRID_MARGIN_A);
-    max_pt += Vec3::splat(SURFACE_GRID_MARGIN_A);
+    // Bounding-box margin so the zero-isosurface never clips against the grid boundary.
+    let grid_margin_a = MAX_VDW_RADIUS_A + params.shell_inflate_a + params.grid_margin_extra_a;
+    min_pt -= Vec3::splat(grid_margin_a);
+    max_pt += Vec3::splat(grid_margin_a);
 
     let nx = (((max_pt.x - min_pt.x) * inv_step).ceil() as usize + 1).max(4);
     let ny = (((max_pt.y - min_pt.y) * inv_step).ceil() as usize + 1).max(4);
@@ -296,16 +291,16 @@ pub fn build_chain_surface_mesh_with_preset(
     let mut best_raw_dist = vec![f32::INFINITY; total_grid_pts];
 
     // The reach of an atom's smooth influence on grid points includes:
-    // 1. The polynomial smooth-minimum blending radius (SURFACE_SMOOTH_UNION_K_A)
+    // 1. The polynomial smooth-minimum blending radius (`params.smooth_union_k_a`)
     // 2. The 3D voxel cube body-diagonal: sqrt(3) * step, ensuring that any voxel
     //    whose corner or interior is touched by the blended isosurface is updated.
     let cube_diagonal_reach = step * 3.0_f32.sqrt();
-    let influence_pad = SURFACE_SMOOTH_UNION_K_A + cube_diagonal_reach;
+    let influence_pad = params.smooth_union_k_a + cube_diagonal_reach;
 
     for a_idx in start_atom..end_atom {
         let atom = &complex.atoms[a_idx];
         let center = Vec3::from(atom.pos_3d);
-        let r_i = atom.vdw_radius_a + SURFACE_SHELL_INFLATE_A;
+        let r_i = atom.vdw_radius_a + params.shell_inflate_a;
         let reach = r_i + influence_pad;
 
         // 3D bounding box of grid points that could be influenced by this atom
@@ -334,7 +329,7 @@ pub fn build_chain_surface_mesh_with_preset(
                     }
                     let d_surf = d2.sqrt() - r_i;
                     let g_idx = base_idx + iz;
-                    sdf[g_idx] = smin_poly_3d(sdf[g_idx], d_surf, SURFACE_SMOOTH_UNION_K_A);
+                    sdf[g_idx] = smin_poly_3d(sdf[g_idx], d_surf, params.smooth_union_k_a);
                     if d_surf < best_raw_dist[g_idx] {
                         best_raw_dist[g_idx] = d_surf;
                         nearest_atom_grid[g_idx] = GlobalAtomIdx(a_idx as u32);
@@ -594,7 +589,7 @@ pub fn build_chain_surface_mesh_with_preset(
 
     // 6. Build spatial grid of chain atoms to compute exact analytical normals and project
     //    smoothed Surface Net vertices directly onto the exact phi(p) = 0 isosurface
-    let max_reach = MAX_VDW_RADIUS_A + SURFACE_SHELL_INFLATE_A + SURFACE_SMOOTH_UNION_K_A + 1.5;
+    let max_reach = MAX_VDW_RADIUS_A + params.shell_inflate_a + params.smooth_union_k_a + 1.5;
     let mut atom_grid = SpatialGrid::new(max_reach);
     for a_idx in start_atom..end_atom {
         atom_grid.insert(a_idx as u32, complex.atoms[a_idx].pos_3d);
@@ -603,7 +598,7 @@ pub fn build_chain_surface_mesh_with_preset(
     // Constrained Elastic Surface Net relaxation (Gibson 1998):
     // Smooth dual vertices while strictly constraining each vertex to remain inside its voxel cell
     // bounding box. This prevents high-curvature bulges (single atoms) from collapsing past their neighbors.
-    for _ in 0..SURFACE_SMOOTH_PASSES {
+    for _ in 0..params.smooth_passes {
         let mut accum = vec![Vec3::ZERO; dual_positions.len()];
         let mut counts = vec![0.0_f32; dual_positions.len()];
         for &[i0, i1, i2] in &triangles {
@@ -643,14 +638,14 @@ pub fn build_chain_surface_mesh_with_preset(
 
         atom_grid.query_radius(p.to_array(), max_reach, |a_u32, pos_a, d2| {
             let a_idx = a_u32 as usize;
-            let r_a = complex.atoms[a_idx].vdw_radius_a + SURFACE_SHELL_INFLATE_A;
+            let r_a = complex.atoms[a_idx].vdw_radius_a + params.shell_inflate_a;
             let d = d2.sqrt();
             let d_surf = d - r_a;
             if d_surf < best_d_surf {
                 best_d_surf = d_surf;
                 best_atom = GlobalAtomIdx(a_u32);
             }
-            phi = smin_poly_3d(phi, d_surf, SURFACE_SMOOTH_UNION_K_A);
+            phi = smin_poly_3d(phi, d_surf, params.smooth_union_k_a);
             if d > 1e-5 {
                 let dir = (p - Vec3::from(pos_a)) / d;
                 let w = (-d_surf.max(-1.0) * 2.5).exp();
