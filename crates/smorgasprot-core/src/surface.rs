@@ -1,5 +1,5 @@
 //! 3D molecular surface mesh generation (Marching Cubes / Surface Nets on a Gaussian / union-of-spheres
-//! signed-distance grid) and inter-chain interface separator sheet mesh.
+//! signed-distance grid).
 //!
 //! ## Works referenced
 //! - **Lee, B. & Richards, F. M. (1971).** "The interpretation of protein structures: estimation of
@@ -16,12 +16,9 @@
 //!   producing a single-layer, watertight, non-overlapping manifold mesh with analytical gradient
 //!   normals).
 
-use crate::model::{
-    AtomNode, ChainIdx, ComplexStructure, GlobalAtomIdx, InterfaceEdge, ProjectionPlane,
-    SurfaceMesh,
-};
+use crate::model::{ChainIdx, ComplexStructure, GlobalAtomIdx, SurfaceMesh};
 use crate::spatial::SpatialGrid;
-use glam::{Vec2, Vec3};
+use glam::Vec3;
 
 // ============================================================================
 // Geodesic Sphere & Molecular Surface Parameters
@@ -66,35 +63,15 @@ pub const SURFACE_SMOOTH_UNION_K_A: f32 = 0.65;
 
 /// Extra bounding-box margin (Å) around a chain's atomic coordinates when allocating the 3D
 /// signed-distance grid so the zero-isosurface never clips against the grid boundary.
-pub const SURFACE_GRID_MARGIN_A: f32 = MAX_VDW_RADIUS_A + SURFACE_SHELL_INFLATE_A + 1.25;
+pub const SURFACE_GRID_MARGIN_A: f32 = MAX_VDW_RADIUS_A + SURFACE_SHELL_INFLATE_A + 2.75;
 
 /// Number of Laplacian vertex-relaxation passes applied to dual Surface Net vertices (projected
 /// back onto the exact zero-isosurface along the analytical SDF gradient) to eliminate grid
-///staircasing and yield isotropic triangles.
+/// staircasing and yield isotropic triangles.
 pub const SURFACE_SMOOTH_PASSES: usize = 2;
 
 /// Distance threshold (Å) for merging nearby surface vertices (`merge_mesh_vertices_by_distance`).
 pub const VERTEX_MERGE_DISTANCE_A: f32 = 0.25;
-
-// ============================================================================
-// Inter-Chain Interface Separator Sheet Parameters
-// ============================================================================
-
-/// Bounding-box UV margin (Å) added around cross-interface contact midpoints for the
-/// interface separator sheet mesh.
-pub const SHEET_UV_PADDING_A: f32 = 2.0;
-
-/// Grid resolution (N x N) of the interface separator sheet mesh.
-pub const SHEET_GRID_RES: usize = 18;
-
-/// Standard deviation sigma (Å) of the Gaussian kernel used to interpolate the 3D normal
-/// height h(u, v) of the inter-chain separator sheet across contact midpoints.
-pub const SHEET_GAUSSIAN_SIGMA_A: f32 = 2.5;
-
-/// Maximum UV distance (Å) from an active cross-interface contact midpoint within which
-/// sheet mesh vertices are emitted (leaves true physical holes in the sheet where the interface has
-/// an internal cavity).
-pub const SHEET_FOOTPRINT_RADIUS_A: f32 = 3.2;
 
 // ============================================================================
 // Geodesic Sphere Generator
@@ -239,6 +216,21 @@ pub fn voxel_spacing_for_preset(preset: GeodesicPreset) -> f32 {
     }
 }
 
+/// Emits two counter-clockwise triangles for a quad connecting 4 dual vertices around a sign-changing grid edge.
+#[inline]
+fn emit_quad(triangles: &mut Vec<[u32; 3]>, v0: u32, v1: u32, v2: u32, v3: u32, flip: bool) {
+    if v0 == u32::MAX || v1 == u32::MAX || v2 == u32::MAX || v3 == u32::MAX {
+        return;
+    }
+    if flip {
+        triangles.push([v0, v2, v1]);
+        triangles.push([v0, v3, v2]);
+    } else {
+        triangles.push([v0, v1, v2]);
+        triangles.push([v0, v2, v3]);
+    }
+}
+
 /// Builds a 3D molecular surface triangle mesh for a single chain in `complex`
 /// using [`GeodesicPreset::default()`].
 ///
@@ -248,25 +240,19 @@ pub fn build_chain_surface_mesh(complex: &ComplexStructure, chain_idx: ChainIdx)
     build_chain_surface_mesh_with_preset(complex, chain_idx, GeodesicPreset::default())
 }
 
-/// Builds a watertight, single-layer 3D molecular surface mesh for `chain_idx` by extracting the
-/// zero-level isosurface of the chain's smooth-union atomic signed-distance field via **Dual
-/// Surface Nets** (Gibson 1998 / Lorensen & Cline 1987).
+/// Builds a single-layer 3D molecular surface mesh for `chain_idx` by extracting the
+/// zero-level isosurface of the chain's smooth-union atomic signed-distance field via 'Dual
+/// Surface Nets' (Gibson 1998 / Lorensen & Cline 1987).
 ///
-/// ### Why Dual Surface Nets over Per-Atom Geodesic Sphere Stitching
-/// Plotting individual geodesic spheres per atom and attempting to snap/weld their intersecting
-/// boundary triangles inevitably produces overlapping multi-layered triangles where 3 or more
-/// covalently bonded atoms meet, creating jagged facets and heavy overdraw when alpha transparency
-/// is enabled.
-///
-/// By instead evaluating a 3D signed-distance field `phi(x, y, z)` across a regular voxel grid
+/// By evaluating a 3D signed-distance field `phi(x, y, z)` across a regular voxel grid
 /// (splatting each atom only into its local 3x3x3-voxel neighborhood) and extracting the single
 /// zero-level isosurface (`phi = 0`):
-/// 1. **Strictly Single-Layer & Non-Overlapping:** Every surface point belongs to a single closed
-///    2-manifold skin—zero internal sphere caps and zero overlapping triangles under alpha blending.
-/// 2. **Exact Analytical Normals & Zero-Isosurface Projection:** Every dual vertex is placed at the
+/// 1. Stric non-overlapping single layer: Every surface point belongs to a single closed
+///    2-manifold skin. Zero internal sphere caps and zero overlapping triangles.
+/// 2. Exact analytical normals & zero-isosurface projection: Every dual vertex is placed at the
 ///    average of the 12 cube-edge zero-crossings, smoothed tangentially, and projected directly
 ///    onto `phi(p) = 0` along the analytical gradient `grad(phi)`.
-/// 3. **60 FPS Canvas Budget:** At the default `Octahedron18` preset (`1.75 Å` voxel step), a
+/// 3. 60 FPS canvas budget: At the default `Octahedron18` preset (`1.75 Å` voxel step), a
 ///    typical protein chain produces only ~1,100–1,400 clean triangles (vs. >8,000 overlapping
 ///    sphere triangles).
 pub fn build_chain_surface_mesh_with_preset(
@@ -284,7 +270,7 @@ pub fn build_chain_surface_mesh_with_preset(
     let step = voxel_spacing_for_preset(preset);
     let inv_step = 1.0 / step;
 
-    // 1. Compute 3D bounding box of the chain's heavy atoms
+    // 1. Compute 3D bounding box of the chain's heavy atoms.
     let mut min_pt = Vec3::splat(f32::INFINITY);
     let mut max_pt = Vec3::splat(f32::NEG_INFINITY);
     for a_idx in start_atom..end_atom {
@@ -309,7 +295,12 @@ pub fn build_chain_surface_mesh_with_preset(
     let mut nearest_atom_grid = vec![GlobalAtomIdx(start_atom as u32); total_grid_pts];
     let mut best_raw_dist = vec![f32::INFINITY; total_grid_pts];
 
-    let influence_pad = SURFACE_SMOOTH_UNION_K_A + step * 1.75;
+    // The reach of an atom's smooth influence on grid points includes:
+    // 1. The polynomial smooth-minimum blending radius (SURFACE_SMOOTH_UNION_K_A)
+    // 2. The 3D voxel cube body-diagonal: sqrt(3) * step, ensuring that any voxel
+    //    whose corner or interior is touched by the blended isosurface is updated.
+    let cube_diagonal_reach = step * 3.0_f32.sqrt();
+    let influence_pad = SURFACE_SMOOTH_UNION_K_A + cube_diagonal_reach;
 
     for a_idx in start_atom..end_atom {
         let atom = &complex.atoms[a_idx];
@@ -317,6 +308,7 @@ pub fn build_chain_surface_mesh_with_preset(
         let r_i = atom.vdw_radius_a + SURFACE_SHELL_INFLATE_A;
         let reach = r_i + influence_pad;
 
+        // 3D bounding box of grid points that could be influenced by this atom
         let ix_min = (((center.x - reach - min_pt.x) * inv_step).floor() as isize).max(0) as usize;
         let ix_max =
             (((center.x + reach - min_pt.x) * inv_step).ceil() as usize).min(nx.saturating_sub(1));
@@ -352,7 +344,95 @@ pub fn build_chain_surface_mesh_with_preset(
         }
     }
 
-    // 3. Dual Surface Nets: place one dual vertex inside every voxel cell (ix, iy, iz) that
+    // 3. Flood-fill exterior to identify and seal internal sub-solvent voids.
+    // Any voxel with sdf >= 0 that is not reached by exterior bulk solvent is a sealed internal cavity
+    // that cannot fit water and should not produce internal mesh shells.
+    let mut is_exterior = vec![false; total_grid_pts];
+    let mut queue = Vec::with_capacity(nx * ny + ny * nz + nz * nx);
+    
+    // x -> y -> z
+    for ix in 0..nx {
+        for iy in 0..ny {
+            for iz in [0, nz - 1] {
+                let g = ix * stride_x + iy * stride_y + iz;
+                if sdf[g] >= 0.0 && !is_exterior[g] {
+                    is_exterior[g] = true;
+                    queue.push((ix, iy, iz));
+                }
+            }
+        }
+    }
+    // x -> z -> y
+    for ix in 0..nx {
+        for iz in 0..nz {
+            for iy in [0, ny - 1] {
+                let g = ix * stride_x + iy * stride_y + iz;
+                if sdf[g] >= 0.0 && !is_exterior[g] {
+                    is_exterior[g] = true;
+                    queue.push((ix, iy, iz));
+                }
+            }
+        }
+    }
+    // y -> z -> x
+    for iy in 0..ny {
+        for iz in 0..nz {
+            for ix in [0, nx - 1] {
+                let g = ix * stride_x + iy * stride_y + iz;
+                if sdf[g] >= 0.0 && !is_exterior[g] {
+                    is_exterior[g] = true;
+                    queue.push((ix, iy, iz));
+                }
+            }
+        }
+    }
+
+    let mut head = 0;
+    while head < queue.len() {
+        let (cx, cy, cz) = queue[head];
+        head += 1;
+
+        let neighbors: [(isize, isize, isize); 6] = [
+            (1, 0, 0),
+            (-1, 0, 0),
+            (0, 1, 0),
+            (0, -1, 0),
+            (0, 0, 1),
+            (0, 0, -1),
+        ];
+
+        for (dx, dy, dz) in neighbors {
+            let nx_i = cx as isize + dx;
+            let ny_i = cy as isize + dy;
+            let nz_i = cz as isize + dz;
+
+            if nx_i >= 0
+                && nx_i < nx as isize
+                && ny_i >= 0
+                && ny_i < ny as isize
+                && nz_i >= 0
+                && nz_i < nz as isize
+            {
+                let u_x = nx_i as usize;
+                let u_y = ny_i as usize;
+                let u_z = nz_i as usize;
+                let g_idx = u_x * stride_x + u_y * stride_y + u_z;
+                if sdf[g_idx] >= 0.0 && !is_exterior[g_idx] {
+                    is_exterior[g_idx] = true;
+                    queue.push((u_x, u_y, u_z));
+                }
+            }
+        }
+    }
+
+    // Seal sub-solvent interior cavities (clamp to solid protein interior sdf = -0.5)
+    for g in 0..total_grid_pts {
+        if sdf[g] >= 0.0 && !is_exterior[g] {
+            sdf[g] = -0.5;
+        }
+    }
+
+    // 4. Dual Surface Nets: place one dual vertex inside every voxel cell (ix, iy, iz) that
     //    straddles the zero-level isosurface (having both phi < 0 and phi >= 0 corners)
     let cube_corners: [[usize; 3]; 8] = [
         [0, 0, 0],
@@ -381,6 +461,7 @@ pub fn build_chain_surface_mesh_with_preset(
 
     let mut cell_to_vert = vec![u32::MAX; total_grid_pts];
     let mut dual_positions: Vec<Vec3> = Vec::new();
+    let mut dual_cell_min: Vec<Vec3> = Vec::new();
     let mut dual_nearest_atom: Vec<GlobalAtomIdx> = Vec::new();
 
     for ix in 0..(nx - 1) {
@@ -441,6 +522,7 @@ pub fn build_chain_surface_mesh_with_preset(
                 if cross_count > 0.0 {
                     let v_idx = dual_positions.len() as u32;
                     dual_positions.push(cross_sum / cross_count);
+                    dual_cell_min.push(base_pos);
                     dual_nearest_atom.push(cell_atom);
                     cell_to_vert[ix * stride_x + iy * stride_y + iz] = v_idx;
                 }
@@ -452,62 +534,65 @@ pub fn build_chain_surface_mesh_with_preset(
         return SurfaceMesh::default();
     }
 
-    // 4. Emit dual quads (split into 2 triangles) for every interior grid edge that changes sign
+    // 5. Emit dual quads (split into 2 triangles) for every grid edge that changes sign.
+    // Each direction iterates over its full valid range so no sign-changing edges are dropped.
     let mut triangles: Vec<[u32; 3]> = Vec::with_capacity(dual_positions.len() * 2);
 
-    let mut emit_quad = |v0: u32, v1: u32, v2: u32, v3: u32, flip: bool| {
-        if v0 == u32::MAX || v1 == u32::MAX || v2 == u32::MAX || v3 == u32::MAX {
-            return;
-        }
-        if flip {
-            triangles.push([v0, v2, v1]);
-            triangles.push([v0, v3, v2]);
-        } else {
-            triangles.push([v0, v1, v2]);
-            triangles.push([v0, v2, v3]);
-        }
-    };
-
-    for ix in 1..(nx - 1) {
+    // X-directed edges: from (ix, iy, iz) to (ix + 1, iy, iz)
+    for ix in 0..(nx - 1) {
         for iy in 1..(ny - 1) {
             for iz in 1..(nz - 1) {
                 let g0 = ix * stride_x + iy * stride_y + iz;
                 let s0 = sdf[g0] < 0.0;
-
-                // X-directed edge from (ix, iy, iz) to (ix + 1, iy, iz)
                 let sx = sdf[g0 + stride_x] < 0.0;
                 if s0 != sx {
                     let c0 = cell_to_vert[ix * stride_x + (iy - 1) * stride_y + (iz - 1)];
                     let c1 = cell_to_vert[ix * stride_x + iy * stride_y + (iz - 1)];
                     let c2 = cell_to_vert[ix * stride_x + iy * stride_y + iz];
                     let c3 = cell_to_vert[ix * stride_x + (iy - 1) * stride_y + iz];
-                    emit_quad(c0, c1, c2, c3, !s0);
+                    emit_quad(&mut triangles, c0, c1, c2, c3, !s0);
                 }
+            }
+        }
+    }
 
-                // Y-directed edge from (ix, iy, iz) to (ix, iy + 1, iz)
+    // Y-directed edges: from (ix, iy, iz) to (ix, iy + 1, iz)
+    for ix in 1..(nx - 1) {
+        for iy in 0..(ny - 1) {
+            for iz in 1..(nz - 1) {
+                let g0 = ix * stride_x + iy * stride_y + iz;
+                let s0 = sdf[g0] < 0.0;
                 let sy = sdf[g0 + stride_y] < 0.0;
                 if s0 != sy {
                     let c0 = cell_to_vert[(ix - 1) * stride_x + iy * stride_y + (iz - 1)];
                     let c1 = cell_to_vert[(ix - 1) * stride_x + iy * stride_y + iz];
                     let c2 = cell_to_vert[ix * stride_x + iy * stride_y + iz];
                     let c3 = cell_to_vert[ix * stride_x + iy * stride_y + (iz - 1)];
-                    emit_quad(c0, c1, c2, c3, !s0);
+                    emit_quad(&mut triangles, c0, c1, c2, c3, !s0);
                 }
+            }
+        }
+    }
 
-                // Z-directed edge from (ix, iy, iz) to (ix, iy, iz + 1)
+    // Z-directed edges: from (ix, iy, iz) to (ix, iy, iz + 1)
+    for ix in 1..(nx - 1) {
+        for iy in 1..(ny - 1) {
+            for iz in 0..(nz - 1) {
+                let g0 = ix * stride_x + iy * stride_y + iz;
+                let s0 = sdf[g0] < 0.0;
                 let sz = sdf[g0 + stride_z] < 0.0;
                 if s0 != sz {
                     let c0 = cell_to_vert[(ix - 1) * stride_x + (iy - 1) * stride_y + iz];
                     let c1 = cell_to_vert[ix * stride_x + (iy - 1) * stride_y + iz];
                     let c2 = cell_to_vert[ix * stride_x + iy * stride_y + iz];
                     let c3 = cell_to_vert[(ix - 1) * stride_x + iy * stride_y + iz];
-                    emit_quad(c0, c1, c2, c3, !s0);
+                    emit_quad(&mut triangles, c0, c1, c2, c3, !s0);
                 }
             }
         }
     }
 
-    // 5. Build spatial grid of chain atoms to compute exact analytical normals and project
+    // 6. Build spatial grid of chain atoms to compute exact analytical normals and project
     //    smoothed Surface Net vertices directly onto the exact phi(p) = 0 isosurface
     let max_reach = MAX_VDW_RADIUS_A + SURFACE_SHELL_INFLATE_A + SURFACE_SMOOTH_UNION_K_A + 1.5;
     let mut atom_grid = SpatialGrid::new(max_reach);
@@ -515,6 +600,9 @@ pub fn build_chain_surface_mesh_with_preset(
         atom_grid.insert(a_idx as u32, complex.atoms[a_idx].pos_3d);
     }
 
+    // Constrained Elastic Surface Net relaxation (Gibson 1998):
+    // Smooth dual vertices while strictly constraining each vertex to remain inside its voxel cell
+    // bounding box. This prevents high-curvature bulges (single atoms) from collapsing past their neighbors.
     for _ in 0..SURFACE_SMOOTH_PASSES {
         let mut accum = vec![Vec3::ZERO; dual_positions.len()];
         let mut counts = vec![0.0_f32; dual_positions.len()];
@@ -531,12 +619,14 @@ pub fn build_chain_surface_mesh_with_preset(
         for i in 0..dual_positions.len() {
             if counts[i] > 0.0 {
                 let avg = accum[i] / counts[i];
-                dual_positions[i] = dual_positions[i].lerp(avg, 0.45);
+                let cell_min = dual_cell_min[i];
+                let cell_max = cell_min + Vec3::splat(step);
+                dual_positions[i] = dual_positions[i].lerp(avg, 0.45).clamp(cell_min, cell_max);
             }
         }
     }
 
-    // 6. Project each vertex onto the exact smooth-union zero isosurface and compute analytical normal
+    // 7. Project each vertex onto the exact smooth-union zero isosurface and compute analytical normal
     //    plus true nearest atom in the chain
     let mut normals = Vec::with_capacity(dual_positions.len());
     let mut vertices = Vec::with_capacity(dual_positions.len());
@@ -574,6 +664,12 @@ pub fn build_chain_surface_mesh_with_preset(
                 p -= grad * (phi * 0.65);
             }
         }
+
+        // Constrain projected vertex to remain within voxel cell plus small slack (15% of step)
+        let cell_min = dual_cell_min[v_idx];
+        let cell_max = cell_min + Vec3::splat(step);
+        let slack = Vec3::splat(step * 0.15);
+        p = p.clamp(cell_min - slack, cell_max + slack);
 
         dual_nearest_atom[v_idx] = best_atom;
         vertices.push(p.to_array());
@@ -649,114 +745,6 @@ pub fn merge_mesh_vertices_by_distance(mesh: &SurfaceMesh, merge_dist_a: f32) ->
     welded
 }
 
-// ============================================================================
-// Inter-Chain Interface Separator Sheet Mesh Builder
-// ============================================================================
-
-/// Builds an approximated 3D inter-chain interface surface sheet mesh separating `SideA` and `SideB`.
-/// In the `Complex` tab, this mesh floats directly between the interacting chains when
-/// `Display Interface` is set to `Smoothed SDF Sheet`.
-pub fn build_interface_sheet_mesh(
-    plane: &ProjectionPlane,
-    nodes: &[AtomNode],
-    edges: &[InterfaceEdge],
-) -> SurfaceMesh {
-    let origin = Vec3::from(plane.origin);
-    let axis_u = Vec3::from(plane.axis_u);
-    let axis_v = Vec3::from(plane.axis_v);
-    let normal = Vec3::from(plane.normal);
-
-    // Collect 3D midpoints of all cross-interface contacts projected into (u, v, h)
-    let mut midpoints_uvh: Vec<(Vec2, f32, GlobalAtomIdx)> = Vec::new();
-    for edge in edges {
-        if !edge.is_cross_interface {
-            continue;
-        }
-        let na = &nodes[edge.a.0 as usize];
-        let nb = &nodes[edge.b.0 as usize];
-        let mid_3d = 0.5 * (Vec3::from(na.pos_3d) + Vec3::from(nb.pos_3d));
-        let rel = mid_3d - origin;
-        let uv = Vec2::new(rel.dot(axis_u), rel.dot(axis_v));
-        let h = rel.dot(normal);
-        midpoints_uvh.push((uv, h, na.global_atom));
-    }
-
-    if midpoints_uvh.is_empty() {
-        return SurfaceMesh::default();
-    }
-
-    let mut min_uv = Vec2::splat(f32::INFINITY);
-    let mut max_uv = Vec2::splat(f32::NEG_INFINITY);
-    for &(uv, _, _) in &midpoints_uvh {
-        min_uv = min_uv.min(uv);
-        max_uv = max_uv.max(uv);
-    }
-    min_uv -= Vec2::splat(SHEET_UV_PADDING_A);
-    max_uv += Vec2::splat(SHEET_UV_PADDING_A);
-
-    let grid_n = SHEET_GRID_RES;
-    let step_u = (max_uv.x - min_uv.x).max(1.0) / ((grid_n - 1) as f32);
-    let step_v = (max_uv.y - min_uv.y).max(1.0) / ((grid_n - 1) as f32);
-    let sigma_sq = SHEET_GAUSSIAN_SIGMA_A * SHEET_GAUSSIAN_SIGMA_A;
-    let footprint_r2 = SHEET_FOOTPRINT_RADIUS_A * SHEET_FOOTPRINT_RADIUS_A;
-
-    let mut mesh = SurfaceMesh::default();
-    let mut grid_to_vert = vec![u32::MAX; grid_n * grid_n];
-
-    for iu in 0..grid_n {
-        for iv in 0..grid_n {
-            let uv = Vec2::new(
-                min_uv.x + (iu as f32) * step_u,
-                min_uv.y + (iv as f32) * step_v,
-            );
-
-            let mut w_sum = 0.0_f32;
-            let mut h_sum = 0.0_f32;
-            let mut best_d2 = f32::INFINITY;
-            let mut nearest_atom = midpoints_uvh[0].2;
-
-            for &(m_uv, m_h, g_atom) in &midpoints_uvh {
-                let d2 = uv.distance_squared(m_uv);
-                if d2 < best_d2 {
-                    best_d2 = d2;
-                    nearest_atom = g_atom;
-                }
-                let w = (-d2 / (2.0 * sigma_sq)).exp();
-                w_sum += w;
-                h_sum += w * m_h;
-            }
-
-            // Only emit vertices within the active contact footprint
-            if best_d2 <= footprint_r2 && w_sum > 1e-4 {
-                let h = h_sum / w_sum;
-                let pos_3d = origin + uv.x * axis_u + uv.y * axis_v + h * normal;
-                let v_idx = mesh.vertices.len() as u32;
-                mesh.vertices.push(pos_3d.to_array());
-                mesh.normals.push(normal.to_array());
-                mesh.nearest_atom.push(nearest_atom);
-                grid_to_vert[iu * grid_n + iv] = v_idx;
-            }
-        }
-    }
-
-    for iu in 0..(grid_n - 1) {
-        for iv in 0..(grid_n - 1) {
-            let v00 = grid_to_vert[iu * grid_n + iv];
-            let v10 = grid_to_vert[(iu + 1) * grid_n + iv];
-            let v01 = grid_to_vert[iu * grid_n + (iv + 1)];
-            let v11 = grid_to_vert[(iu + 1) * grid_n + (iv + 1)];
-
-            if v00 != u32::MAX && v10 != u32::MAX && v11 != u32::MAX {
-                mesh.triangles.push([v00, v10, v11]);
-            }
-            if v00 != u32::MAX && v11 != u32::MAX && v01 != u32::MAX {
-                mesh.triangles.push([v00, v11, v01]);
-            }
-        }
-    }
-
-    mesh
-}
 
 #[cfg(test)]
 mod tests {

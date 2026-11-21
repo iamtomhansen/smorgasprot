@@ -64,6 +64,7 @@ pub enum SecStruct {
 /// Layer 1: Full 3D complex containing all loaded protein chains and the active SideA / SideB partition.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ComplexStructure {
+    /// User-facing name of the complex (e.g. "7JVB", "nanobody-spike receptor", "my_cool_proteins", etc.)
     pub name: String,
     pub group_a_name: String,
     pub group_b_name: String,
@@ -92,6 +93,7 @@ impl ComplexStructure {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ChainRecord {
     pub idx: ChainIdx,
+    /// The chain's PDB-style name as a string (e.g. "A", "B", etc.)
     pub chain_id: String,
     pub residue_range: (u32, u32),
     pub atom_range: (u32, u32),
@@ -155,7 +157,7 @@ pub struct InterfaceMap {
     pub territories: Vec<ResidueTerritory>,
     pub nodes: Vec<AtomNode>,
     pub edges: Vec<InterfaceEdge>,
-    /// Approximated 3D interface mid-surface sheet mesh separating SideA and SideB (for Cartoon mode).
+    /// Approximated 3D interface mid-surface sheet mesh separating SideA and SideB.
     pub interface_sheet_mesh: SurfaceMesh,
 }
 
@@ -225,12 +227,16 @@ pub struct AtomInteraction {
     pub overlap_a: f32,
 }
 
-/// A unified undirected edge between two [`AtomNode`]s in [`InterfaceMap::edges`].
+/// A unified non-directional edge between two [`AtomNode`]s in [`InterfaceMap::edges`].
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct InterfaceEdge {
+    /// Node index of the first atom in the edge (arbitrarily chosen).
     pub a: AtomNodeIdx,
+    /// Node index of the second atom in the edge (arbitrarily chosen).
     pub b: AtomNodeIdx,
+    /// If the edge connects atoms from different sides of the interface.
     pub is_cross_interface: bool,
+    /// Classification of the edge type (covalent, van der Waals, hydrogen bond, etc.).
     pub kind: EdgeKind,
     /// True 3D Euclidean distance between atoms `a` and `b` (at `flatten_t = 0.0`).
     pub dist_3d_a: f32,
@@ -238,5 +244,6 @@ pub struct InterfaceEdge {
     pub dist_2d_a: f32,
     /// Signed 2D metric distortion (`dist_2d_a - dist_3d_a`: positive = stretched, negative = compressed).
     pub strain_2d_a: f32,
+    /// Calculated steric overlap between atoms `a` and `b`.
     pub overlap_a: f32,
 }

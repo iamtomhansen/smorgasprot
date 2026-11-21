@@ -6,8 +6,8 @@ use crate::model::{
     AtomNode, ComplexStructure, EdgeKind, InterfaceEdge, InterfaceMap, InterfaceSide,
     ProjectionPlane, ResidueTerritory,
 };
+use crate::interface_model::build_interface_sheet_mesh;
 use crate::physics::extract_3d_interface_graph;
-use crate::surface::build_interface_sheet_mesh;
 use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 
