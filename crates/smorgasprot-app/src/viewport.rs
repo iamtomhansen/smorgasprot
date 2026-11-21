@@ -494,18 +494,33 @@ const HTML_TEMPLATE: &str = r##"<!DOCTYPE html>
           <span id="cx-surface-alpha-val">0.82</span>
         </label>
         <input type="range" id="cx-surface-alpha" min="0.05" max="1" step="0.03" value="0.82">
+        <label class="checkbox-row" style="margin-top:2px;">
+          <input type="checkbox" id="cx-cull-backfaces">
+          <span>Cull Surface Backfaces (Faster / Single-Wall Alpha)</span>
+        </label>
 
         <div class="ctx-sep"></div>
 
         <label class="checkbox-row">
           <input type="checkbox" id="cx-show-cartoon" checked>
-          <span><strong>Cartoon Ribbon</strong> (+ Inter-Chain Sheet Mesh)</span>
+          <span><strong>Cartoon Ribbon</strong> (Cα Backbone Trace)</span>
         </label>
         <label>
           <span>Cartoon Alpha</span>
           <span id="cx-cartoon-alpha-val">0.70</span>
         </label>
         <input type="range" id="cx-cartoon-alpha" min="0.05" max="1" step="0.03" value="0.70">
+
+        <div class="ctx-sep"></div>
+
+        <label>
+          <span><strong>Display Interface</strong></span>
+          <select id="cx-interface-mode" style="min-width:145px;">
+            <option value="Sdf" selected>Smoothed SDF Sheet</option>
+            <option value="Envelope">Raw 2-Sided Envelope</option>
+            <option value="Off">Off</option>
+          </select>
+        </label>
 
         <div class="ctx-sep"></div>
 
@@ -674,8 +689,10 @@ const state = {
   // Complex Tab state
   cxShowSurface: true,
   cxSurfaceAlpha: 0.82,
+  cxCullBackfaces: false,
   cxShowCartoon: true,
   cxCartoonAlpha: 0.70,
+  cxInterfaceMode: "Sdf", // "Off" | "Sdf" | "Envelope"
   cxShowSpheres: false,
   cxSpheresAlpha: 0.90,
   explodeT: 0.0,
@@ -834,12 +851,15 @@ function renderComplexTab(W, H, ds) {
     interfacialGlobalAtoms.add(n.global_atom);
   }
 
-  // 1. Collect and depth-sort 3D surface mesh triangles across all chains (+ inter-chain interface sheet in Cartoon mode)
+  // 1. Collect and depth-sort 3D surface mesh triangles across all chains (+ interface representation)
   const drawTriangles = [];
+  const showFullSurface = state.cxShowSurface && state.cxSurfaceAlpha > 0.02;
+  const showEnvelopeOnly = !showFullSurface && state.cxInterfaceMode === "Envelope";
 
-  if (state.cxShowSurface && state.cxSurfaceAlpha > 0.02) {
+  if (showFullSurface || showEnvelopeOnly) {
     for (const ch of ds.chains) {
       const role = getChainRole(ds, ch.chain_id);
+      if (showEnvelopeOnly && role === "Unassigned") continue;
       const explodeShift = getExplodeOffsetLocal(role);
       const mesh = ch.surface_mesh;
 
@@ -852,35 +872,44 @@ function renderComplexTab(W, H, ds) {
 
       for (const [i0, i1, i2] of mesh.triangles) {
         const v0 = projVerts[i0], v1 = projVerts[i1], v2 = projVerts[i2];
-        const depth = (v0.depth + v1.depth + v2.depth) / 3.0;
         const ifaceCount = (v0.isInterfacial ? 1 : 0) + (v1.isInterfacial ? 1 : 0) + (v2.isInterfacial ? 1 : 0);
+
+        if (showEnvelopeOnly && ifaceCount === 0) continue;
+
+        // Optional 2D screen-space backface culling (toggled by user via "Cull Surface Backfaces"):
+        // Note: Canvas screen Y points DOWNWARD, which flips the 2D cross-product sign of CCW triangles!
+        if (state.cxCullBackfaces && showFullSurface && ifaceCount === 0) {
+          const crossZ = (v1.sx - v0.sx) * (v2.sy - v0.sy) - (v1.sy - v0.sy) * (v2.sx - v0.sx);
+          if (crossZ >= 0.0) continue;
+        }
+
+        const depth = (v0.depth + v1.depth + v2.depth) / 3.0;
         // Simple directional shading from normal
         const nx = (v0.normal[0] + v1.normal[0] + v2.normal[0]) / 3;
         const ny = (v0.normal[1] + v1.normal[1] + v2.normal[1]) / 3;
         const nz = (v0.normal[2] + v1.normal[2] + v2.normal[2]) / 3;
         const shade = Math.max(0.35, Math.min(1.0, 0.65 + 0.35 * (nx * 0.3 + ny * 0.5 + nz * 0.8)));
 
-        let fillColor, strokeColor, alpha;
+        let fillColor, strokeColor = null, alpha;
+        const isEnvelopeHighlight = ifaceCount >= 1 && state.cxInterfaceMode === "Envelope";
+
         if (role === "Unassigned") {
           // Desaturated structural context for non-interface chains (e.g. B and D in 7JVB)
           const g = Math.round(165 * shade);
           fillColor = `rgb(${g}, ${g+5}, ${g+12})`;
-          strokeColor = "rgba(100,116,139,0.22)";
           alpha = state.cxSurfaceAlpha * 0.45;
-        } else if (ifaceCount >= 1) {
-          // Highlighted interfacial vertices on the molecular surface!
+        } else if (isEnvelopeHighlight) {
+          // Raw 2-Sided Envelope: interfacial surface triangles from both Group A and Group B
           fillColor = role === "SideA" ? "#facc15" : "#a855f7";
-          strokeColor = "#0f172a";
-          alpha = Math.min(1.0, state.cxSurfaceAlpha + 0.15);
+          strokeColor = "rgba(15, 23, 42, 0.55)";
+          alpha = showFullSurface ? Math.min(1.0, state.cxSurfaceAlpha + 0.15) : 0.88;
         } else if (role === "SideA") {
           const r = Math.round(14 * shade), g = Math.round(165 * shade), b = Math.round(233 * shade);
           fillColor = `rgb(${r}, ${g}, ${b})`;
-          strokeColor = "rgba(2,132,199,0.28)";
           alpha = state.cxSurfaceAlpha;
         } else {
           const r = Math.round(249 * shade), g = Math.round(115 * shade), b = Math.round(22 * shade);
           fillColor = `rgb(${r}, ${g}, ${b})`;
-          strokeColor = "rgba(234,88,12,0.28)";
           alpha = state.cxSurfaceAlpha;
         }
 
@@ -894,14 +923,15 @@ function renderComplexTab(W, H, ds) {
     }
   }
 
-  // If Cartoon mode is active, draw the Approximated Inter-Chain Interface Sheet Mesh between Group A and Group B!
-  if (state.cxShowCartoon && state.cxCartoonAlpha > 0.02 && map.interface_sheet_mesh.triangles.length > 0) {
+  // If Display Interface == "Sdf", draw the smoothed Inter-Chain Interface Sheet Mesh between Group A and Group B
+  if (state.cxInterfaceMode === "Sdf" && map.interface_sheet_mesh.triangles.length > 0) {
     const sheet = map.interface_sheet_mesh;
     const projSheet = sheet.vertices.map(v3d => {
       const loc = worldToPlaneLocal(v3d, plane);
       const scr = projectLocalPoint(loc, W, H);
       return { sx: scr[0], sy: scr[1], depth: scr[2] };
     });
+    const sheetAlpha = state.cxShowCartoon ? Math.max(0.55, state.cxCartoonAlpha * 0.88) : 0.82;
     for (const [i0, i1, i2] of sheet.triangles) {
       const v0 = projSheet[i0], v1 = projSheet[i1], v2 = projSheet[i2];
       drawTriangles.push({
@@ -911,14 +941,15 @@ function renderComplexTab(W, H, ds) {
         depth: (v0.depth + v1.depth + v2.depth) / 3.0,
         fillColor: "rgba(250, 204, 21, 0.72)",
         strokeColor: "rgba(217, 119, 6, 0.85)",
-        alpha: state.cxCartoonAlpha * 0.88
+        alpha: sheetAlpha
       });
     }
   }
 
   drawTriangles.sort((a, b) => a.depth - b.depth);
+  ctx.save();
+  ctx.lineWidth = 0.65;
   for (const tri of drawTriangles) {
-    ctx.save();
     ctx.globalAlpha = tri.alpha;
     ctx.beginPath();
     ctx.moveTo(tri.x0, tri.y0);
@@ -927,11 +958,12 @@ function renderComplexTab(W, H, ds) {
     ctx.closePath();
     ctx.fillStyle = tri.fillColor;
     ctx.fill();
-    ctx.strokeStyle = tri.strokeColor;
-    ctx.lineWidth = 0.65;
-    ctx.stroke();
-    ctx.restore();
+    if (tri.strokeColor) {
+      ctx.strokeStyle = tri.strokeColor;
+      ctx.stroke();
+    }
   }
+  ctx.restore();
 
   // 2. Draw Cartoon Backbone Ribbons
   if (state.cxShowCartoon && state.cxCartoonAlpha > 0.02) {
@@ -1738,13 +1770,19 @@ document.getElementById("group-b-name-input").addEventListener("input", (e) => {
 });
 
 // Complex Tab Representation controls
-["cx-show-surface", "cx-show-cartoon", "cx-show-spheres"].forEach(id => {
+["cx-show-surface", "cx-cull-backfaces", "cx-show-cartoon", "cx-show-spheres"].forEach(id => {
   document.getElementById(id).addEventListener("change", () => {
     state.cxShowSurface = document.getElementById("cx-show-surface").checked;
+    state.cxCullBackfaces = document.getElementById("cx-cull-backfaces").checked;
     state.cxShowCartoon = document.getElementById("cx-show-cartoon").checked;
     state.cxShowSpheres = document.getElementById("cx-show-spheres").checked;
     render();
   });
+});
+
+document.getElementById("cx-interface-mode").addEventListener("change", (e) => {
+  state.cxInterfaceMode = e.target.value;
+  render();
 });
 
 document.getElementById("cx-surface-alpha").addEventListener("input", (e) => {

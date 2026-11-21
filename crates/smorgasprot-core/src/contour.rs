@@ -30,7 +30,7 @@ const SMIN_BLEND_A: f32 = 0.65;
 /// Half-width of thin spanning-tree bridge capsules ensuring all atoms of a residue form a single connected contour.
 const BRIDGE_CAPSULE_RADIUS_A: f32 = 0.58;
 /// Half-gap clearance left between adjacent same-side residue territory contours (in Angstroms).
-const VORONOI_GAP_A: f32 = 0.08;
+const VORONOI_GAP_A: f32 = 0.05;
 /// Grid resolution (N x N) used per residue bounding box for Marching Squares contour extraction.
 const SDF_GRID_RES: usize = 36;
 /// Gaussian kernel width sigma (in Angstroms) used to drape 2D contour vertices onto 3D atomic relief.

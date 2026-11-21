@@ -1,4 +1,5 @@
-//! Core geometry, SASA, 3D surface mesh, 2D tangent-plane relaxation, and sidechain physics engine for Smorgasprot.
+//! Core molecular math (geometry, secondary structure, interatomic forces, etc.)
+//! and presentation logic (2D projection, flattening, contouring).
 
 pub mod amino_acids;
 pub mod contour;
