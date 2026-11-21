@@ -9,4 +9,8 @@ functions works to preserve those distances while flattening nodes into 2D space
 and analysis.
 
 # Human explanation
-Opens a protein complex like a sandwich.
+Opens a protein complex like a sandwich 🥪. For a protein surface from a 3D structure, you can:
+- Set an interface
+- Calculate its interaction physics
+- Create beautiful and useful visualizations
+- (Coming soon) Modify it

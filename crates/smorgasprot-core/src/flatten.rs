@@ -6,7 +6,6 @@ use crate::model::{
     AtomNode, ComplexStructure, EdgeKind, InterfaceEdge, InterfaceMap, InterfaceSide,
     ProjectionPlane, ResidueTerritory,
 };
-use crate::interface_model::build_interface_sheet_mesh;
 use crate::physics::extract_3d_interface_graph;
 use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
@@ -129,9 +128,6 @@ pub fn build_interface_map(
     // 6. Compute Voronoi-clipped smooth concave residue territory contours & 3D relief outlines
     compute_territory_contours(&mut territories, &nodes, &plane);
 
-    // 7. Compute 3D inter-chain interface separator sheet mesh (for Cartoon mode in Complex tab)
-    let interface_sheet_mesh = build_interface_sheet_mesh(&plane, &nodes, &edges);
-
     let side_a_atoms = nodes
         .iter()
         .filter(|n| n.role == InterfaceSide::SideA)
@@ -162,7 +158,6 @@ pub fn build_interface_map(
         territories,
         nodes,
         edges,
-        interface_sheet_mesh,
     };
 
     Ok((map, stats))
@@ -589,7 +584,8 @@ mod tests {
             assert_eq!(t.contour_uv.len(), t.contour_3d.len());
             assert!(t.contour_uv.len() >= 12);
         }
-        assert!(!map_7jvb.interface_sheet_mesh.vertices.is_empty());
+        assert!(!map_7jvb.nodes.is_empty());
+        assert!(!map_7jvb.edges.is_empty());
 
         let c_lx = load_complex(
             "../../examples/fold_r8s15_mp3_model_0.cif",

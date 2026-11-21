@@ -6,7 +6,7 @@ pub mod contour;
 pub mod dssp;
 pub mod flatten;
 pub mod ingest;
-pub mod interface_model;
+pub mod interface_geometry;
 pub mod minimize;
 pub mod model;
 pub mod physics;

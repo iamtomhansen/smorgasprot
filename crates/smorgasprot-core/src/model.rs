@@ -157,8 +157,19 @@ pub struct InterfaceMap {
     pub territories: Vec<ResidueTerritory>,
     pub nodes: Vec<AtomNode>,
     pub edges: Vec<InterfaceEdge>,
+}
+
+/// Derived 3D interface geometric and visual representations (sheet, envelope, and negative voids).
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct InterfaceGeometry {
     /// Approximated 3D interface mid-surface sheet mesh separating SideA and SideB.
-    pub interface_sheet_mesh: SurfaceMesh,
+    pub sheet_mesh: SurfaceMesh,
+    /// 3D two-sided interface contact envelope mesh (duplicated in-place from interacting surfaces).
+    pub envelope_mesh: SurfaceMesh,
+    /// 3D negative-space interface void / sub-solvent cavity mesh.
+    pub negative_mesh: SurfaceMesh,
+    /// Total enclosed physical volume of the sub-solvent interfacial voids in cubic Angstroms (Å³).
+    pub void_volume_a3: f32,
 }
 
 /// The bounded 2D/3D territory on the interface map corresponding to a single residue.

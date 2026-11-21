@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 use smorgasprot_core::{
-    ChainIdx, ComplexStructure, Element, InterfaceMap, SurfaceMesh,
+    ChainIdx, ComplexStructure, Element, InterfaceGeometry, InterfaceMap, SurfaceMesh,
     flatten::FlatteningStats,
     surface::build_chain_surface_mesh,
 };
@@ -37,6 +37,7 @@ pub struct ViewerDataset {
     pub group_b_chains: Vec<String>,
     pub chains: Vec<ChainVisualData>,
     pub map: InterfaceMap,
+    pub geometry: InterfaceGeometry,
     pub atom_meta: Vec<AtomMeta>,
     pub stats: FlatteningStats,
 }
@@ -50,6 +51,7 @@ impl ViewerDataset {
         stats: FlatteningStats,
     ) -> Self {
         let mut chains = Vec::with_capacity(complex.chains.len());
+        let mut chain_meshes = Vec::with_capacity(complex.chains.len());
         for (c_idx, chain_rec) in complex.chains.iter().enumerate() {
             let mut ca_positions = Vec::new();
             for r_idx in chain_rec.residue_range.0..chain_rec.residue_range.1 {
@@ -64,6 +66,7 @@ impl ViewerDataset {
             }
 
             let surface_mesh = build_chain_surface_mesh(complex, ChainIdx(c_idx as u32));
+            chain_meshes.push(surface_mesh.clone());
             chains.push(ChainVisualData {
                 chain_id: chain_rec.chain_id.clone(),
                 residue_count: (chain_rec.residue_range.1 - chain_rec.residue_range.0) as usize,
@@ -72,6 +75,12 @@ impl ViewerDataset {
                 surface_mesh,
             });
         }
+
+        let geometry = smorgasprot_core::interface_geometry::build_interface_geometry(
+            complex,
+            &map,
+            &chain_meshes,
+        );
 
         let atom_meta = map
             .nodes
@@ -106,6 +115,7 @@ impl ViewerDataset {
             group_b_chains: complex.group_b_chains.clone(),
             chains,
             map,
+            geometry,
             atom_meta,
             stats,
         }
@@ -517,10 +527,20 @@ const HTML_TEMPLATE: &str = r##"<!DOCTYPE html>
           <span><strong>Display Interface</strong></span>
           <select id="cx-interface-mode" style="min-width:145px;">
             <option value="Sdf" selected>Smoothed SDF Sheet</option>
-            <option value="Envelope">Raw 2-Sided Envelope</option>
+            <option value="Envelope">2-Sided Contact Envelope</option>
+            <option value="NegativeSpace">Negative Space (Sub-Solvent Voids)</option>
             <option value="Off">Off</option>
           </select>
         </label>
+        <div id="cx-void-volume-badge" style="display:none; font-size:11px; color:#22d3ee; padding:4px 8px; background:rgba(6,182,212,0.12); border:1px solid rgba(6,182,212,0.3); border-radius:6px; justify-content:space-between; align-items:center;">
+          <span>Sub-Solvent Void Vol:</span>
+          <strong id="cx-void-volume-val">0.0 Å³</strong>
+        </div>
+        <label id="cx-iface-alpha-row">
+          <span>Interface Opacity</span>
+          <span id="cx-iface-alpha-val">0.85</span>
+        </label>
+        <input type="range" id="cx-iface-alpha" min="0.05" max="1" step="0.03" value="0.85">
 
         <div class="ctx-sep"></div>
 
@@ -699,7 +719,8 @@ const state = {
   cxCullBackfaces: false,
   cxShowCartoon: true,
   cxCartoonAlpha: 0.70,
-  cxInterfaceMode: "Sdf", // "Off" | "Sdf" | "Envelope"
+  cxInterfaceMode: "Sdf", // "Off" | "Sdf" | "Envelope" | "NegativeSpace"
+  cxInterfaceAlpha: 0.85,
   cxShowSpheres: false,
   cxSpheresAlpha: 0.90,
   explodeT: 0.0,
@@ -787,6 +808,17 @@ function getChainRole(ds, chainId) {
   return "Unassigned";
 }
 
+function getGlobalAtomRole(ds, globalAtomIdx) {
+  let accum = 0;
+  for (const ch of ds.chains) {
+    if (globalAtomIdx >= accum && globalAtomIdx < accum + ch.atom_count) {
+      return getChainRole(ds, ch.chain_id);
+    }
+    accum += ch.atom_count;
+  }
+  return "Unassigned";
+}
+
 function getExplodeOffsetLocal(role) {
   const maxExplodeA = 24.0;
   const d = 0.5 * state.explodeT * maxExplodeA;
@@ -867,34 +899,28 @@ function renderComplexTab(W, H, ds) {
     interfacialGlobalAtoms.add(n.global_atom);
   }
 
-  // 1. Collect and depth-sort 3D surface mesh triangles across all chains (+ interface representation)
+  // 1. Collect and depth-sort 3D surface mesh triangles across all chains
   const drawTriangles = [];
   const showFullSurface = state.cxShowSurface && state.cxSurfaceAlpha > 0.02;
-  const showEnvelopeOnly = !showFullSurface && state.cxInterfaceMode === "Envelope";
 
-  if (showFullSurface || showEnvelopeOnly) {
+  if (showFullSurface) {
     for (const ch of ds.chains) {
       const role = getChainRole(ds, ch.chain_id);
-      if (showEnvelopeOnly && role === "Unassigned") continue;
       const explodeShift = getExplodeOffsetLocal(role);
       const mesh = ch.surface_mesh;
 
       const projVerts = mesh.vertices.map((v3d, vIdx) => {
         const loc = vec3Add(worldToPlaneLocal(v3d, plane), explodeShift);
         const scr = projectLocalPoint(loc, W, H);
-        const isInterfacial = role !== "Unassigned" && interfacialGlobalAtoms.has(mesh.nearest_atom[vIdx]);
-        return { sx: scr[0], sy: scr[1], depth: scr[2], isInterfacial, normal: mesh.normals[vIdx] };
+        return { sx: scr[0], sy: scr[1], depth: scr[2], normal: mesh.normals[vIdx] };
       });
 
       for (const [i0, i1, i2] of mesh.triangles) {
         const v0 = projVerts[i0], v1 = projVerts[i1], v2 = projVerts[i2];
-        const ifaceCount = (v0.isInterfacial ? 1 : 0) + (v1.isInterfacial ? 1 : 0) + (v2.isInterfacial ? 1 : 0);
-
-        if (showEnvelopeOnly && ifaceCount === 0) continue;
 
         // Optional 2D screen-space backface culling (toggled by user via "Cull Surface Backfaces"):
         // Note: Canvas screen Y points DOWNWARD, which flips the 2D cross-product sign of CCW triangles!
-        if (state.cxCullBackfaces && showFullSurface && ifaceCount === 0) {
+        if (state.cxCullBackfaces) {
           const crossZ = (v1.sx - v0.sx) * (v2.sy - v0.sy) - (v1.sy - v0.sy) * (v2.sx - v0.sx);
           if (crossZ >= 0.0) continue;
         }
@@ -907,18 +933,12 @@ function renderComplexTab(W, H, ds) {
         const shade = Math.max(0.35, Math.min(1.0, 0.65 + 0.35 * (nx * 0.3 + ny * 0.5 + nz * 0.8)));
 
         let fillColor, strokeColor = null, alpha;
-        const isEnvelopeHighlight = ifaceCount >= 1 && state.cxInterfaceMode === "Envelope";
 
         if (role === "Unassigned") {
           // Desaturated structural context for non-interface chains (e.g. B and D in 7JVB)
           const g = Math.round(165 * shade);
           fillColor = `rgb(${g}, ${g+5}, ${g+12})`;
           alpha = state.cxSurfaceAlpha * 0.45;
-        } else if (isEnvelopeHighlight) {
-          // Raw 2-Sided Envelope: interfacial surface triangles from both Group A and Group B
-          fillColor = role === "SideA" ? "#facc15" : "#a855f7";
-          strokeColor = "rgba(15, 23, 42, 0.55)";
-          alpha = showFullSurface ? Math.min(1.0, state.cxSurfaceAlpha + 0.15) : 0.88;
         } else if (role === "SideA") {
           const r = Math.round(14 * shade), g = Math.round(165 * shade), b = Math.round(233 * shade);
           fillColor = `rgb(${r}, ${g}, ${b})`;
@@ -939,26 +959,92 @@ function renderComplexTab(W, H, ds) {
     }
   }
 
-  // If Display Interface == "Sdf", draw the smoothed Inter-Chain Interface Sheet Mesh between Group A and Group B
-  if (state.cxInterfaceMode === "Sdf" && map.interface_sheet_mesh.triangles.length > 0) {
-    const sheet = map.interface_sheet_mesh;
-    const projSheet = sheet.vertices.map(v3d => {
-      const loc = worldToPlaneLocal(v3d, plane);
-      const scr = projectLocalPoint(loc, W, H);
-      return { sx: scr[0], sy: scr[1], depth: scr[2] };
-    });
-    const sheetAlpha = state.cxShowCartoon ? Math.max(0.55, state.cxCartoonAlpha * 0.88) : 0.82;
-    for (const [i0, i1, i2] of sheet.triangles) {
-      const v0 = projSheet[i0], v1 = projSheet[i1], v2 = projSheet[i2];
-      drawTriangles.push({
-        x0: v0.sx, y0: v0.sy,
-        x1: v1.sx, y1: v1.sy,
-        x2: v2.sx, y2: v2.sy,
-        depth: (v0.depth + v1.depth + v2.depth) / 3.0,
-        fillColor: "rgba(250, 204, 21, 0.72)",
-        strokeColor: "rgba(217, 119, 6, 0.85)",
-        alpha: sheetAlpha
+  // 2. Collect Interface Model triangles (Independent representation & opacity)
+  if (state.cxInterfaceMode !== "Off" && state.cxInterfaceAlpha > 0.02 && ds.geometry) {
+    if (state.cxInterfaceMode === "Sdf" && ds.geometry.sheet_mesh && ds.geometry.sheet_mesh.triangles.length > 0) {
+      const sheet = ds.geometry.sheet_mesh;
+      const projSheet = sheet.vertices.map((v3d, vIdx) => {
+        const loc = worldToPlaneLocal(v3d, plane);
+        const scr = projectLocalPoint(loc, W, H);
+        return { sx: scr[0], sy: scr[1], depth: scr[2], normal: sheet.normals[vIdx] || [0, 0, 1] };
       });
+      for (const [i0, i1, i2] of sheet.triangles) {
+        const v0 = projSheet[i0], v1 = projSheet[i1], v2 = projSheet[i2];
+        const depth = (v0.depth + v1.depth + v2.depth) / 3.0;
+        const nx = (v0.normal[0] + v1.normal[0] + v2.normal[0]) / 3;
+        const ny = (v0.normal[1] + v1.normal[1] + v2.normal[1]) / 3;
+        const nz = (v0.normal[2] + v1.normal[2] + v2.normal[2]) / 3;
+        const shade = Math.max(0.35, Math.min(1.0, 0.65 + 0.35 * (nx * 0.3 + ny * 0.5 + nz * 0.8)));
+        const r = Math.round(250 * shade), g = Math.round(204 * shade), b = Math.round(21 * shade);
+        drawTriangles.push({
+          x0: v0.sx, y0: v0.sy,
+          x1: v1.sx, y1: v1.sy,
+          x2: v2.sx, y2: v2.sy,
+          depth,
+          fillColor: `rgb(${r}, ${g}, ${b})`,
+          strokeColor: "rgba(217, 119, 6, 0.85)",
+          alpha: state.cxInterfaceAlpha
+        });
+      }
+    } else if (state.cxInterfaceMode === "Envelope" && ds.geometry.envelope_mesh && ds.geometry.envelope_mesh.triangles.length > 0) {
+      const env = ds.geometry.envelope_mesh;
+      const projEnv = env.vertices.map((v3d, vIdx) => {
+        const role = getGlobalAtomRole(ds, env.nearest_atom[vIdx]);
+        const loc = worldToPlaneLocal(v3d, plane);
+        const scr = projectLocalPoint(loc, W, H);
+        return { sx: scr[0], sy: scr[1], depth: scr[2], normal: env.normals[vIdx], role };
+      });
+      for (const [i0, i1, i2] of env.triangles) {
+        const v0 = projEnv[i0], v1 = projEnv[i1], v2 = projEnv[i2];
+        const depth = (v0.depth + v1.depth + v2.depth) / 3.0;
+        const nx = (v0.normal[0] + v1.normal[0] + v2.normal[0]) / 3;
+        const ny = (v0.normal[1] + v1.normal[1] + v2.normal[1]) / 3;
+        const nz = (v0.normal[2] + v1.normal[2] + v2.normal[2]) / 3;
+        const shade = Math.max(0.35, Math.min(1.0, 0.65 + 0.35 * (nx * 0.3 + ny * 0.5 + nz * 0.8)));
+        const triRole = v0.role !== "Unassigned" ? v0.role : (v1.role !== "Unassigned" ? v1.role : v2.role);
+        let fillColor, strokeColor;
+        if (triRole === "SideA") {
+          const r = Math.round(250 * shade), g = Math.round(204 * shade), b = Math.round(21 * shade);
+          fillColor = `rgb(${r}, ${g}, ${b})`;
+          strokeColor = "rgba(180, 83, 9, 0.65)";
+        } else {
+          const r = Math.round(168 * shade), g = Math.round(85 * shade), b = Math.round(247 * shade);
+          fillColor = `rgb(${r}, ${g}, ${b})`;
+          strokeColor = "rgba(107, 33, 168, 0.65)";
+        }
+        drawTriangles.push({
+          x0: v0.sx, y0: v0.sy,
+          x1: v1.sx, y1: v1.sy,
+          x2: v2.sx, y2: v2.sy,
+          depth, fillColor, strokeColor,
+          alpha: state.cxInterfaceAlpha
+        });
+      }
+    } else if (state.cxInterfaceMode === "NegativeSpace" && ds.geometry.negative_mesh && ds.geometry.negative_mesh.triangles.length > 0) {
+      const neg = ds.geometry.negative_mesh;
+      const projNeg = neg.vertices.map((v3d, vIdx) => {
+        const loc = worldToPlaneLocal(v3d, plane);
+        const scr = projectLocalPoint(loc, W, H);
+        return { sx: scr[0], sy: scr[1], depth: scr[2], normal: neg.normals[vIdx] };
+      });
+      for (const [i0, i1, i2] of neg.triangles) {
+        const v0 = projNeg[i0], v1 = projNeg[i1], v2 = projNeg[i2];
+        const depth = (v0.depth + v1.depth + v2.depth) / 3.0;
+        const nx = (v0.normal[0] + v1.normal[0] + v2.normal[0]) / 3;
+        const ny = (v0.normal[1] + v1.normal[1] + v2.normal[1]) / 3;
+        const nz = (v0.normal[2] + v1.normal[2] + v2.normal[2]) / 3;
+        const shade = Math.max(0.35, Math.min(1.0, 0.65 + 0.35 * (nx * 0.3 + ny * 0.5 + nz * 0.8)));
+        const r = Math.round(6 * shade), g = Math.round(182 * shade), b = Math.round(212 * shade);
+        const fillColor = `rgb(${r}, ${g}, ${b})`;
+        const strokeColor = "rgba(14, 116, 144, 0.80)";
+        drawTriangles.push({
+          x0: v0.sx, y0: v0.sy,
+          x1: v1.sx, y1: v1.sy,
+          x2: v2.sx, y2: v2.sy,
+          depth, fillColor, strokeColor,
+          alpha: state.cxInterfaceAlpha
+        });
+      }
     }
   }
 
@@ -1590,6 +1676,7 @@ function updateInspector() {
 function updateStatsPanel() {
   const ds = currentDataset();
   const s = ds.stats;
+  const voidVol = ds.geometry ? ds.geometry.void_volume_a3.toFixed(1) : "0.0";
   document.getElementById("dataset-stats").innerHTML = `
     <div class="stat-box">
       <div class="stat-val" style="color:#38bdf8;">${s.side_a_atoms} / ${s.side_a_territories}</div>
@@ -1598,6 +1685,10 @@ function updateStatsPanel() {
     <div class="stat-box">
       <div class="stat-val" style="color:#fb923c;">${s.side_b_atoms} / ${s.side_b_territories}</div>
       <div class="stat-lbl">${ds.group_b_name} Atoms / Residues (${ds.group_b_chains.join(",") || "None"})</div>
+    </div>
+    <div class="stat-box" style="grid-column: span 2;">
+      <div class="stat-val" style="color:#22d3ee;">${voidVol} Å³</div>
+      <div class="stat-lbl">Interfacial Void Volume (Sub-Solvent Crevices ≤ 2.8 Å)</div>
     </div>
   `;
 
@@ -1777,6 +1868,7 @@ dsSelect.addEventListener("change", (e) => {
   buildChainMatrixUI();
   updateLegend();
   updateStatsPanel();
+  updateInterfaceModeUI();
   updateInspector();
   render();
 });
@@ -1810,8 +1902,33 @@ document.getElementById("group-b-name-input").addEventListener("input", (e) => {
   });
 });
 
+function updateInterfaceModeUI() {
+  const ds = currentDataset();
+  const alphaRow = document.getElementById("cx-iface-alpha-row");
+  const alphaSlider = document.getElementById("cx-iface-alpha");
+  const voidBadge = document.getElementById("cx-void-volume-badge");
+  const voidVal = document.getElementById("cx-void-volume-val");
+  if (alphaRow && alphaSlider) {
+    const isOff = state.cxInterfaceMode === "Off";
+    alphaRow.style.display = isOff ? "none" : "flex";
+    alphaSlider.style.display = isOff ? "none" : "block";
+  }
+  if (voidBadge && voidVal && ds && ds.geometry) {
+    const isNeg = state.cxInterfaceMode === "NegativeSpace";
+    voidBadge.style.display = isNeg ? "flex" : "none";
+    voidVal.textContent = `${ds.geometry.void_volume_a3.toFixed(1)} Å³`;
+  }
+}
+
 document.getElementById("cx-interface-mode").addEventListener("change", (e) => {
   state.cxInterfaceMode = e.target.value;
+  updateInterfaceModeUI();
+  render();
+});
+
+document.getElementById("cx-iface-alpha").addEventListener("input", (e) => {
+  state.cxInterfaceAlpha = parseFloat(e.target.value);
+  document.getElementById("cx-iface-alpha-val").textContent = state.cxInterfaceAlpha.toFixed(2);
   render();
 });
 
@@ -2210,6 +2327,7 @@ window.addEventListener("resize", render);
 buildChainMatrixUI();
 updateLegend();
 updateStatsPanel();
+updateInterfaceModeUI();
 updateInspector();
 render();
 </script>
