@@ -172,7 +172,9 @@ impl ColorMap {
 /// Top-level collection of discrete domain palettes and continuous colormaps stored in [`crate::state::UiState`].
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Palette {
+    /// Name of the currently active palette.
     pub active_name: String,
+    /// All loaded palettes from [`PALETTES_DIR`], including the active one.
     #[serde(skip)]
     pub available: Vec<ColorSwatches>,
     pub sides: InterfaceSidePalette,
