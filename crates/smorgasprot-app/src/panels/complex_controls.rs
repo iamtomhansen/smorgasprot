@@ -38,11 +38,11 @@ pub fn show(ui: &mut Ui, ds: &mut ViewerDataset, state: &mut UiState) {
         ui.horizontal(|ui| {
             ui.label("Palette:");
             egui::ComboBox::from_id_salt("color_palette_preset")
-                .selected_text(&state.palette.active_name)
+                .selected_text(&state.palette.name)
                 .width(ui.available_width())
                 .show_ui(ui, |ui| {
                     for s in &state.palette.available {
-                        if ui.selectable_label(s.name == state.palette.active_name, &s.name).clicked() {
+                        if ui.selectable_label(s.name == state.palette.name, &s.name).clicked() {
                             chosen = Some(s.name.clone());
                         }
                     }

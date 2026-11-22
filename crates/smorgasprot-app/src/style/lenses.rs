@@ -33,7 +33,7 @@ pub fn atom_fill_color(
             }
         }
         ColorLens::Chemistry => {
-            let ch = &palette.chemistry;
+            let ch = &palette.aa_chemistry;
             if node.aliphatic_score >= params.aliphatic_threshold {
                 return ch.aliphatic;
             }
@@ -80,7 +80,7 @@ pub fn legend(
             ]
         }
         ColorLens::Chemistry => {
-            let ch = &palette.chemistry;
+            let ch = &palette.aa_chemistry;
             vec![
                 (ch.aliphatic, "Aliphatic".into()),
                 (ch.aromatic, "Aromatic".into()),

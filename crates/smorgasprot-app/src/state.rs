@@ -57,7 +57,7 @@ impl Default for UiState {
             interface: InterfaceViewSettings::default(),
             selection: Selection::default(),
             view_params: ViewParams::default(),
-            palette: Palette::default(),
+            palette: Palette::load_default(),
         }
     }
 }

@@ -6,6 +6,6 @@ pub mod palette;
 pub mod sizing;
 
 pub use palette::{
-    ResidueChemistryPalette, ChromePalette, ColorMap, ColorSwatches, ContactPalette, ElementPalette, GizmoPalette,
-    InterfaceSidePalette, PALETTES_DIR, Palette,
+    AaChemistryPalette, ChromePalette, ColorMap, ContactPalette, ElementPalette, GizmoPalette, InterfaceSidePalette,
+    PALETTES_DIR, Palette,
 };

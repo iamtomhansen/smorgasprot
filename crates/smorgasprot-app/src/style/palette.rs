@@ -1,5 +1,5 @@
-//! Modular discrete palettes and continuous [`ColorMap`] gradients driven by `.ron` [`ColorSwatches`] files.
-//! Scans `assets/palettes/*.ron` to build a dynamic palette index; only the fallback default is compiled in.
+//! Modular discrete palettes and continuous [`ColorMap`] gradients with self-healing `.ron` deserialization.
+//! Every palette section has `#[serde(default)]`, so `.ron` files only need to specify the colors they override.
 
 use crate::camera::ViewAxis;
 use egui::Color32;
@@ -7,120 +7,26 @@ use serde::{Deserialize, Serialize};
 use smorgasprot_core::{EdgeKind, Element, InterfaceSide};
 use std::path::{Path, PathBuf};
 
-/// Default directory scanned for `.ron` palette swatch files.
+/// Default directory scanned for `.ron` palette files.
 pub const PALETTES_DIR: &str = "assets/palettes";
 
-/// Centralized color swatch table defining a named color scheme, loaded from or saved to `.ron` files.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct ColorSwatches {
-    pub name: String,
-    pub primary: Color32,
-    pub secondary: Color32,
-    pub blue: Color32,
-    pub cyan: Color32,
-    pub green: Color32,
-    pub yellow: Color32,
-    pub orange: Color32,
-    pub red: Color32,
-    pub purple: Color32,
-    pub neutral: Color32,
-    pub carbon: Color32,
-    pub mobility_stops: Vec<Color32>,
-}
-
-impl Default for ColorSwatches {
-    fn default() -> Self {
-        Self {
-            name: "Okabe-Ito (Colorblind-Safe)".into(),
-            primary: Color32::from_rgb(14, 165, 233),
-            secondary: Color32::from_rgb(249, 115, 22),
-            blue: Color32::from_rgb(37, 99, 235),
-            cyan: Color32::from_rgb(6, 182, 212),
-            green: Color32::from_rgb(34, 197, 94),
-            yellow: Color32::from_rgb(250, 204, 21),
-            orange: Color32::from_rgb(245, 158, 11),
-            red: Color32::from_rgb(239, 68, 68),
-            purple: Color32::from_rgb(168, 85, 247),
-            neutral: Color32::from_rgb(148, 163, 184),
-            carbon: Color32::from_rgb(71, 85, 105),
-            mobility_stops: vec![
-                Color32::from_rgb(0, 83, 214),
-                Color32::from_rgb(101, 203, 243),
-                Color32::from_rgb(255, 219, 19),
-                Color32::from_rgb(255, 125, 69),
-            ],
-        }
-    }
-}
-
-impl ColorSwatches {
-    /// Parses a [`ColorSwatches`] definition from a RON string.
-    pub fn from_ron_str(text: &str) -> Result<Self, String> {
-        ron::from_str(text).map_err(|e| format!("Failed to parse RON palette: {e}"))
-    }
-
-    /// Serializes this swatch table into a formatted RON string.
-    pub fn to_ron_string(&self) -> Result<String, String> {
-        ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default())
-            .map_err(|e| format!("Failed to serialize RON palette: {e}"))
-    }
-
-    /// Writes this swatch table to `<dir>/<file_stem>.ron`.
-    pub fn save_to_dir(&self, dir: impl AsRef<Path>, file_stem: &str) -> Result<PathBuf, String> {
-        let dir = dir.as_ref();
-        std::fs::create_dir_all(dir).map_err(|e| format!("Failed to create {}: {e}", dir.display()))?;
-        let path = dir.join(format!("{file_stem}.ron"));
-        let text = self.to_ron_string()?;
-        std::fs::write(&path, text).map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
-        Ok(path)
-    }
-
-    /// Loads all `*.ron` palette files in `dir`, falling back to [`Self::default()`] if none are found.
-    pub fn load_dir(dir: impl AsRef<Path>) -> Vec<Self> {
-        let mut palettes: Vec<Self> = std::fs::read_dir(dir.as_ref())
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("ron"))
-            .filter_map(|path| std::fs::read_to_string(&path).ok()?.parse_ron_logged(&path))
-            .collect();
-
-        if palettes.is_empty() {
-            palettes.push(Self::default());
-        } else {
-            let default_name = Self::default().name;
-            palettes.sort_by(|a, b| (a.name != default_name).cmp(&(b.name != default_name)).then(a.name.cmp(&b.name)));
-        }
-        palettes
-    }
-}
-
-trait ParseRonExt {
-    fn parse_ron_logged(&self, path: &Path) -> Option<ColorSwatches>;
-}
-
-impl ParseRonExt for str {
-    fn parse_ron_logged(&self, path: &Path) -> Option<ColorSwatches> {
-        match ColorSwatches::from_ron_str(self) {
-            Ok(swatches) => Some(swatches),
-            Err(e) => {
-                eprintln!("Warning: skipping invalid palette {}: {e}", path.display());
-                None
-            }
-        }
-    }
-}
-
-/// Continuous color ramp (`t in [0, 1] -> Color32`), where the stops define gradients.
+/// Continuous color ramp (`t in [0, 1] -> Color32`), supporting 2-stop gradients and multi-stop colormaps.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
 pub struct ColorMap {
     pub stops: Vec<Color32>,
 }
 
 impl Default for ColorMap {
     fn default() -> Self {
-        Self::from_stops(ColorSwatches::default().mobility_stops)
+        Self {
+            stops: vec![
+                Color32::from_rgb(0, 83, 214),
+                Color32::from_rgb(101, 203, 243),
+                Color32::from_rgb(255, 219, 19),
+                Color32::from_rgb(255, 125, 69),
+            ],
+        }
     }
 }
 
@@ -169,72 +75,154 @@ impl ColorMap {
     }
 }
 
-/// Top-level collection of discrete domain palettes and continuous colormaps stored in [`crate::state::UiState`].
+/// Self-healing collection of domain palettes, general categorical colors, and continuous colormaps.
+/// Any field omitted in a `.ron` file is automatically populated from [`Self::default()`].
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
 pub struct Palette {
-    /// Name of the currently active palette.
-    pub active_name: String,
-    /// All loaded palettes from [`PALETTES_DIR`], including the active one.
+    pub name: String,
     #[serde(skip)]
-    pub available: Vec<ColorSwatches>,
+    pub available: Vec<Palette>,
+    /// Arbitrary general-purpose categorical colors (for multi-chain assemblies, plots, and UI series).
+    pub categorical: Vec<Color32>,
     pub sides: InterfaceSidePalette,
     pub contacts: ContactPalette,
-    pub chemistry: ResidueChemistryPalette,
+    pub aa_chemistry: AaChemistryPalette,
     pub elements: ElementPalette,
     pub mobility: ColorMap,
     pub charge: ColorMap,
+    #[serde(skip)]
     pub gizmo: GizmoPalette,
+    #[serde(skip)]
     pub chrome: ChromePalette,
 }
 
 impl Default for Palette {
     fn default() -> Self {
-        let available = ColorSwatches::load_dir(PALETTES_DIR);
-        let first = available.first().cloned().unwrap_or_default();
-        let mut pal = Self {
-            active_name: first.name.clone(),
-            available,
-            sides: InterfaceSidePalette::from_swatches(&first),
-            contacts: ContactPalette::from_swatches(&first),
-            chemistry: ResidueChemistryPalette::from_swatches(&first),
-            elements: ElementPalette::from_swatches(&first),
-            mobility: ColorMap::from_stops(first.mobility_stops.clone()),
-            charge: ColorMap::diverging(first.red, Color32::WHITE, first.blue),
+        Self {
+            name: "Okabe-Ito (Colorblind-Safe)".into(),
+            available: Vec::new(),
+            categorical: vec![
+                Color32::from_rgb(14, 165, 233),
+                Color32::from_rgb(249, 115, 22),
+                Color32::from_rgb(16, 185, 129),
+                Color32::from_rgb(250, 204, 21),
+                Color32::from_rgb(37, 99, 235),
+                Color32::from_rgb(239, 68, 68),
+                Color32::from_rgb(168, 85, 247),
+                Color32::from_rgb(100, 116, 139),
+            ],
+            sides: InterfaceSidePalette::default(),
+            contacts: ContactPalette::default(),
+            aa_chemistry: AaChemistryPalette::default(),
+            elements: ElementPalette::default(),
+            mobility: ColorMap::default(),
+            charge: ColorMap::diverging(
+                Color32::from_rgb(239, 68, 68),
+                Color32::WHITE,
+                Color32::from_rgb(37, 99, 235),
+            ),
             gizmo: GizmoPalette::default(),
             chrome: ChromePalette::default(),
-        };
-        pal.apply_swatches(&first);
-        pal
+        }
     }
 }
 
 impl Palette {
-    /// Populates all molecular and lens palettes from `s`, preserving `gizmo` and `chrome`.
-    pub fn apply_swatches(&mut self, s: &ColorSwatches) {
-        self.active_name.clone_from(&s.name);
-        self.sides = InterfaceSidePalette::from_swatches(s);
-        self.contacts = ContactPalette::from_swatches(s);
-        self.chemistry = ResidueChemistryPalette::from_swatches(s);
-        self.elements = ElementPalette::from_swatches(s);
-        self.mobility = ColorMap::from_stops(s.mobility_stops.clone());
-        self.charge = ColorMap::diverging(s.red, Color32::WHITE, s.blue);
+    /// Initializes the palette and loads all `.ron` presets found in [`PALETTES_DIR`].
+    pub fn load_default() -> Self {
+        let mut pal = Self::default();
+        pal.reload_available();
+        if let Some(first) = pal.available.first().cloned() {
+            pal.apply_preset(&first);
+        }
+        pal
+    }
+
+    /// Parses a self-healing [`Palette`] from a RON string; missing fields fall back to [`Self::default()`].
+    pub fn from_ron_str(text: &str) -> Result<Self, String> {
+        ron::from_str(text).map_err(|e| format!("Failed to parse RON palette: {e}"))
+    }
+
+    /// Serializes this palette into a formatted RON string.
+    pub fn to_ron_string(&self) -> Result<String, String> {
+        ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default())
+            .map_err(|e| format!("Failed to serialize RON palette: {e}"))
+    }
+
+    /// Writes this palette to `<dir>/<file_stem>.ron`.
+    pub fn save_to_dir(&self, dir: impl AsRef<Path>, file_stem: &str) -> Result<PathBuf, String> {
+        let dir = dir.as_ref();
+        std::fs::create_dir_all(dir).map_err(|e| format!("Failed to create {}: {e}", dir.display()))?;
+        let path = dir.join(format!("{file_stem}.ron"));
+        let text = self.to_ron_string()?;
+        std::fs::write(&path, text).map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
+        Ok(path)
+    }
+
+    /// Loads all `*.ron` palette files in `dir`, falling back to [`Self::default()`] if none are found.
+    pub fn load_dir(dir: impl AsRef<Path>) -> Vec<Self> {
+        let mut palettes: Vec<Self> = std::fs::read_dir(dir.as_ref())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("ron"))
+            .filter_map(|path| match std::fs::read_to_string(&path).ok().map(|s| Self::from_ron_str(&s))? {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    eprintln!("Warning: skipping invalid palette {}: {e}", path.display());
+                    None
+                }
+            })
+            .collect();
+
+        if palettes.is_empty() {
+            palettes.push(Self::default());
+        } else {
+            let default_name = Self::default().name;
+            palettes.sort_by(|a, b| (a.name != default_name).cmp(&(b.name != default_name)).then(a.name.cmp(&b.name)));
+        }
+        palettes
+    }
+
+    /// Copies molecular and lens colors from `preset`, preserving `available`, `gizmo`, and `chrome`.
+    pub fn apply_preset(&mut self, preset: &Self) {
+        self.name.clone_from(&preset.name);
+        self.categorical.clone_from(&preset.categorical);
+        self.sides = preset.sides.clone();
+        self.contacts = preset.contacts.clone();
+        self.aa_chemistry = preset.aa_chemistry.clone();
+        self.elements = preset.elements.clone();
+        self.mobility = preset.mobility.clone();
+        self.charge = preset.charge.clone();
     }
 
     /// Applies the loaded palette matching `name`, if present in `available`.
     pub fn apply_by_name(&mut self, name: &str) {
-        if let Some(s) = self.available.iter().find(|s| s.name == name).cloned() {
-            self.apply_swatches(&s);
+        if let Some(p) = self.available.iter().find(|p| p.name == name).cloned() {
+            self.apply_preset(&p);
         }
     }
 
     /// Rescans [`PALETTES_DIR`] for `.ron` files.
     pub fn reload_available(&mut self) {
-        self.available = ColorSwatches::load_dir(PALETTES_DIR);
+        self.available = Self::load_dir(PALETTES_DIR);
+}
+
+    /// General-purpose categorical color at `index` (wraps around if `index >= categorical.len()`).
+    pub fn categorical(&self, index: usize) -> Color32 {
+        if self.categorical.is_empty() {
+            self.sides.unassigned
+        } else {
+            self.categorical[index % self.categorical.len()]
+        }
     }
 }
 
-/// Base colors for interface sides and 3D boundary meshes (surfaces, sheets, envelopes, voids).
+/// Purpose-named colors for interface sides and 3D boundary meshes.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
 pub struct InterfaceSidePalette {
     pub side_a: Color32,
     pub side_b: Color32,
@@ -247,24 +235,19 @@ pub struct InterfaceSidePalette {
 
 impl Default for InterfaceSidePalette {
     fn default() -> Self {
-        Self::from_swatches(&ColorSwatches::default())
+        Self {
+            side_a: Color32::from_rgb(14, 165, 233),
+            side_b: Color32::from_rgb(249, 115, 22),
+            unassigned: Color32::from_rgb(148, 163, 184),
+            sheet: Color32::from_rgb(250, 204, 21),
+            envelope_a: Color32::from_rgb(250, 204, 21),
+            envelope_b: Color32::from_rgb(168, 85, 247),
+            void: Color32::from_rgb(6, 182, 212),
+        }
     }
 }
 
 impl InterfaceSidePalette {
-    /// Looks up interface side and mesh colors from a centralized [`ColorSwatches`] table.
-    pub const fn from_swatches(s: &ColorSwatches) -> Self {
-        Self {
-            side_a: s.primary,
-            side_b: s.secondary,
-            unassigned: s.neutral,
-            sheet: s.yellow,
-            envelope_a: s.yellow,
-            envelope_b: s.purple,
-            void: s.cyan,
-        }
-    }
-
     /// Base color for an interface side.
     pub fn side(&self, side: InterfaceSide) -> Color32 {
         match side {
@@ -299,8 +282,9 @@ impl InterfaceSidePalette {
     }
 }
 
-/// Colors for interatomic interactions and contact edges.
+/// Purpose-named colors for interatomic interactions and contact edges.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
 pub struct ContactPalette {
     /// Steric clashes (VWD radius overlaps) between atoms.
     pub clash: Color32,
@@ -314,21 +298,16 @@ pub struct ContactPalette {
 
 impl Default for ContactPalette {
     fn default() -> Self {
-        Self::from_swatches(&ColorSwatches::default())
+        Self {
+            clash: Color32::from_rgb(239, 68, 68),
+            salt_bridge: Color32::from_rgb(168, 85, 247),
+            hbond: Color32::from_rgb(37, 99, 235),
+            contact: Color32::from_rgb(148, 163, 184),
+        }
     }
 }
 
 impl ContactPalette {
-    /// Looks up interaction colors from a centralized [`ColorSwatches`] table.
-    pub const fn from_swatches(s: &ColorSwatches) -> Self {
-        Self {
-            clash: s.red,
-            salt_bridge: s.purple,
-            hbond: s.blue,
-            contact: s.neutral,
-        }
-    }
-
     /// Color for a given [`EdgeKind`].
     pub fn color(&self, kind: EdgeKind) -> Color32 {
         match kind {
@@ -340,9 +319,10 @@ impl ContactPalette {
     }
 }
 
-/// Colors amino acids using the residue chemistry lens.
+/// Purpose-named colors for the chemical category lens.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct ResidueChemistryPalette {
+#[serde(default)]
+pub struct AaChemistryPalette {
     pub aliphatic: Color32,
     pub aromatic: Color32,
     pub positive: Color32,
@@ -351,71 +331,115 @@ pub struct ResidueChemistryPalette {
     pub polar: Color32,
 }
 
-impl Default for ResidueChemistryPalette {
+impl Default for AaChemistryPalette {
     fn default() -> Self {
-        Self::from_swatches(&ColorSwatches::default())
-    }
-}
-
-impl ResidueChemistryPalette {
-    /// Looks up chemical category colors from a centralized [`ColorSwatches`] table.
-    pub const fn from_swatches(s: &ColorSwatches) -> Self {
         Self {
-            aliphatic: s.neutral,
-            aromatic: s.orange,
-            positive: s.blue,
-            negative: s.red,
-            gly_pro: s.purple,
-            polar: s.cyan,
+            aliphatic: Color32::from_rgb(148, 163, 184),
+            aromatic: Color32::from_rgb(245, 158, 11),
+            positive: Color32::from_rgb(37, 99, 235),
+            negative: Color32::from_rgb(239, 68, 68),
+            gly_pro: Color32::from_rgb(168, 85, 247),
+            polar: Color32::from_rgb(6, 182, 212),
         }
     }
 }
 
-/// Colors for the elemental CPK lens.
+/// Dedicated elemental CPK palette covering biological and crystallographic elements.
+/// Self-healing via `#[serde(default)]`: `.ron` files may override only `c` and inherit the rest.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
 pub struct ElementPalette {
+    // Organic & backbone
+    pub h: Color32,
     pub c: Color32,
     pub n: Color32,
     pub o: Color32,
     pub s: Color32,
     pub p: Color32,
+    pub se: Color32,
+    // Alkali & alkaline earth ions
+    pub na: Color32,
+    pub k: Color32,
+    pub mg: Color32,
+    pub ca: Color32,
+    // First-row transition metals & cofactors
+    pub mn: Color32,
+    pub fe: Color32,
+    pub co: Color32,
+    pub ni: Color32,
+    pub cu: Color32,
+    pub zn: Color32,
+    // Halogens
+    pub f: Color32,
+    pub cl: Color32,
+    pub br: Color32,
+    pub i: Color32,
+    // Fallback
     pub other: Color32,
 }
 
 impl Default for ElementPalette {
     fn default() -> Self {
-        Self::from_swatches(&ColorSwatches::default())
+        Self {
+            h: Color32::from_rgb(226, 232, 240),
+            c: Color32::from_rgb(71, 85, 105),
+            n: Color32::from_rgb(37, 99, 235),
+            o: Color32::from_rgb(220, 38, 38),
+            s: Color32::from_rgb(217, 119, 6),
+            p: Color32::from_rgb(234, 88, 12),
+            se: Color32::from_rgb(217, 145, 20),
+            na: Color32::from_rgb(139, 92, 246),
+            k: Color32::from_rgb(147, 51, 234),
+            mg: Color32::from_rgb(34, 197, 94),
+            ca: Color32::from_rgb(16, 185, 129),
+            mn: Color32::from_rgb(153, 122, 199),
+            fe: Color32::from_rgb(224, 102, 51),
+            co: Color32::from_rgb(240, 144, 160),
+            ni: Color32::from_rgb(80, 208, 80),
+            cu: Color32::from_rgb(200, 128, 51),
+            zn: Color32::from_rgb(125, 128, 176),
+            f: Color32::from_rgb(132, 204, 22),
+            cl: Color32::from_rgb(22, 163, 74),
+            br: Color32::from_rgb(166, 41, 41),
+            i: Color32::from_rgb(107, 33, 168),
+            other: Color32::from_rgb(100, 116, 139),
+        }
     }
 }
 
 impl ElementPalette {
-    /// Looks up elemental CPK colors from a centralized [`ColorSwatches`] table.
-    pub const fn from_swatches(s: &ColorSwatches) -> Self {
-        Self {
-            c: s.carbon,
-            n: s.blue,
-            o: s.red,
-            s: s.yellow,
-            p: s.orange,
-            other: s.neutral,
-        }
-    }
-
     /// Color for a chemical [`Element`].
     pub fn color(&self, el: Element) -> Color32 {
         match el {
+            Element::H => self.h,
             Element::C => self.c,
             Element::N => self.n,
             Element::O => self.o,
             Element::S => self.s,
             Element::P => self.p,
+            Element::Se => self.se,
+            Element::Na => self.na,
+            Element::K => self.k,
+            Element::Mg => self.mg,
+            Element::Ca => self.ca,
+            Element::Mn => self.mn,
+            Element::Fe => self.fe,
+            Element::Co => self.co,
+            Element::Ni => self.ni,
+            Element::Cu => self.cu,
+            Element::Zn => self.zn,
+            Element::F => self.f,
+            Element::Cl => self.cl,
+            Element::Br => self.br,
+            Element::I => self.i,
             _ => self.other,
         }
     }
 }
 
-/// Palette for the 3D orientation gizmo.
+/// Dedicated palette for the 3D orientation gizmo (kept invariant across molecular palette changes).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
 pub struct GizmoPalette {
     pub axis_u: Color32,
     pub axis_v: Color32,
@@ -426,11 +450,10 @@ pub struct GizmoPalette {
 
 impl Default for GizmoPalette {
     fn default() -> Self {
-        let d = ColorSwatches::default();
         Self {
-            axis_u: d.red,
-            axis_v: d.green,
-            axis_n: d.blue,
+            axis_u: Color32::from_rgb(239, 68, 68),
+            axis_v: Color32::from_rgb(34, 197, 94),
+            axis_n: Color32::from_rgb(37, 99, 235),
             bg_fill: Color32::from_rgba_premultiplied(12, 18, 33, 198),
             bg_rim: Color32::from_rgba_premultiplied(52, 57, 65, 90),
         }
@@ -449,33 +472,27 @@ impl GizmoPalette {
     }
 }
 
-/// Viewport background, ink, and semantic UI status colors.
+/// Viewport background, ink, and semantic UI status colors (kept invariant across molecular palette changes).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
 pub struct ChromePalette {
-    /// Background color of the 3D viewport and 2D canvas.
     pub viewport_bg: Color32,
-    /// Primary text and icon color for UI chrome.
     pub ink: Color32,
-    /// Accent color for buttons, highlights, and interactive elements.
     pub accent: Color32,
-    /// Warning color for UI status and alerts.
     pub warning: Color32,
-    /// Success color for UI status and alerts.
     pub success: Color32,
-    /// Error color for UI status and alerts.
     pub error: Color32,
 }
 
 impl Default for ChromePalette {
     fn default() -> Self {
-        let d = ColorSwatches::default();
         Self {
             viewport_bg: Color32::from_rgb(248, 250, 252),
             ink: Color32::from_rgb(15, 23, 42),
-            accent: d.primary,
-            warning: d.orange,
-            success: d.green,
-            error: d.red,
+            accent: Color32::from_rgb(14, 165, 233),
+            warning: Color32::from_rgb(245, 158, 11),
+            success: Color32::from_rgb(34, 197, 94),
+            error: Color32::from_rgb(239, 68, 68),
         }
     }
 }
