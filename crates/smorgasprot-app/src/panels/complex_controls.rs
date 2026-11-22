@@ -11,16 +11,39 @@ pub fn show(ui: &mut Ui, ds: &mut ViewerDataset, state: &mut UiState) {
     ui.heading("🧊 3D Complex Sandwich Setup");
     ui.add_space(4.0);
 
+    if ds.interfaces.len() > 1 {
+        section(ui, "Active Interface", |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Selected:");
+                let current_name = ds.active_interface().map_or("None", |i| i.partition.name.as_str());
+                egui::ComboBox::from_id_salt("complex_active_interface_select")
+                    .selected_text(current_name)
+                    .show_ui(ui, |ui| {
+                        for (idx, iface) in ds.interfaces.iter().enumerate() {
+                            let label = if iface.partition.name.is_empty() {
+                                format!("Interface {}", idx + 1)
+                            } else {
+                                iface.partition.name.clone()
+                            };
+                            ui.selectable_value(&mut ds.active_interface, idx, label);
+                        }
+                    });
+            });
+        });
+    }
+
     // Display-only rename; does not affect chain assignment.
     section(ui, "1. Interface Group Names", |ui| {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Group A:").color(palette::SIDE_A_LIGHT));
-            ui.text_edit_singleline(&mut ds.group_a_name);
-        });
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Group B:").color(palette::SIDE_B_LIGHT));
-            ui.text_edit_singleline(&mut ds.group_b_name);
-        });
+        if let Some(iface) = ds.active_interface_mut() {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Group A:").color(palette::SIDE_A_LIGHT));
+                ui.text_edit_singleline(&mut iface.partition.group_a_name);
+            });
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Group B:").color(palette::SIDE_B_LIGHT));
+                ui.text_edit_singleline(&mut iface.partition.group_b_name);
+            });
+        }
     });
 
     let s = &mut state.complex;
@@ -44,7 +67,9 @@ pub fn show(ui: &mut Ui, ds: &mut ViewerDataset, state: &mut UiState) {
             alpha_slider(ui, "Interface Opacity:", &mut s.interface_alpha);
         }
         if s.interface_mode == InterfaceDisplayMode::NegativeSpace {
-            ui.colored_label(palette::VOID, format!("Sub-Solvent Void Volume: {:.1} Å³", ds.geometry.void_volume_a3));
+            if let Some(iface) = ds.active_interface() {
+                ui.colored_label(palette::VOID, format!("Sub-Solvent Void Volume: {:.1} Å³", iface.geometry.void_volume_a3));
+            }
         }
 
         ui.separator();

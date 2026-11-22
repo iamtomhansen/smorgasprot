@@ -32,14 +32,23 @@ impl InterfaceSide {
 /// Complete demarcation of an interface partition between two groups of atoms.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct InterfacePartition {
+    /// User-facing name of the interface partition.
     pub name: String,
+    /// User-facing name of the first group of atoms.
     pub group_a_name: String,
+    /// User-facing name of the second group of atoms.
     pub group_b_name: String,
+    /// The inclusion criteria for atoms in group A.
     pub rule_a: AtomSelection,
+    /// The inclusion criteria for atoms in group B.
     pub rule_b: AtomSelection,
+    /// The indices of all atoms in group A.
     pub side_a_atoms: Vec<GlobalAtomIdx>,
+    /// The indices of all atoms in group B.
     pub side_b_atoms: Vec<GlobalAtomIdx>,
+    /// The chain IDs of all chains to which atoms in group A belong.
     pub group_a_chains: Vec<ChainName>,
+    /// The chain IDs of all chains to which atoms in group B belong.
     pub group_b_chains: Vec<ChainName>,
 }
 
@@ -136,6 +145,15 @@ impl InterfacePartition {
             }
         }
         sides
+    }
+
+    /// User-facing display name of one interface side.
+    pub fn group_name(&self, side: InterfaceSide) -> &str {
+        match side {
+            InterfaceSide::SideA => &self.group_a_name,
+            InterfaceSide::SideB => &self.group_b_name,
+            InterfaceSide::None => "Unassigned",
+        }
     }
 
     /// Returns `InterfaceSide::SideA` if `chain_id` is in Group A, `SideB` if in Group B, or `None`.

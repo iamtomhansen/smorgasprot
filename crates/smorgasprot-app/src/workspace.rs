@@ -103,8 +103,10 @@ impl LoadedStructure {
 
     /// Copies draft group names into the rendered dataset (no recompute needed).
     pub fn sync_group_names(&mut self) {
-        self.dataset.group_a_name.clone_from(&self.draft.a_name);
-        self.dataset.group_b_name.clone_from(&self.draft.b_name);
+        if let Some(iface) = self.dataset.active_interface_mut() {
+            iface.partition.group_a_name.clone_from(&self.draft.a_name);
+            iface.partition.group_b_name.clone_from(&self.draft.b_name);
+        }
         self.groups.a_name.clone_from(&self.draft.a_name);
         self.groups.b_name.clone_from(&self.draft.b_name);
     }

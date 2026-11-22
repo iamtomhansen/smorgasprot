@@ -1,5 +1,4 @@
-//! Render-ready snapshot of one loaded complex and its interface map.
-//! Serialized as-is into the HTML export, so serialized field names are a frozen contract with the JS viewer.
+//! Render-ready snapshot of one loaded complex and its interface maps.
 
 use serde::Serialize;
 use smorgasprot_core::{
@@ -53,6 +52,78 @@ impl AtomMeta {
     }
 }
 
+/// Precomputed visual & geometric data for one macromolecular interface partition.
+#[derive(Serialize, Clone, Debug)]
+pub struct InterfaceViewData {
+    /// Interface partition demarcation rules & atom membership.
+    pub partition: InterfacePartition,
+    /// 2D metric flattening statistics & diagnostics.
+    pub stats: FlatteningStats,
+    /// 2D interface map (SVD plane, nodes, edges, Voronoi territories).
+    pub map: InterfaceMap,
+    /// 3D boundary meshes (envelope, separator sheet, negative space).
+    pub geometry: InterfaceGeometry,
+    /// User-inspectable atom metadata for interfacial atoms (1:1 with `map.nodes`).
+    pub atom_meta: Vec<AtomMeta>,
+    /// Interface side of each `geometry.envelope_mesh` vertex (render cache, not exported).
+    #[serde(skip)]
+    pub envelope_sides: Vec<InterfaceSide>,
+}
+
+impl InterfaceViewData {
+    /// Computes flattening, boundary geometry, and metadata for a partition.
+    pub fn compute(
+        complex: &ComplexStructure,
+        mut partition: InterfacePartition,
+        chain_meshes: &[SurfaceMesh],
+        params: &AnalysisParams,
+    ) -> Result<Self, String> {
+        partition.recompute_membership(complex);
+        let (map, stats) = smorgasprot_core::flatten::build_interface_map(complex, &partition, params)?;
+        let geometry = build_interface_geometry(complex, &partition, &map, chain_meshes, &params.geometry);
+        let atom_sides = partition.atom_sides(complex);
+        let envelope_sides = geometry
+            .envelope_mesh
+            .nearest_atom
+            .iter()
+            .map(|g| atom_sides.get(g.0 as usize).copied().unwrap_or(InterfaceSide::None))
+            .collect();
+        let atom_meta = map.nodes.iter().map(|n| atom_meta(complex, n)).collect();
+        Ok(Self {
+            partition,
+            stats,
+            map,
+            geometry,
+            atom_meta,
+            envelope_sides,
+        })
+    }
+
+    /// Recomputes 3D boundary meshes using updated parameters or chain meshes.
+    pub fn recompute_geometry(&mut self, complex: &ComplexStructure, chain_meshes: &[SurfaceMesh], params: &AnalysisParams) {
+        self.geometry = build_interface_geometry(complex, &self.partition, &self.map, chain_meshes, &params.geometry);
+        let atom_sides = self.partition.atom_sides(complex);
+        self.envelope_sides = self
+            .geometry
+            .envelope_mesh
+            .nearest_atom
+            .iter()
+            .map(|g| atom_sides.get(g.0 as usize).copied().unwrap_or(InterfaceSide::None))
+            .collect();
+    }
+
+    /// Re-evaluates partition rules, flattens, and rebuilds geometry and metadata.
+    pub fn recompute_interface(&mut self, complex: &ComplexStructure, chain_meshes: &[SurfaceMesh], params: &AnalysisParams) -> Result<(), String> {
+        self.partition.recompute_membership(complex);
+        let (map, stats) = smorgasprot_core::flatten::build_interface_map(complex, &self.partition, params)?;
+        self.atom_meta = map.nodes.iter().map(|n| atom_meta(complex, n)).collect();
+        self.map = map;
+        self.stats = stats;
+        self.recompute_geometry(complex, chain_meshes, params);
+        Ok(())
+    }
+}
+
 /// The user-facing names and data for a [`ComplexStructure`].
 #[derive(Serialize, Clone, Debug)]
 pub struct ViewerDataset {
@@ -60,38 +131,27 @@ pub struct ViewerDataset {
     pub id: String,
     /// User-facing title for this dataset.
     pub title: String,
-    pub group_a_name: String,
-    pub group_b_name: String,
-    pub group_a_chains: Vec<ChainName>,
-    pub group_b_chains: Vec<ChainName>,
+    /// Per-chain geometry (alpha carbon trace + molecular surface).
     pub chains: Vec<ChainVisualData>,
-    pub map: InterfaceMap,
-    pub geometry: InterfaceGeometry,
-    pub atom_meta: Vec<AtomMeta>,
-    pub stats: FlatteningStats,
-    /// Interface side of each `geometry.envelope_mesh` vertex (render cache, not exported).
+    /// Precomputed interfaces available for inspection.
+    pub interfaces: Vec<InterfaceViewData>,
+    /// Index of the active interface in `interfaces`.
     #[serde(skip)]
-    pub envelope_sides: Vec<InterfaceSide>,
-    /// Source complex structure (retained in-memory for live recomputation and remeshing; not exported).
+    pub active_interface: usize,
+    /// Source complex structure (retained in-memory for live recomputation; not exported).
     #[serde(skip)]
     pub complex: Option<ComplexStructure>,
-    /// Interface demarcation partition (retained in-memory for live recomputation; not exported).
-    #[serde(skip)]
-    pub partition: Option<InterfacePartition>,
 }
 
 impl ViewerDataset {
-    /// Builds chain surfaces, interface geometry, and atom labels from a loaded complex.
-    /// Expensive (surface meshing); call once per load or chain reassignment.
-    pub fn from_complex_and_map(
+    /// Builds chain surfaces once and evaluates all given interface partitions.
+    pub fn new(
         id: impl Into<String>,
         title: impl Into<String>,
         complex: &ComplexStructure,
-        partition: &InterfacePartition,
-        map: InterfaceMap,
-        stats: FlatteningStats,
+        partitions: Vec<InterfacePartition>,
         params: &AnalysisParams,
-    ) -> Self {
+    ) -> Result<Self, String> {
         let chains: Vec<ChainVisualData> = complex
             .chains
             .iter()
@@ -105,100 +165,111 @@ impl ViewerDataset {
             })
             .collect();
 
-        // Derived interface meshes need every chain surface.
         let chain_meshes: Vec<SurfaceMesh> = chains.iter().map(|c| c.surface_mesh.clone()).collect();
-        let geometry = build_interface_geometry(complex, partition, &map, &chain_meshes, &params.geometry);
+        let mut interfaces = Vec::with_capacity(partitions.len());
+        for part in partitions {
+            interfaces.push(InterfaceViewData::compute(complex, part, &chain_meshes, params)?);
+        }
 
-        // Resolve envelope vertex sides once instead of per frame.
-        let atom_sides = partition.atom_sides(complex);
-        let envelope_sides = geometry
-            .envelope_mesh
-            .nearest_atom
-            .iter()
-            .map(|g| atom_sides.get(g.0 as usize).copied().unwrap_or(InterfaceSide::None))
-            .collect();
-
-        let atom_meta = map.nodes.iter().map(|n| atom_meta(complex, n)).collect();
-
-        Self {
+        Ok(Self {
             id: id.into(),
             title: title.into(),
-            group_a_name: partition.group_a_name.clone(),
-            group_b_name: partition.group_b_name.clone(),
-            group_a_chains: partition.group_a_chains.clone(),
-            group_b_chains: partition.group_b_chains.clone(),
             chains,
-            map,
-            geometry,
-            atom_meta,
-            stats,
-            envelope_sides,
+            interfaces,
+            active_interface: 0,
             complex: Some(complex.clone()),
-            partition: Some(partition.clone()),
-        }
+        })
+    }
+
+    /// Adds a new interface partition, precomputing its map and geometry.
+    pub fn add_interface(&mut self, partition: InterfacePartition, params: &AnalysisParams) -> Result<usize, String> {
+        let Some(complex) = &self.complex else {
+            return Err("No complex structure available for interface computation".into());
+        };
+        let chain_meshes: Vec<SurfaceMesh> = self.chains.iter().map(|c| c.surface_mesh.clone()).collect();
+        let iface = InterfaceViewData::compute(complex, partition, &chain_meshes, params)?;
+        self.interfaces.push(iface);
+        Ok(self.interfaces.len() - 1)
     }
 
     /// Recomputes the chain surface meshes and interface geometry using updated parameters.
     pub fn recompute_surfaces(&mut self, params: &AnalysisParams) {
-        let (Some(complex), Some(partition)) = (&self.complex, &self.partition) else { return };
+        let Some(complex) = &self.complex else { return };
         for (c_idx, chain) in self.chains.iter_mut().enumerate() {
             chain.surface_mesh = build_chain_surface_mesh(complex, ChainIdx(c_idx as u32), &params.surface);
         }
         let chain_meshes: Vec<SurfaceMesh> = self.chains.iter().map(|c| c.surface_mesh.clone()).collect();
-        self.geometry = build_interface_geometry(complex, partition, &self.map, &chain_meshes, &params.geometry);
-        let atom_sides = partition.atom_sides(complex);
-        self.envelope_sides = self
-            .geometry
-            .envelope_mesh
-            .nearest_atom
-            .iter()
-            .map(|g| atom_sides.get(g.0 as usize).copied().unwrap_or(InterfaceSide::None))
-            .collect();
+        for iface in &mut self.interfaces {
+            iface.recompute_geometry(complex, &chain_meshes, params);
+        }
     }
 
-    /// Re-extracts and flattens the interface, updating the map, derived meshes, and atom metadata.
+    /// Re-extracts and flattens the active interface, updating the map, derived meshes, and atom metadata.
     pub fn recompute_interface(&mut self, params: &AnalysisParams) -> Result<(), String> {
-        let (Some(complex), Some(partition)) = (&self.complex, &mut self.partition) else { return Ok(()) };
-        partition.recompute_membership(complex);
-        let (map, stats) = smorgasprot_core::flatten::build_interface_map(complex, partition, params)?;
-        self.atom_meta = map.nodes.iter().map(|n| atom_meta(complex, n)).collect();
-        self.map = map;
-        self.stats = stats;
-        self.recompute_surfaces(params);
+        let Some(complex) = &self.complex else { return Ok(()) };
+        let chain_meshes: Vec<SurfaceMesh> = self.chains.iter().map(|c| c.surface_mesh.clone()).collect();
+        if let Some(iface) = self.interfaces.get_mut(self.active_interface) {
+            iface.recompute_interface(complex, &chain_meshes, params)?;
+        }
         Ok(())
     }
 
+    pub fn active_interface(&self) -> Option<&InterfaceViewData> {
+        self.interfaces.get(self.active_interface)
+    }
+
+    pub fn active_interface_mut(&mut self) -> Option<&mut InterfaceViewData> {
+        self.interfaces.get_mut(self.active_interface)
+    }
+
+    pub fn active_partition(&self) -> Option<&InterfacePartition> {
+        self.active_interface().map(|i| &i.partition)
+    }
+
+    pub fn active_partition_mut(&mut self) -> Option<&mut InterfacePartition> {
+        self.active_interface_mut().map(|i| &mut i.partition)
+    }
+
+    pub fn active_map(&self) -> Option<&InterfaceMap> {
+        self.active_interface().map(|i| &i.map)
+    }
+
+    pub fn active_geometry(&self) -> Option<&InterfaceGeometry> {
+        self.active_interface().map(|i| &i.geometry)
+    }
+
+    pub fn active_stats(&self) -> Option<&FlatteningStats> {
+        self.active_interface().map(|i| &i.stats)
+    }
+
     pub fn node(&self, idx: AtomNodeIdx) -> Option<&AtomNode> {
-        self.map.nodes.get(idx.0 as usize)
+        self.active_interface().and_then(|i| i.map.nodes.get(idx.0 as usize))
     }
 
     pub fn meta(&self, idx: AtomNodeIdx) -> Option<&AtomMeta> {
-        self.atom_meta.get(idx.0 as usize)
+        self.active_interface().and_then(|i| i.atom_meta.get(idx.0 as usize))
     }
 
     pub fn territory(&self, idx: TerritoryIdx) -> Option<&ResidueTerritory> {
-        self.map.territories.get(idx.0 as usize)
+        self.active_interface().and_then(|i| i.map.territories.get(idx.0 as usize))
     }
 
     /// User-facing name of one interface side.
     pub fn group_name(&self, side: InterfaceSide) -> &str {
-        match side {
-            InterfaceSide::SideA => &self.group_a_name,
-            InterfaceSide::SideB => &self.group_b_name,
-            InterfaceSide::None => "Unassigned",
-        }
+        self.active_partition()
+            .map_or("Unassigned", |p| p.group_name(side))
     }
 
     /// Returns which interface side a chain belongs to under the active partition.
     #[inline]
     pub fn chain_side(&self, chain_id: &ChainName) -> InterfaceSide {
-        self.partition
-            .as_ref()
+        self.active_partition()
             .map_or(InterfaceSide::None, |p| p.chain_side(chain_id.as_str()))
     }
 
     pub fn cross_contact_count(&self) -> usize {
-        self.map.edges.iter().filter(|e| e.is_cross_interface).count()
+        self.active_map()
+            .map_or(0, |m| m.edges.iter().filter(|e| e.is_cross_interface).count())
     }
 }
 

@@ -3,7 +3,7 @@
 
 use super::plane_space::PlaneFrame;
 use crate::camera::CameraState;
-use crate::dataset::ViewerDataset;
+use crate::dataset::{InterfaceViewData, ViewerDataset};
 use crate::state::{InterfaceViewSettings, Selection};
 use crate::style::{lenses, palette, sizing};
 use egui::{Align2, FontId, Painter, Pos2, Rect, Shape, Stroke};
@@ -23,6 +23,7 @@ struct Ctx<'a> {
     painter: &'a Painter,
     rect: Rect,
     ds: &'a ViewerDataset,
+    iface: &'a InterfaceViewData,
     camera: &'a CameraState,
     frame: PlaneFrame,
     s: &'a InterfaceViewSettings,
@@ -38,8 +39,10 @@ impl Ctx<'_> {
 
 /// Screen positions of every interface node under the current morph, indexed like `map.nodes`.
 pub fn project_nodes(ds: &ViewerDataset, camera: &CameraState, rect: Rect, s: &InterfaceViewSettings) -> Vec<Pos2> {
-    let frame = PlaneFrame::from(&ds.map.plane);
-    ds.map
+    let Some(iface) = ds.active_interface() else { return Vec::new() };
+    let frame = PlaneFrame::from(&iface.map.plane);
+    iface
+        .map
         .nodes
         .iter()
         .map(|n| {
@@ -52,9 +55,10 @@ pub fn project_nodes(ds: &ViewerDataset, camera: &CameraState, rect: Rect, s: &I
 
 /// Nearest visible node within [`PICK_RADIUS_PX`] of `pointer`.
 pub fn pick_atom(ds: &ViewerDataset, s: &InterfaceViewSettings, nodes: &[Pos2], pointer: Pos2) -> Option<AtomNodeIdx> {
+    let iface = ds.active_interface()?;
     nodes
         .iter()
-        .zip(&ds.map.nodes)
+        .zip(&iface.map.nodes)
         .filter(|(_, n)| s.side_alpha(n.role) > MIN_INTERACTIVE_ALPHA)
         .map(|(p, n)| (p.distance_sq(pointer), n.idx))
         .filter(|(d2, _)| *d2 < PICK_RADIUS_PX * PICK_RADIUS_PX)
@@ -72,7 +76,8 @@ pub fn paint(
     selection: &Selection,
     nodes: &[Pos2],
 ) {
-    let cx = Ctx { painter, rect, ds, camera, frame: PlaneFrame::from(&ds.map.plane), s };
+    let Some(iface) = ds.active_interface() else { return };
+    let cx = Ctx { painter, rect, ds, iface, camera, frame: PlaneFrame::from(&iface.map.plane), s };
 
     paint_hinge(&cx);
     if s.show_backbone {
@@ -141,7 +146,7 @@ fn paint_territories(cx: &Ctx, selection: &Selection) {
         if alpha <= MIN_DRAW_ALPHA {
             continue;
         }
-        for terr in cx.ds.map.territories.iter().filter(|t| t.role == side && !t.contour_uv.is_empty()) {
+        for terr in cx.iface.map.territories.iter().filter(|t| t.role == side && !t.contour_uv.is_empty()) {
             // Contours exist only for relaxed (u, v), so they ignore the raw-UV toggle.
             let pts: Vec<Pos2> =
                 terr.contour_uv.iter().zip(&terr.contour_3d).map(|(&uv, &p)| cx.morph(p, uv, side)).collect();
@@ -162,7 +167,7 @@ fn paint_territories(cx: &Ctx, selection: &Selection) {
 
 /// First-shell springs within each side.
 fn paint_intra_edges(cx: &Ctx, nodes: &[Pos2]) {
-    for e in cx.ds.map.edges.iter().filter(|e| !e.is_cross_interface) {
+    for e in cx.iface.map.edges.iter().filter(|e| !e.is_cross_interface) {
         let side = cx.ds.node(e.a).map_or(InterfaceSide::None, |n| n.role);
         let alpha = cx.s.side_alpha(side);
         if alpha <= MIN_INTERACTIVE_ALPHA {
@@ -179,7 +184,7 @@ fn paint_cross_arcs(cx: &Ctx, nodes: &[Pos2]) {
     if alpha <= MIN_INTERACTIVE_ALPHA {
         return;
     }
-    for e in cx.ds.map.edges.iter().filter(|e| e.is_cross_interface) {
+    for e in cx.iface.map.edges.iter().filter(|e| e.is_cross_interface) {
         let stroke = Stroke::new(lenses::contact_width(e.kind), palette::with_alpha(lenses::contact_color(e.kind), alpha * 0.86));
         cx.painter.line_segment([nodes[e.a.0 as usize], nodes[e.b.0 as usize]], stroke);
     }
@@ -187,7 +192,7 @@ fn paint_cross_arcs(cx: &Ctx, nodes: &[Pos2]) {
 
 /// Atom discs colored by the active lens and sized by the active sizing mode.
 fn paint_atoms(cx: &Ctx, selection: &Selection, nodes: &[Pos2]) {
-    for ((node, meta), &pos) in cx.ds.map.nodes.iter().zip(&cx.ds.atom_meta).zip(nodes) {
+    for ((node, meta), &pos) in cx.iface.map.nodes.iter().zip(&cx.iface.atom_meta).zip(nodes) {
         let alpha = cx.s.side_alpha(node.role);
         if alpha <= MIN_DRAW_ALPHA {
             continue;

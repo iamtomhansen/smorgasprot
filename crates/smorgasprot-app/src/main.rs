@@ -135,19 +135,22 @@ fn load_all(specs: &[DatasetSpec]) -> Result<(Vec<ViewerDataset>, HashMap<String
     for spec in specs {
         println!("Loading {} ...", spec.title);
         let loaded = loader::load(spec, &AnalysisParams::default())?;
-        let s = &loaded.dataset.stats;
+        let s = loaded.dataset.active_stats();
+        let (a_at, a_ter, b_at, b_ter) = s.map_or((0, 0, 0, 0), |s| (s.side_a_atoms, s.side_a_territories, s.side_b_atoms, s.side_b_territories));
         println!(
             "  -> Loaded {} total chains; active interface has {} Group A atoms ({} territories) & {} Group B atoms ({} territories)",
             loaded.complex.chains.len(),
-            s.side_a_atoms,
-            s.side_a_territories,
-            s.side_b_atoms,
-            s.side_b_territories
+            a_at,
+            a_ter,
+            b_at,
+            b_ter
         );
-        println!("  -> 1st-shell edges: {}, cross-interface contacts: {}", s.intra_edges, s.cross_contacts);
+        let (intra, cross) = s.map_or((0, 0), |s| (s.intra_edges, s.cross_contacts));
+        println!("  -> 1st-shell edges: {}, cross-interface contacts: {}", intra, cross);
+        let (rmse_b, rmse_a, ov_b, ov_a) = s.map_or((0.0, 0.0, 0, 0), |s| (s.edge_rmse_before_a, s.edge_rmse_after_a, s.overlaps_before, s.overlaps_after));
         println!(
             "  -> Relaxation reduced edge RMSE: {:.2} Å -> {:.2} Å | 2D overlaps: {} -> {}",
-            s.edge_rmse_before_a, s.edge_rmse_after_a, s.overlaps_before, s.overlaps_after
+            rmse_b, rmse_a, ov_b, ov_a
         );
         complexes.insert(spec.id.clone(), loaded.complex);
         datasets.push(loaded.dataset);

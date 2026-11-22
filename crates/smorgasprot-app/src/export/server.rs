@@ -1,10 +1,10 @@
 //! Minimal local HTTP server for `--serve`: hosts the HTML report and recomputes maps on demand.
 //! Lets the frozen JS viewer reassign chain groups via `POST /api/recompute` (native only).
 
-use crate::dataset::{AtomMeta, ViewerDataset};
+use crate::dataset::{AtomMeta, InterfaceViewData};
 use serde::{Deserialize, Serialize};
 use smorgasprot_core::{
-    AnalysisParams, ChainName, ComplexStructure, InterfaceMap, flatten::FlatteningStats, flatten::build_interface_map,
+    AnalysisParams, ChainName, ComplexStructure, InterfaceMap, flatten::FlatteningStats,
     interface::InterfacePartition,
 };
 use std::collections::HashMap;
@@ -75,9 +75,13 @@ fn recompute(request: &str, complexes: &mut HashMap<String, ComplexStructure>) -
         req.group_b_chains,
     );
     let params = AnalysisParams::default();
-    let (map, stats) = build_interface_map(complex, &partition, &params).ok()?;
-    let ds = ViewerDataset::from_complex_and_map(&req.dataset_id, "", complex, &partition, map, stats, &params);
-    serde_json::to_string(&RecomputeResponse { map: ds.map, atom_meta: ds.atom_meta, stats: ds.stats }).ok()
+    let iface = InterfaceViewData::compute(complex, partition, &[], &params).ok()?;
+    serde_json::to_string(&RecomputeResponse {
+        map: iface.map,
+        atom_meta: iface.atom_meta,
+        stats: iface.stats,
+    })
+    .ok()
 }
 
 /// Writes a complete HTTP/1.1 response; write errors are ignored (client went away).

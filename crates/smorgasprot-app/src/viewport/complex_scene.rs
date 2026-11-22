@@ -4,7 +4,7 @@
 use super::draw_list::DrawList;
 use super::plane_space::{PlaneFrame, explode_offset};
 use crate::camera::CameraState;
-use crate::dataset::ViewerDataset;
+use crate::dataset::{InterfaceViewData, ViewerDataset};
 use crate::state::{ComplexViewSettings, InterfaceDisplayMode};
 use crate::style::palette;
 use egui::{Color32, Painter, Pos2, Rect, Stroke};
@@ -20,20 +20,21 @@ const LIGHT_DIR: Vec3 = Vec3::new(0.3, 0.5, 0.8);
 
 /// Paints the Complex tab for the active dataset.
 pub fn paint(painter: &Painter, rect: Rect, ds: &ViewerDataset, camera: &CameraState, s: &ComplexViewSettings) {
-    let view = View { frame: PlaneFrame::from(&ds.map.plane), camera, rect };
+    let Some(iface) = ds.active_interface() else { return };
+    let view = View { frame: PlaneFrame::from(&iface.map.plane), camera, rect };
     let mut list = DrawList::default();
 
     if s.show_surface && s.surface_alpha > MIN_VISIBLE_ALPHA {
         add_chain_surfaces(&mut list, &view, ds, s);
     }
     if s.interface_mode != InterfaceDisplayMode::Off && s.interface_alpha > MIN_VISIBLE_ALPHA {
-        add_interface_geometry(&mut list, &view, ds, s);
+        add_interface_geometry(&mut list, &view, iface, s);
     }
     if s.show_cartoon && s.cartoon_alpha > MIN_VISIBLE_ALPHA {
         add_cartoon(&mut list, &view, ds, s);
     }
     if s.show_spheres && s.spheres_alpha > MIN_VISIBLE_ALPHA {
-        add_spheres(&mut list, &view, ds, s);
+        add_spheres(&mut list, &view, iface, s);
     }
     list.paint(painter);
 }
@@ -69,9 +70,9 @@ fn add_chain_surfaces(list: &mut DrawList, view: &View, ds: &ViewerDataset, s: &
 }
 
 /// The selected derived interface mesh; anchored at the interface, so it ignores explode.
-fn add_interface_geometry(list: &mut DrawList, view: &View, ds: &ViewerDataset, s: &ComplexViewSettings) {
+fn add_interface_geometry(list: &mut DrawList, view: &View, iface: &InterfaceViewData, s: &ComplexViewSettings) {
     let a = s.interface_alpha;
-    let geo = &ds.geometry;
+    let geo = &iface.geometry;
     match s.interface_mode {
         InterfaceDisplayMode::SmoothedSdf => {
             // Flat (unshaded) fill with a fine wireframe.
@@ -82,7 +83,7 @@ fn add_interface_geometry(list: &mut DrawList, view: &View, ds: &ViewerDataset, 
         InterfaceDisplayMode::ContactEnvelope => {
             // Color each triangle by the side of its first vertex's nearest atom.
             add_mesh(list, view, &geo.envelope_mesh, Vec3::ZERO, false, |v0, shade| {
-                let side = ds.envelope_sides.get(v0).copied().unwrap_or(InterfaceSide::None);
+                let side = iface.envelope_sides.get(v0).copied().unwrap_or(InterfaceSide::None);
                 let (fill, edge) = match side {
                     InterfaceSide::SideA => (palette::ENVELOPE_A, palette::ENVELOPE_A_EDGE),
                     _ => (palette::ENVELOPE_B, palette::ENVELOPE_B_EDGE),
@@ -119,9 +120,9 @@ fn add_cartoon(list: &mut DrawList, view: &View, ds: &ViewerDataset, s: &Complex
 }
 
 /// Interface heavy atoms as van der Waals–scaled discs.
-fn add_spheres(list: &mut DrawList, view: &View, ds: &ViewerDataset, s: &ComplexViewSettings) {
+fn add_spheres(list: &mut DrawList, view: &View, iface: &InterfaceViewData, s: &ComplexViewSettings) {
     let outline = Stroke::new(1.0_f32, palette::INK);
-    for (node, meta) in ds.map.nodes.iter().zip(&ds.atom_meta) {
+    for (node, meta) in iface.map.nodes.iter().zip(&iface.atom_meta) {
         let (center, depth) = view.project(node.pos_3d, explode_offset(node.role, s.explode.value));
         let radius = (meta.vdw_radius_a * view.camera.zoom * 0.35).max(3.5);
         let fill = palette::with_alpha(palette::side_light(node.role), s.spheres_alpha);

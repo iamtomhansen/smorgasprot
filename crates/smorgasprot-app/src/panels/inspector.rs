@@ -110,11 +110,12 @@ fn contacts_list(ui: &mut Ui, ds: &ViewerDataset, terr: &ResidueTerritory) {
 }
 
 fn diagnostics(ui: &mut Ui, ds: &ViewerDataset) {
-    let s = &ds.stats;
-    ui.label(format!("{} Atoms/Residues: {} / {}", ds.group_a_name, s.side_a_atoms, s.side_a_territories));
-    ui.label(format!("{} Atoms/Residues: {} / {}", ds.group_b_name, s.side_b_atoms, s.side_b_territories));
+    let Some(iface) = ds.active_interface() else { return };
+    let s = &iface.stats;
+    ui.label(format!("{} Atoms/Residues: {} / {}", iface.partition.group_a_name, s.side_a_atoms, s.side_a_territories));
+    ui.label(format!("{} Atoms/Residues: {} / {}", iface.partition.group_b_name, s.side_b_atoms, s.side_b_territories));
     ui.separator();
     ui.label(format!("Edge RMSE (Raw → Relaxed): {:.2} → {:.2} Å", s.edge_rmse_before_a, s.edge_rmse_after_a));
     ui.label(format!("2D Overlaps (Raw → Relaxed): {} → {}", s.overlaps_before, s.overlaps_after));
-    ui.colored_label(palette::VOID, format!("Sub-Solvent Void Volume: {:.1} Å³", ds.geometry.void_volume_a3));
+    ui.colored_label(palette::VOID, format!("Sub-Solvent Void Volume: {:.1} Å³", iface.geometry.void_volume_a3));
 }

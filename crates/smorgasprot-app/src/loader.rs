@@ -3,7 +3,7 @@
 
 use crate::dataset::ViewerDataset;
 use smorgasprot_core::{
-    AnalysisParams, ChainName, ComplexStructure, flatten::build_interface_map, ingest::load_complex,
+    AnalysisParams, ChainName, ComplexStructure, ingest::load_complex,
     interface::InterfacePartition,
 };
 use std::path::Path;
@@ -79,8 +79,6 @@ pub fn load(spec: &DatasetSpec, params: &AnalysisParams) -> Result<Loaded, Strin
         spec.group_b_chains.clone(),
     );
 
-    let (map, stats) =
-        build_interface_map(&complex, &partition, params).map_err(|e| format!("Failed to extract and flatten interface: {e}"))?;
-    let dataset = ViewerDataset::from_complex_and_map(&spec.id, &spec.title, &complex, &partition, map, stats, params);
+    let dataset = ViewerDataset::new(&spec.id, &spec.title, &complex, vec![partition], params)?;
     Ok(Loaded { dataset, complex })
 }

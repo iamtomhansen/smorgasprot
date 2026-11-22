@@ -624,7 +624,21 @@ const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 
 function currentDataset() {
-  return DATASETS[state.datasetIdx];
+  const ds = DATASETS[state.datasetIdx];
+  if (ds && ds.interfaces && ds.interfaces.length > 0 && !ds.map) {
+    const iface = ds.interfaces[0];
+    Object.assign(ds, {
+      map: iface.map,
+      geometry: iface.geometry,
+      stats: iface.stats,
+      atom_meta: iface.atom_meta,
+      group_a_name: iface.partition.group_a_name,
+      group_b_name: iface.partition.group_b_name,
+      group_a_chains: iface.partition.group_a_chains,
+      group_b_chains: iface.partition.group_b_chains,
+    });
+  }
+  return ds;
 }
 
 // Vector helpers

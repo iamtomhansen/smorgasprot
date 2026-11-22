@@ -12,12 +12,15 @@ pub fn show(ui: &mut Ui, ds: Option<&ViewerDataset>, message: Option<&StatusMess
             let color = if msg.is_error { palette::ERROR } else { palette::SUCCESS };
             ui.colored_label(color, &msg.text);
         } else if let Some(ds) = ds {
+            let (node_count, hinge_u) = ds
+                .active_interface()
+                .map_or((0, 0.0), |i| (i.map.nodes.len(), i.map.plane.hinge_u));
             ui.label(format!(
                 "Active Complex: {} | {} Nodes | {} Cross-Contacts | Tangent Plane Hinge: {:.1} Å",
                 ds.id,
-                ds.map.nodes.len(),
+                node_count,
                 ds.cross_contact_count(),
-                ds.map.plane.hinge_u,
+                hinge_u,
             ));
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
