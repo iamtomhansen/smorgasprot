@@ -98,7 +98,13 @@ impl eframe::App for SmorgasprotApp {
         });
         if self.state.panels.status_bar {
             TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
-                panels::status_bar::show(ui, self.datasets.get(self.active), self.status.as_ref(), &mut actions);
+                panels::status_bar::show(
+                    ui,
+                    self.datasets.get(self.active),
+                    self.status.as_ref(),
+                    &self.state.palette.chrome,
+                    &mut actions,
+                );
             });
         }
 

@@ -2,13 +2,13 @@
 
 use crate::camera::CameraState;
 use crate::state::GridParams;
-use crate::style::palette;
+use crate::style::ChromePalette;
 use egui::{Painter, Rect, Stroke};
 use glam::Vec3;
 
 /// Paints the tangent-plane grid underneath all scene geometry.
-pub fn paint(painter: &Painter, rect: Rect, camera: &CameraState, grid: &GridParams) {
-    let stroke = Stroke::new(1.0_f32, palette::GRID);
+pub fn paint(painter: &Painter, rect: Rect, camera: &CameraState, grid: &GridParams, chrome: &ChromePalette) {
+    let stroke = Stroke::new(1.0_f32, chrome.grid());
     let extent = grid.grid_extent_a;
     let step = grid.grid_step_a.max(0.5);
     let line = |a: Vec3, b: Vec3| {

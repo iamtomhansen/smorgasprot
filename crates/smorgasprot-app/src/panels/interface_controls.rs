@@ -3,7 +3,6 @@
 use super::widgets::{alpha_slider, choice_combo, section, tween_presets, tween_slider};
 use crate::dataset::ViewerDataset;
 use crate::state::{ColorLens, UiState};
-use crate::style::palette;
 use egui::{RichText, Ui};
 use smorgasprot_core::InterfaceSide;
 
@@ -14,6 +13,8 @@ const OPEN_BOOK_MIN_B_ALPHA: f32 = 0.85;
 pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState) {
     ui.heading("🗺️ 2D/3D Interface Cartography");
     ui.add_space(4.0);
+    let side_a_color = state.palette.sides.side_light(InterfaceSide::SideA);
+    let side_b_color = state.palette.sides.side_light(InterfaceSide::SideB);
     let s = &mut state.interface;
 
     section(ui, "1. 3D ↔ 2D Flattening (t)", |ui| {
@@ -47,8 +48,8 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState) {
     });
 
     section(ui, "4. Group Opacity & Visibility", |ui| {
-        let name_a = RichText::new(format!("{}:", ds.group_name(InterfaceSide::SideA))).color(palette::SIDE_A_LIGHT);
-        let name_b = RichText::new(format!("{}:", ds.group_name(InterfaceSide::SideB))).color(palette::SIDE_B_LIGHT);
+        let name_a = RichText::new(format!("{}:", ds.group_name(InterfaceSide::SideA))).color(side_a_color);
+        let name_b = RichText::new(format!("{}:", ds.group_name(InterfaceSide::SideB))).color(side_b_color);
         alpha_slider(ui, name_a, &mut s.side_a_alpha);
         alpha_slider(ui, name_b, &mut s.side_b_alpha);
         ui.horizontal(|ui| {

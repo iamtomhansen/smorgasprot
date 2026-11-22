@@ -3,18 +3,24 @@
 use crate::action::Action;
 use crate::dataset::ViewerDataset;
 use crate::status::{StatusKind, StatusMessage};
-use crate::style::palette;
+use crate::style::ChromePalette;
 use egui::{Align, Layout, Ui};
 
 /// Renders the status bar; expiry of `message` is handled by the app, and manual dismissal pushes `Action::DismissStatus`.
-pub fn show(ui: &mut Ui, ds: Option<&ViewerDataset>, message: Option<&StatusMessage>, actions: &mut Vec<Action>) {
+pub fn show(
+    ui: &mut Ui,
+    ds: Option<&ViewerDataset>,
+    message: Option<&StatusMessage>,
+    chrome: &ChromePalette,
+    actions: &mut Vec<Action>,
+) {
     ui.horizontal(|ui| {
         if let Some(msg) = message {
             let color = match msg.kind {
-                StatusKind::Info => palette::ACCENT,
-                StatusKind::Success => palette::SUCCESS,
-                StatusKind::Warning => palette::WARNING,
-                StatusKind::Error => palette::ERROR,
+                StatusKind::Info => chrome.accent,
+                StatusKind::Success => chrome.success,
+                StatusKind::Warning => chrome.warning,
+                StatusKind::Error => chrome.error,
             };
             ui.colored_label(color, &msg.text);
             if ui.small_button("×").on_hover_text("Dismiss message").clicked() {

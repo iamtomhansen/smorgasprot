@@ -4,8 +4,8 @@
 use super::plane_space::PlaneFrame;
 use crate::camera::CameraState;
 use crate::dataset::{InterfaceViewData, ViewerDataset};
-use crate::state::{InterfaceViewSettings, Selection};
-use crate::style::{lenses, palette, sizing};
+use crate::state::{AtomDrawParams, InterfaceViewSettings, LensParams, Selection, UiState};
+use crate::style::{Palette, lenses, palette, sizing};
 use egui::{Align2, FontId, Painter, Pos2, Rect, Shape, Stroke};
 use smorgasprot_core::{AtomNodeIdx, InterfaceSide};
 
@@ -27,6 +27,9 @@ struct Ctx<'a> {
     camera: &'a CameraState,
     frame: PlaneFrame,
     s: &'a InterfaceViewSettings,
+    lenses: &'a LensParams,
+    atom_draw: &'a AtomDrawParams,
+    pal: &'a Palette,
 }
 
 impl Ctx<'_> {
@@ -67,23 +70,28 @@ pub fn pick_atom(ds: &ViewerDataset, s: &InterfaceViewSettings, nodes: &[Pos2], 
 }
 
 /// Paints the Interface tab; `nodes` comes from [`project_nodes`] for this frame.
-pub fn paint(
-    painter: &Painter,
-    rect: Rect,
-    ds: &ViewerDataset,
-    s: &InterfaceViewSettings,
-    selection: &Selection,
-    nodes: &[Pos2],
-) {
+pub fn paint(painter: &Painter, rect: Rect, ds: &ViewerDataset, state: &UiState, nodes: &[Pos2]) {
     let Some(iface) = ds.active_interface() else { return };
-    let cx = Ctx { painter, rect, ds, iface, camera: &s.camera, frame: PlaneFrame::from(&iface.map.plane), s };
+    let s = &state.interface;
+    let cx = Ctx {
+        painter,
+        rect,
+        ds,
+        iface,
+        camera: &s.camera,
+        frame: PlaneFrame::from(&iface.map.plane),
+        s,
+        lenses: &state.view_params.lenses,
+        atom_draw: &state.view_params.atom_draw,
+        pal: &state.palette,
+    };
 
     paint_hinge(&cx);
     if s.show_backbone {
         paint_backbone(&cx);
     }
     if s.show_territories {
-        paint_territories(&cx, selection);
+        paint_territories(&cx, &state.selection);
     }
     if s.show_intra_edges {
         paint_intra_edges(&cx, nodes);
@@ -91,7 +99,7 @@ pub fn paint(
     if s.show_cross_arcs {
         paint_cross_arcs(&cx, nodes);
     }
-    paint_atoms(&cx, selection, nodes);
+    paint_atoms(&cx, &state.selection, nodes);
 }
 
 /// Hinge line for the open-book butterfly, shown once the map is mostly flat and opened.
@@ -102,7 +110,7 @@ fn paint_hinge(cx: &Ctx) {
     let h = cx.frame.hinge_u;
     let (a, _) = cx.camera.project(glam::Vec3::new(h, -HINGE_HALF_LEN_A, 0.0), cx.rect);
     let (b, _) = cx.camera.project(glam::Vec3::new(h, HINGE_HALF_LEN_A, 0.0), cx.rect);
-    cx.painter.line_segment([a, b], Stroke::new(1.5_f32, palette::HINGE));
+    cx.painter.line_segment([a, b], Stroke::new(1.5_f32, cx.pal.chrome.hinge()));
 }
 
 /// Faint Cα trace of both groups, fading out as the map flattens.
@@ -120,7 +128,7 @@ fn paint_backbone(cx: &Ctx) {
         if alpha <= MIN_DRAW_ALPHA {
             continue;
         }
-        let stroke = Stroke::new(width, palette::with_alpha(palette::side_dark(side), fade * alpha * 0.45));
+        let stroke = Stroke::new(width, palette::with_alpha(cx.pal.sides.side_dark(side), fade * alpha * 0.45));
         // Use each Cα's own tangent-plane (u, v) so the trace follows the butterfly hinge.
         let pts: Vec<Pos2> = ch
             .ca_positions
@@ -152,13 +160,13 @@ fn paint_territories(cx: &Ctx, selection: &Selection) {
 
             let selected = selection.selected_residue == Some(terr.global_residue);
             let (fill_a, width): (f32, f32) = if selected { (0.40, 2.0) } else { (0.14, 1.2) };
-            let fill = palette::with_alpha(palette::side(side), alpha * fill_a);
-            let stroke = Stroke::new(width, palette::with_alpha(palette::side_dark(side), alpha * 0.7));
+            let fill = palette::with_alpha(cx.pal.sides.side(side), alpha * fill_a);
+            let stroke = Stroke::new(width, palette::with_alpha(cx.pal.sides.side_dark(side), alpha * 0.7));
             // Voronoi cells clipped to a convex hull stay convex, so a convex fill is valid.
             cx.painter.add(Shape::convex_polygon(pts, fill, stroke));
 
             let label_pos = cx.morph(terr.label_center_3d, terr.label_center_uv, side);
-            let ink = palette::with_alpha(palette::INK, alpha * 0.85);
+            let ink = palette::with_alpha(cx.pal.chrome.ink, alpha * 0.85);
             cx.painter.text(label_pos, Align2::CENTER_CENTER, &terr.label_top, font.clone(), ink);
         }
     }
@@ -172,7 +180,7 @@ fn paint_intra_edges(cx: &Ctx, nodes: &[Pos2]) {
         if alpha <= MIN_INTERACTIVE_ALPHA {
             continue;
         }
-        let stroke = Stroke::new(1.0_f32, palette::with_alpha(palette::CONTACT, alpha * 0.45));
+        let stroke = Stroke::new(1.0_f32, palette::with_alpha(cx.pal.contacts.contact, alpha * 0.45));
         cx.painter.line_segment([nodes[e.a.0 as usize], nodes[e.b.0 as usize]], stroke);
     }
 }
@@ -184,7 +192,10 @@ fn paint_cross_arcs(cx: &Ctx, nodes: &[Pos2]) {
         return;
     }
     for e in cx.iface.map.edges.iter().filter(|e| e.is_cross_interface) {
-        let stroke = Stroke::new(lenses::contact_width(e.kind), palette::with_alpha(lenses::contact_color(e.kind), alpha * 0.86));
+        let stroke = Stroke::new(
+            lenses::contact_width(e.kind),
+            palette::with_alpha(lenses::contact_color(e.kind, &cx.pal.contacts), alpha * 0.86),
+        );
         cx.painter.line_segment([nodes[e.a.0 as usize], nodes[e.b.0 as usize]], stroke);
     }
 }
@@ -196,14 +207,21 @@ fn paint_atoms(cx: &Ctx, selection: &Selection, nodes: &[Pos2]) {
         if alpha <= MIN_DRAW_ALPHA {
             continue;
         }
-        let radius = sizing::atom_radius_px(node, cx.s.size_mode, cx.camera.zoom);
-        let fill = palette::with_alpha(lenses::atom_fill_color(node, meta, cx.s.lens, cx.s.bfactor_mode), alpha);
+        let radius = sizing::atom_radius_px(node, cx.s.size_mode, cx.camera.zoom, cx.atom_draw);
+        let fill = palette::with_alpha(
+            lenses::atom_fill_color(node, meta, cx.s.lens, cx.s.bfactor_mode, cx.lenses, cx.pal),
+            alpha,
+        );
 
         let hovered = selection.hovered_atom == Some(node.global_atom);
-        let outline = if hovered { Stroke::new(2.5_f32, egui::Color32::WHITE) } else { Stroke::new(1.0_f32, palette::INK) };
+        let outline = if hovered {
+            Stroke::new(2.5_f32, egui::Color32::WHITE)
+        } else {
+            Stroke::new(1.0_f32, cx.pal.chrome.ink)
+        };
         cx.painter.circle(pos, radius, fill, outline);
         if hovered {
-            cx.painter.circle_stroke(pos, radius + 3.0, Stroke::new(1.5_f32, palette::HOVER_RING));
+            cx.painter.circle_stroke(pos, radius + 3.0, Stroke::new(1.5_f32, cx.pal.chrome.hover_ring()));
         }
     }
 }

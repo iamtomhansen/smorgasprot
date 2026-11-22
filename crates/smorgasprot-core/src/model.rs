@@ -17,7 +17,7 @@ pub struct GlobalResidueIdx(pub u32);
 /// Dense index into `ComplexStructure::chains`.
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 #[serde(transparent)]
-pub struct ChainIdx(pub u32);
+pub struct GlobalChainIdx(pub u32);
 
 /// Secondary structure classification for residue labels and rendering.
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -135,7 +135,7 @@ impl ComplexStructure {
 /// Metadata and contiguous array ranges for a single polypeptide chain in [`ComplexStructure`].
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ChainRecord {
-    pub idx: ChainIdx,
+    pub idx: GlobalChainIdx,
     /// The chain's PDB-style name as a string (e.g. "A", "B", etc.)
     pub chain_id: ChainName,
     pub residue_range: (u32, u32),
@@ -146,7 +146,7 @@ pub struct ChainRecord {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ResidueRecord {
     pub idx: GlobalResidueIdx,
-    pub chain_idx: ChainIdx,
+    pub chain_idx: GlobalChainIdx,
     pub kind: ResidueKind,
     pub chain_id: ChainName,
     pub seq_num: i32,
@@ -165,7 +165,7 @@ pub struct AtomRecord {
     /// Dense index into `ComplexStructure::residues` (0-based).
     pub residue_idx: GlobalResidueIdx,
     /// Dense index into `ComplexStructure::chains` (0-based).
-    pub chain_idx: ChainIdx,
+    pub chain_idx: GlobalChainIdx,
     /// Atom serial number from the source PDB/mmCIF file (1-based).
     pub atom_serial: usize,
     pub atom_name: [u8; 4],

@@ -1,10 +1,10 @@
-//! Complex tab controls: group names, 3D representations, and explode separation.
+//! Complex tab controls: group names, color palette, 3D representations, and explode separation.
 
 use super::widgets::{alpha_slider, choice_combo, section, tween_presets, tween_slider};
 use crate::dataset::ViewerDataset;
 use crate::state::{InterfaceDisplayMode, UiState, WorkspaceTab};
-use crate::style::palette;
 use egui::{RichText, Ui};
+use smorgasprot_core::InterfaceSide;
 
 /// Renders the Complex tab's side panel.
 pub fn show(ui: &mut Ui, ds: &mut ViewerDataset, state: &mut UiState) {
@@ -32,20 +32,41 @@ pub fn show(ui: &mut Ui, ds: &mut ViewerDataset, state: &mut UiState) {
         });
     }
 
-    // Display-only rename; does not affect chain assignment.
-    section(ui, "1. Interface Group Names", |ui| {
+    // Display-only rename and color customization; does not affect chain assignment.
+    section(ui, "1. Interface Group Names & Palette", |ui| {
+        let mut chosen = None;
+        ui.horizontal(|ui| {
+            ui.label("Palette:");
+            egui::ComboBox::from_id_salt("color_palette_preset")
+                .selected_text(&state.palette.active_name)
+                .width(ui.available_width())
+                .show_ui(ui, |ui| {
+                    for s in &state.palette.available {
+                        if ui.selectable_label(s.name == state.palette.active_name, &s.name).clicked() {
+                            chosen = Some(s.name.clone());
+                        }
+                    }
+                });
+        });
+        if let Some(name) = chosen {
+            state.palette.apply_by_name(&name);
+        }
+
         if let Some(iface) = ds.active_interface_mut() {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Group A:").color(palette::SIDE_A_LIGHT));
+                ui.color_edit_button_srgba(&mut state.palette.sides.side_a);
+                ui.label(RichText::new("Group A:").color(state.palette.sides.side_light(InterfaceSide::SideA)));
                 ui.text_edit_singleline(&mut iface.partition.group_a_name);
             });
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Group B:").color(palette::SIDE_B_LIGHT));
+                ui.color_edit_button_srgba(&mut state.palette.sides.side_b);
+                ui.label(RichText::new("Group B:").color(state.palette.sides.side_light(InterfaceSide::SideB)));
                 ui.text_edit_singleline(&mut iface.partition.group_b_name);
             });
         }
     });
 
+    let void_color = state.palette.sides.void;
     let s = &mut state.complex;
     section(ui, "2. 3D Representations & Opacity", |ui| {
         ui.checkbox(&mut s.show_surface, "Surface Mesh (Atomic skin)");
@@ -68,7 +89,7 @@ pub fn show(ui: &mut Ui, ds: &mut ViewerDataset, state: &mut UiState) {
         }
         if s.interface_mode == InterfaceDisplayMode::NegativeSpace {
             if let Some(iface) = ds.active_interface() {
-                ui.colored_label(palette::VOID, format!("Sub-Solvent Void Volume: {:.1} Å³", iface.geometry.void_volume_a3));
+                ui.colored_label(void_color, format!("Sub-Solvent Void Volume: {:.1} Å³", iface.geometry.void_volume_a3));
             }
         }
 

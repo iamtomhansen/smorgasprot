@@ -3,7 +3,7 @@
 use crate::amino_acids::{ElementExt, ResidueKind};
 use crate::dssp::{SecStructMode, assign_secondary_structure};
 use crate::model::{
-    AtomRecord, ChainIdx, ChainName, ChainRecord, ComplexStructure, Element, GlobalAtomIdx, GlobalResidueIdx,
+    AtomRecord, GlobalChainIdx, ChainName, ChainRecord, ComplexStructure, Element, GlobalAtomIdx, GlobalResidueIdx,
     ResidueRecord, SecStruct,
 };
 use std::path::Path;
@@ -41,7 +41,7 @@ pub fn load_complex(path: impl AsRef<Path>) -> Result<ComplexStructure, String> 
 
     for chain in model.chains() {
         let cid = chain.id().to_string();
-        let chain_idx = ChainIdx(chains.len() as u32);
+        let chain_idx = GlobalChainIdx(chains.len() as u32);
         let chain_res_start = residues.len() as u32;
         let chain_atom_start = atoms.len() as u32;
 

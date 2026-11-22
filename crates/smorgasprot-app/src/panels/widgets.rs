@@ -2,7 +2,7 @@
 //! Keeps section styling, sliders, and combo boxes consistent across tabs.
 
 use crate::state::{Choice, Tween};
-use crate::style::palette;
+use crate::style::ChromePalette;
 use egui::{Color32, ComboBox, RichText, Slider, Ui, vec2};
 
 /// Range for every opacity slider (fully transparent layers are hidden via checkboxes instead).
@@ -12,7 +12,7 @@ const ALPHA_RANGE: std::ops::RangeInclusive<f32> = 0.05..=1.0;
 pub fn section(ui: &mut Ui, title: &str, add_contents: impl FnOnce(&mut Ui)) {
     ui.group(|ui| {
         ui.set_min_width(ui.available_width());
-        ui.label(RichText::new(title).strong().color(palette::ACCENT));
+        ui.label(RichText::new(title).strong().color(ChromePalette::default().accent));
         add_contents(ui);
     });
     ui.add_space(6.0);

@@ -13,7 +13,8 @@ pub use view_params::{
 };
 
 use crate::camera::CameraState;
-use smorgasprot_core::{GlobalAtomIdx, GlobalResidueIdx, InterfaceSide};
+use crate::style::Palette;
+use smorgasprot_core::{GlobalAtomIdx, GlobalChainIdx, GlobalResidueIdx, InterfaceSide};
 
 /// Visibility toggles for collapsible side/bottom panels and floating windows.
 #[derive(Clone, Debug)]
@@ -44,6 +45,7 @@ pub struct UiState {
     pub interface: InterfaceViewSettings,
     pub selection: Selection,
     pub view_params: ViewParams,
+    pub palette: Palette,
 }
 
 impl Default for UiState {
@@ -55,6 +57,7 @@ impl Default for UiState {
             interface: InterfaceViewSettings::default(),
             selection: Selection::default(),
             view_params: ViewParams::default(),
+            palette: Palette::default(),
         }
     }
 }
@@ -133,7 +136,7 @@ impl Default for ComplexViewSettings {
 }
 
 impl ComplexViewSettings {
-    /// Current separation between the two groups in Ångström.
+    /// Current separation between the two groups in Ångströms.
     pub fn explode_distance_a(&self, params: &ExplodeParams) -> f32 {
         self.explode.value * params.max_explode_a
     }
@@ -248,6 +251,7 @@ pub struct Selection {
     pub hovered_atom: Option<GlobalAtomIdx>,
     pub selected_atom: Option<GlobalAtomIdx>,
     pub selected_residue: Option<GlobalResidueIdx>,
+    pub selected_chain: Option<GlobalChainIdx>,
 }
 
 impl Selection {

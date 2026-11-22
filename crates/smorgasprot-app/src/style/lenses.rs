@@ -1,126 +1,132 @@
 //! Color lenses: per-atom fill colors and their matching legends.
-//! Each lens defines its categories once, so atom colors and legend entries cannot drift apart.
+//! Reads thresholds from [`LensParams`], discrete colors from domain sub-palettes, and continuous gradients from [`ColorMap`].
 
 use crate::dataset::AtomMeta;
-use crate::state::{BFactorMode, ColorLens};
-use crate::style::palette;
+use crate::state::{BFactorMode, ColorLens, LensParams};
+use crate::style::{ContactPalette, Palette};
 use egui::Color32;
-use smorgasprot_core::{AtomNode, EdgeKind, Element, InterfaceSide};
-
-/// Aliphatic score above which an atom is colored as aliphatic in the Chemistry lens.
-const ALIPHATIC_THRESHOLD: f32 = 0.75;
-/// Overlap (Å) above which an atom counts as clashing in the Interactions lens.
-const CLASH_THRESHOLD_A: f32 = 0.05;
+use smorgasprot_core::{AtomNode, EdgeKind, InterfaceSide};
 
 /// Fill color for an interface atom under the active lens.
-pub fn atom_fill_color(node: &AtomNode, meta: &AtomMeta, lens: ColorLens, bfactor_mode: BFactorMode) -> Color32 {
+pub fn atom_fill_color(
+    node: &AtomNode,
+    meta: &AtomMeta,
+    lens: ColorLens,
+    bfactor_mode: BFactorMode,
+    params: &LensParams,
+    palette: &Palette,
+) -> Color32 {
     match lens {
         ColorLens::Interactions => {
+            let c = &palette.contacts;
             // Priority: clash > salt bridge > H-bond > plain side color.
-            if worst_clash_overlap(node) > CLASH_THRESHOLD_A {
-                palette::CLASH
+            if worst_clash_overlap(node) > params.clash_threshold_a {
+                c.clash
             } else if has_cross_interaction(node, EdgeKind::SaltBridge) {
-                palette::SALT_BRIDGE
+                c.salt_bridge
             } else if has_cross_interaction(node, EdgeKind::HBond) {
-                palette::HBOND
+                c.hbond
             } else if node.role == InterfaceSide::SideA {
-                palette::SIDE_A
+                palette.sides.side_a
             } else {
-                palette::SIDE_B_LIGHT
+                palette.sides.side_light(InterfaceSide::SideB)
             }
         }
         ColorLens::Chemistry => {
-            if node.aliphatic_score >= ALIPHATIC_THRESHOLD {
-                return palette::ALIPHATIC;
+            let ch = &palette.chemistry;
+            if node.aliphatic_score >= params.aliphatic_threshold {
+                return ch.aliphatic;
             }
             match meta.res_name.as_str() {
-                "PHE" | "TYR" | "TRP" => palette::AROMATIC,
-                "ARG" | "LYS" | "HIS" => palette::POSITIVE,
-                "ASP" | "GLU" => palette::NEGATIVE,
-                "GLY" | "PRO" => palette::GLY_PRO,
-                _ => palette::POLAR,
+                "PHE" | "TYR" | "TRP" => ch.aromatic,
+                "ARG" | "LYS" | "HIS" => ch.positive,
+                "ASP" | "GLU" => ch.negative,
+                "GLY" | "PRO" => ch.gly_pro,
+                _ => ch.polar,
             }
         }
-        ColorLens::ModernCpk => match meta.element {
-            Element::C => palette::CPK_C,
-            Element::N => palette::CPK_N,
-            Element::O => palette::CPK_O,
-            Element::S => palette::CPK_S,
-            Element::P => palette::CPK_P,
-            _ => palette::CPK_OTHER,
+        ColorLens::ModernCpk => palette.elements.color(meta.element),
+        ColorLens::Bfactor => match bfactor_mode {
+            // pLDDT: inverted range (high confidence = 0.0 -> low confidence = 1.0).
+            BFactorMode::AlphaFold => {
+                palette.mobility.sample_range(node.b_factor, params.plddt_very_high_min, params.plddt_low_min)
+            }
+            // B-factor: low rigid B-factor = 0.0 -> high labile B-factor = 1.0.
+            BFactorMode::Crystallographic => {
+                palette.mobility.sample_range(node.b_factor, params.bfactor_rigid_max_a2, params.bfactor_flexible_max_a2)
+            }
         },
-        ColorLens::Bfactor => palette::MOBILITY_BINS[mobility_bin(node.b_factor, bfactor_mode)],
     }
 }
 
 /// Legend entries `(color, label)` for the active lens; group names label the side colors.
-pub fn legend(lens: ColorLens, bfactor_mode: BFactorMode, group_a: &str, group_b: &str) -> Vec<(Color32, String)> {
-    let entries: Vec<(Color32, &str)> = match lens {
-        ColorLens::Interactions => vec![
-            (palette::CLASH, "VdW Clash"),
-            (palette::HBOND, "H-Bond"),
-            (palette::SALT_BRIDGE, "Salt Bridge"),
-            (palette::SIDE_A, group_a),
-            (palette::SIDE_B_LIGHT, group_b),
-        ],
-        ColorLens::Chemistry => vec![
-            (palette::ALIPHATIC, "Aliphatic"),
-            (palette::AROMATIC, "Aromatic"),
-            (palette::POLAR, "Polar"),
-            (palette::POSITIVE, "Positive"),
-            (palette::NEGATIVE, "Negative"),
-            (palette::GLY_PRO, "Gly / Pro"),
-        ],
-        ColorLens::ModernCpk => vec![
-            (palette::CPK_C, "Carbon (C)"),
-            (palette::CPK_N, "Nitrogen (N)"),
-            (palette::CPK_O, "Oxygen (O)"),
-            (palette::CPK_S, "Sulfur (S)"),
-        ],
-        ColorLens::Bfactor => {
-            let labels = mobility_bin_labels(bfactor_mode);
-            palette::MOBILITY_BINS.iter().copied().zip(labels).collect()
+pub fn legend(
+    lens: ColorLens,
+    bfactor_mode: BFactorMode,
+    group_a: &str,
+    group_b: &str,
+    params: &LensParams,
+    palette: &Palette,
+) -> Vec<(Color32, String)> {
+    match lens {
+        ColorLens::Interactions => {
+            let c = &palette.contacts;
+            vec![
+                (c.clash, "VdW Clash".into()),
+                (c.hbond, "H-Bond".into()),
+                (c.salt_bridge, "Salt Bridge".into()),
+                (palette.sides.side_a, group_a.into()),
+                (palette.sides.side_light(InterfaceSide::SideB), group_b.into()),
+            ]
         }
-    };
-    entries.into_iter().map(|(c, l)| (c, l.to_string())).collect()
-}
-
-/// Bins a B-factor (Å²) or pLDDT value into `0` (ordered/confident) … `3` (mobile/low confidence).
-fn mobility_bin(value: f32, mode: BFactorMode) -> usize {
-    match mode {
-        // pLDDT: higher is more confident.
-        BFactorMode::AlphaFold => match value {
-            v if v >= 90.0 => 0,
-            v if v >= 70.0 => 1,
-            v if v >= 50.0 => 2,
-            _ => 3,
-        },
-        // B-factor: lower is more rigid.
-        BFactorMode::Crystallographic => match value {
-            v if v <= 30.0 => 0,
-            v if v <= 50.0 => 1,
-            v if v <= 70.0 => 2,
-            _ => 3,
-        },
+        ColorLens::Chemistry => {
+            let ch = &palette.chemistry;
+            vec![
+                (ch.aliphatic, "Aliphatic".into()),
+                (ch.aromatic, "Aromatic".into()),
+                (ch.polar, "Polar".into()),
+                (ch.positive, "Positive".into()),
+                (ch.negative, "Negative".into()),
+                (ch.gly_pro, "Gly / Pro".into()),
+            ]
+        }
+        ColorLens::ModernCpk => {
+            let el = &palette.elements;
+            vec![
+                (el.c, "Carbon (C)".into()),
+                (el.n, "Nitrogen (N)".into()),
+                (el.o, "Oxygen (O)".into()),
+                (el.s, "Sulfur (S)".into()),
+            ]
+        }
+        ColorLens::Bfactor => {
+            let labels = mobility_swatch_labels(bfactor_mode, params);
+            palette.mobility.swatches::<4>().into_iter().zip(labels).collect()
+        }
     }
 }
 
-/// Legend labels matching [`mobility_bin`] thresholds.
-fn mobility_bin_labels(mode: BFactorMode) -> [&'static str; 4] {
+/// Legend labels for 4 sampled swatches along the continuous mobility [`ColorMap`].
+fn mobility_swatch_labels(mode: BFactorMode, p: &LensParams) -> [String; 4] {
     match mode {
-        BFactorMode::AlphaFold => ["Very High (>90)", "Confident (70-90)", "Low (50-70)", "Very Low (<50)"],
-        BFactorMode::Crystallographic => ["Rigid (≤30)", "Ordered (30-50)", "Flexible (50-70)", "Labile (>70)"],
+        BFactorMode::AlphaFold => [
+            format!("Very High (≥{:.0})", p.plddt_very_high_min),
+            format!("Confident (~{:.0})", p.plddt_confident_min),
+            format!("Low (~{:.0})", p.plddt_low_min),
+            format!("Very Low (<{:.0})", p.plddt_low_min),
+        ],
+        BFactorMode::Crystallographic => [
+            format!("Rigid (≤{:.0} Å²)", p.bfactor_rigid_max_a2),
+            format!("Ordered (~{:.0} Å²)", p.bfactor_ordered_max_a2),
+            format!("Flexible (~{:.0} Å²)", p.bfactor_flexible_max_a2),
+            format!("Labile (>{:.0} Å²)", p.bfactor_flexible_max_a2),
+        ],
     }
 }
 
 /// Color encoding for a contact edge (arcs and inspector tags).
-pub fn contact_color(kind: EdgeKind) -> Color32 {
-    match kind {
-        EdgeKind::Clash => palette::CLASH,
-        EdgeKind::SaltBridge => palette::SALT_BRIDGE,
-        EdgeKind::HBond => palette::HBOND,
-        EdgeKind::VanDerWaalsContact | EdgeKind::SameResidue => palette::CONTACT,
-    }
+pub fn contact_color(kind: EdgeKind, contacts: &ContactPalette) -> Color32 {
+    contacts.color(kind)
 }
 
 /// Stroke width (px) for a contact arc; specific interactions draw heavier.

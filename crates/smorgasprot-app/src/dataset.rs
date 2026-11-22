@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 use smorgasprot_core::{
-    AnalysisParams, AtomNode, AtomNodeIdx, ChainIdx, ChainName, ComplexStructure, Element, GlobalAtomIdx, GlobalResidueIdx,
+    AnalysisParams, AtomNode, AtomNodeIdx, GlobalChainIdx, ChainName, ComplexStructure, Element, GlobalAtomIdx, GlobalResidueIdx,
     InterfaceGeometry, InterfaceMap, InterfacePartition, InterfaceSide, ResidueTerritory, SurfaceMesh, TerritoryIdx,
     flatten::FlatteningStats, interface_geometry::build_interface_geometry, surface::build_chain_surface_mesh,
 };
@@ -163,7 +163,7 @@ impl ViewerDataset {
                 residue_count: (chain.residue_range.1 - chain.residue_range.0) as usize,
                 atom_count: (chain.atom_range.1 - chain.atom_range.0) as usize,
                 ca_positions: ca_trace(complex, chain.residue_range),
-                surface_mesh: build_chain_surface_mesh(complex, ChainIdx(c_idx as u32), &params.surface),
+                surface_mesh: build_chain_surface_mesh(complex, GlobalChainIdx(c_idx as u32), &params.surface),
             })
             .collect();
 
@@ -198,7 +198,7 @@ impl ViewerDataset {
     pub fn recompute_surfaces(&mut self, params: &AnalysisParams) {
         let Some(complex) = &self.complex else { return };
         for (c_idx, chain) in self.chains.iter_mut().enumerate() {
-            chain.surface_mesh = build_chain_surface_mesh(complex, ChainIdx(c_idx as u32), &params.surface);
+            chain.surface_mesh = build_chain_surface_mesh(complex, GlobalChainIdx(c_idx as u32), &params.surface);
         }
         let chain_meshes: Vec<SurfaceMesh> = self.chains.iter().map(|c| c.surface_mesh.clone()).collect();
         for iface in &mut self.interfaces {

@@ -16,7 +16,7 @@
 //!   producing a single-layer, watertight, non-overlapping manifold mesh with analytical gradient
 //!   normals).
 
-use crate::model::{ChainIdx, ComplexStructure, GlobalAtomIdx, SurfaceMesh};
+use crate::model::{GlobalChainIdx, ComplexStructure, GlobalAtomIdx, SurfaceMesh};
 use crate::spatial::SpatialGrid;
 use glam::Vec3;
 
@@ -226,7 +226,7 @@ fn emit_quad(triangles: &mut Vec<[u32; 3]>, v0: u32, v1: u32, v2: u32, v3: u32, 
 /// `SideA` / `SideB` chain assignments immediately highlight interfacial surface vertices in O(1).
 pub fn build_chain_surface_mesh(
     complex: &ComplexStructure,
-    chain_idx: ChainIdx,
+    chain_idx: GlobalChainIdx,
     p: &SurfaceParams,
 ) -> SurfaceMesh {
     build_chain_surface_mesh_with_preset(complex, chain_idx, GeodesicPreset::default(), p)
@@ -249,7 +249,7 @@ pub fn build_chain_surface_mesh(
 ///    sphere triangles).
 pub fn build_chain_surface_mesh_with_preset(
     complex: &ComplexStructure,
-    chain_idx: ChainIdx,
+    chain_idx: GlobalChainIdx,
     preset: GeodesicPreset,
     params: &SurfaceParams,
 ) -> SurfaceMesh {

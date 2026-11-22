@@ -10,14 +10,13 @@ mod plane_space;
 
 use crate::dataset::ViewerDataset;
 use crate::state::{UiState, WorkspaceTab};
-use crate::style::palette;
 use egui::{CursorIcon, PointerButton, Sense, Ui};
 
 /// Allocates the remaining space in `ui` and renders the active tab's scene.
 pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState) {
     let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 0.0, palette::VIEWPORT_BG);
+    painter.rect_filled(rect, 0.0, state.palette.chrome.viewport_bg);
 
     let pointer = response.hover_pos();
     let over_gizmo = pointer.is_some_and(|p| gizmo::contains(rect, p));
@@ -42,21 +41,28 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState) {
         state.active_camera_mut().handle_input(ui, &response, flat, &nav);
     }
 
-    grid::paint(&painter, rect, state.active_camera(), &state.view_params.grid);
+    grid::paint(&painter, rect, state.active_camera(), &state.view_params.grid, &state.palette.chrome);
 
     match state.active_tab {
         WorkspaceTab::Complex => {
             state.selection.hovered_atom = None;
-            complex_scene::paint(&painter, rect, ds, &state.complex, &state.view_params.explode);
+            complex_scene::paint(
+                &painter,
+                rect,
+                ds,
+                &state.complex,
+                &state.view_params.explode,
+                &state.palette.sides,
+                &state.palette.chrome,
+            );
         }
         WorkspaceTab::Interface => {
-            let s = &state.interface;
-            let nodes = interface_scene::project_nodes(ds, rect, s);
+            let nodes = interface_scene::project_nodes(ds, rect, &state.interface);
 
             // Hover picking is skipped over the gizmo so caps stay clickable.
             let hovered_node = pointer
                 .filter(|_| !over_gizmo)
-                .and_then(|p| interface_scene::pick_atom(ds, s, &nodes, p))
+                .and_then(|p| interface_scene::pick_atom(ds, &state.interface, &nodes, p))
                 .and_then(|idx| ds.node(idx));
             state.selection.hovered_atom = hovered_node.map(|n| n.global_atom);
 
@@ -67,11 +73,11 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState) {
                     .and_then(|n| ds.territory(n.territory))
                     .map(|t| t.global_residue);
             }
-            interface_scene::paint(&painter, rect, ds, s, &state.selection, &nodes);
+            interface_scene::paint(&painter, rect, ds, state, &nodes);
         }
     }
 
-    gizmo::paint(&painter, rect, state.active_camera(), gizmo_cap, over_roll_ring);
+    gizmo::paint(&painter, rect, state.active_camera(), gizmo_cap, over_roll_ring, &state.palette.gizmo, &state.palette.chrome);
     if gizmo_cap.is_some() {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     } else if over_roll_ring {

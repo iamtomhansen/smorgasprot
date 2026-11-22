@@ -3,7 +3,7 @@
 //! An outer concentric ring controls camera roll around the view axis.
 
 use crate::camera::{CameraState, ViewAxis};
-use crate::style::palette;
+use crate::style::{ChromePalette, GizmoPalette, palette};
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Stroke, pos2};
 
 /// Distance from the viewport's top-right corner to the gizmo center.
@@ -20,9 +20,6 @@ const TOTAL_RADIUS: f32 = ROLL_RING_RADIUS + ROLL_RING_HALF_WIDTH;
 /// Cap radii for positive and negative axes.
 const CAP_RADIUS_POS: f32 = 8.5;
 const CAP_RADIUS_NEG: f32 = 6.0;
-// Premultiplied slate-900 at 78 % and slate-400 at 35 % (const-friendly).
-const BG_FILL: Color32 = Color32::from_rgba_premultiplied(12, 18, 33, 198);
-const BG_RIM: Color32 = Color32::from_rgba_premultiplied(52, 57, 65, 90);
 
 /// One projected axis cap.
 struct Cap {
@@ -37,15 +34,6 @@ fn center(rect: Rect) -> Pos2 {
 
 fn cap_radius(axis: ViewAxis) -> f32 {
     if axis.is_positive() { CAP_RADIUS_POS } else { CAP_RADIUS_NEG }
-}
-
-fn axis_color(axis: ViewAxis) -> Color32 {
-    let (pos, neg) = match axis {
-        ViewAxis::PosU | ViewAxis::NegU => palette::AXIS_U,
-        ViewAxis::PosV | ViewAxis::NegV => palette::AXIS_V,
-        ViewAxis::PosN | ViewAxis::NegN => palette::AXIS_N,
-    };
-    if axis.is_positive() { pos } else { neg }
 }
 
 /// Projects all six caps, sorted far to near (paint order).
@@ -104,40 +92,52 @@ pub fn hit_test(rect: Rect, camera: &CameraState, pointer: Pos2) -> Option<ViewA
 }
 
 /// Paints the gizmo and outer roll ring; `hovered` gets a highlight outline.
-pub fn paint(painter: &Painter, rect: Rect, camera: &CameraState, hovered: Option<ViewAxis>, over_ring: bool) {
+pub fn paint(
+    painter: &Painter,
+    rect: Rect,
+    camera: &CameraState,
+    hovered: Option<ViewAxis>,
+    over_ring: bool,
+    gizmo_pal: &GizmoPalette,
+    chrome: &ChromePalette,
+) {
     let c = center(rect);
-    painter.circle(c, BG_RADIUS, BG_FILL, Stroke::new(1.0_f32, BG_RIM));
+    painter.circle(c, BG_RADIUS, gizmo_pal.bg_fill, Stroke::new(1.0_f32, gizmo_pal.bg_rim));
 
     // Outer roll ring
     let ring_stroke = if over_ring {
-        Stroke::new(2.0_f32, palette::ACCENT)
+        Stroke::new(2.0_f32, chrome.accent)
     } else {
-        Stroke::new(1.2_f32, BG_RIM)
+        Stroke::new(1.2_f32, gizmo_pal.bg_rim)
     };
     painter.circle_stroke(c, ROLL_RING_RADIUS, ring_stroke);
 
     // 12 o'clock zero tick
     let zero_tick = pos2(c.x, c.y - ROLL_RING_RADIUS);
-    let zero_color = if camera.roll.abs() < 0.02 { palette::ACCENT } else { palette::MUTED };
+    let zero_color = if camera.roll.abs() < 0.02 { chrome.accent } else { chrome.muted() };
     painter.circle_filled(zero_tick, 2.0_f32, zero_color);
 
     // Current roll handle
     let angle = -std::f32::consts::FRAC_PI_2 - camera.roll;
     let (sin_a, cos_a) = angle.sin_cos();
     let handle_pos = pos2(c.x + cos_a * ROLL_RING_RADIUS, c.y + sin_a * ROLL_RING_RADIUS);
-    let handle_color = if over_ring { Color32::WHITE } else { palette::ACCENT };
-    painter.circle(handle_pos, 3.5_f32, handle_color, Stroke::new(1.0_f32, palette::INK));
+    let handle_color = if over_ring { Color32::WHITE } else { chrome.accent };
+    painter.circle(handle_pos, 3.5_f32, handle_color, Stroke::new(1.0_f32, chrome.ink));
 
     // Axis arms and caps
     for cap in caps(rect, camera) {
-        let color = axis_color(cap.axis);
+        let color = gizmo_pal.axis_color(cap.axis);
         let positive = cap.axis.is_positive();
         if positive {
             painter.line_segment([c, cap.pos], Stroke::new(2.2_f32, color));
         }
         // Caps pointing away from the viewer are dimmed.
         let fill = if cap.depth >= -0.1 { color } else { palette::with_alpha(color, 0.6) };
-        let outline = if hovered == Some(cap.axis) { Stroke::new(2.0_f32, Color32::WHITE) } else { Stroke::new(1.2_f32, palette::INK) };
+        let outline = if hovered == Some(cap.axis) {
+            Stroke::new(2.0_f32, Color32::WHITE)
+        } else {
+            Stroke::new(1.2_f32, chrome.ink)
+        };
         painter.circle(cap.pos, cap_radius(cap.axis), fill, outline);
         if positive {
             painter.text(cap.pos, Align2::CENTER_CENTER, cap.axis.label(), FontId::proportional(10.0), Color32::WHITE);

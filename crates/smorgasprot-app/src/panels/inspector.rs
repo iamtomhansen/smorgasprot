@@ -1,10 +1,10 @@
 //! Right-hand inspector: residue and atom cards, cross-interface contacts, diagnostics, and legend.
-//! Read-only; it reflects `Selection` but never changes it.
+//! Read-only; it reflects `Selection` and `Palette` but never changes them.
 
 use super::widgets::{legend_swatch, section};
 use crate::dataset::ViewerDataset;
 use crate::state::{BFactorMode, UiState};
-use crate::style::{lenses, palette};
+use crate::style::{ChromePalette, ContactPalette, InterfaceSidePalette, lenses};
 use egui::{RichText, Ui};
 use smorgasprot_core::{AtomInteraction, AtomNode, EdgeKind, InterfaceSide, ResidueTerritory};
 
@@ -16,6 +16,7 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &UiState) {
     ui.heading("🔍 Inspector & Diagnostics");
     ui.add_space(4.0);
 
+    let pal = &state.palette;
     let hovered = state
         .selection
         .hovered_atom
@@ -30,40 +31,40 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &UiState) {
 
     section(ui, "Selected Residue / Atom", |ui| match territory {
         Some(terr) => {
-            residue_card(ui, ds, terr);
+            residue_card(ui, ds, terr, &pal.sides, &pal.chrome);
             if let Some(node) = hovered {
                 ui.separator();
                 atom_card(ui, ds, node, state.interface.bfactor_mode);
             }
             ui.separator();
-            contacts_list(ui, ds, terr);
+            contacts_list(ui, ds, terr, &pal.contacts);
         }
         None => {
             ui.label("Hover or click any atom or residue territory to inspect.");
         }
     });
 
-    section(ui, "Interface Metrics & Diagnostics", |ui| diagnostics(ui, ds));
+    section(ui, "Interface Metrics & Diagnostics", |ui| diagnostics(ui, ds, &pal.sides));
 
     let s = &state.interface;
     section(ui, "Legend", |ui| {
         let a = ds.group_name(InterfaceSide::SideA);
         let b = ds.group_name(InterfaceSide::SideB);
-        for (color, label) in lenses::legend(s.lens, s.bfactor_mode, a, b) {
+        for (color, label) in lenses::legend(s.lens, s.bfactor_mode, a, b, &state.view_params.lenses, pal) {
             legend_swatch(ui, color, &label);
         }
     });
 }
 
-fn residue_card(ui: &mut Ui, ds: &ViewerDataset, terr: &ResidueTerritory) {
+fn residue_card(ui: &mut Ui, ds: &ViewerDataset, terr: &ResidueTerritory, sides: &InterfaceSidePalette, chrome: &ChromePalette) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(&terr.label_top).strong().size(15.0));
-        ui.label(RichText::new(format!("({})", ds.group_name(terr.role))).color(palette::side_light(terr.role)));
+        ui.label(RichText::new(format!("({})", ds.group_name(terr.role))).color(sides.side_light(terr.role)));
     });
     ui.label(format!("Chain {} • {} • {} interfacial atoms", terr.chain_id, terr.label_bottom, terr.patch_atoms.len()));
     ui.label(format!("Buried ΔSASA: {:.1} Å²", terr.buried_sasa_a2));
     if terr.has_unsatisfied_polar {
-        ui.colored_label(palette::WARNING, "⚠️ Buried polar atom with 0 satisfied H-bonds/salt bridges.");
+        ui.colored_label(chrome.warning, "⚠️ Buried polar atom with 0 satisfied H-bonds/salt bridges.");
     }
 }
 
@@ -83,7 +84,7 @@ fn atom_card(ui: &mut Ui, ds: &ViewerDataset, node: &AtomNode, mode: BFactorMode
 }
 
 /// Lists cross-interface contacts made by atoms of `terr`, from that residue's point of view.
-fn contacts_list(ui: &mut Ui, ds: &ViewerDataset, terr: &ResidueTerritory) {
+fn contacts_list(ui: &mut Ui, ds: &ViewerDataset, terr: &ResidueTerritory, contacts_pal: &ContactPalette) {
     ui.label(RichText::new("Cross-Interface Contacts:").strong());
     let contacts: Vec<(&AtomNode, &AtomInteraction)> = terr
         .patch_atoms
@@ -105,7 +106,10 @@ fn contacts_list(ui: &mut Ui, ds: &ViewerDataset, terr: &ResidueTerritory) {
         };
         ui.horizontal_wrapped(|ui| {
             ui.label(format!("{own} ↔ {partner}"));
-            ui.colored_label(lenses::contact_color(contact.kind), format!("{} ({measure})", lenses::contact_label(contact.kind)));
+            ui.colored_label(
+                lenses::contact_color(contact.kind, contacts_pal),
+                format!("{} ({measure})", lenses::contact_label(contact.kind)),
+            );
         });
     }
     if contacts.len() > MAX_LISTED_CONTACTS {
@@ -113,7 +117,7 @@ fn contacts_list(ui: &mut Ui, ds: &ViewerDataset, terr: &ResidueTerritory) {
     }
 }
 
-fn diagnostics(ui: &mut Ui, ds: &ViewerDataset) {
+fn diagnostics(ui: &mut Ui, ds: &ViewerDataset, sides: &InterfaceSidePalette) {
     let Some(iface) = ds.active_interface() else { return };
     let s = &iface.stats;
     ui.label(format!("{} Atoms/Residues: {} / {}", iface.partition.group_a_name, s.side_a_atoms, s.side_a_territories));
@@ -121,5 +125,5 @@ fn diagnostics(ui: &mut Ui, ds: &ViewerDataset) {
     ui.separator();
     ui.label(format!("Edge RMSE (Raw → Relaxed): {:.2} → {:.2} Å", s.edge_rmse_before_a, s.edge_rmse_after_a));
     ui.label(format!("2D Overlaps (Raw → Relaxed): {} → {}", s.overlaps_before, s.overlaps_after));
-    ui.colored_label(palette::VOID, format!("Sub-Solvent Void Volume: {:.1} Å³", iface.geometry.void_volume_a3));
+    ui.colored_label(sides.void, format!("Sub-Solvent Void Volume: {:.1} Å³", iface.geometry.void_volume_a3));
 }
