@@ -3,9 +3,11 @@
 
 mod options;
 mod tween;
+pub mod view_params;
 
 pub use options::{AtomSizeMode, BFactorMode, Choice, ColorLens, InterfaceDisplayMode, WorkspaceTab};
 pub use tween::Tween;
+pub use view_params::{LensParams, NavigationParams, RenderParams, ViewParams};
 
 use crate::camera::CameraState;
 use smorgasprot_core::{AtomNodeIdx, InterfaceSide, TerritoryIdx};
@@ -50,6 +52,7 @@ pub struct UiState {
     pub complex: ComplexViewSettings,
     pub interface: InterfaceViewSettings,
     pub selection: Selection,
+    pub view_params: ViewParams,
 }
 
 impl Default for UiState {
@@ -60,6 +63,7 @@ impl Default for UiState {
             complex: ComplexViewSettings::default(),
             interface: InterfaceViewSettings::default(),
             selection: Selection::default(),
+            view_params: ViewParams::default(),
         }
     }
 }

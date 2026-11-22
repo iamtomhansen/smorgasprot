@@ -11,10 +11,7 @@ mod plane_space;
 use crate::dataset::ViewerDataset;
 use crate::state::{UiState, WorkspaceTab};
 use crate::style::palette;
-use egui::{CursorIcon, Sense, Ui};
-
-/// Flatten amount above which left-drag pans instead of orbiting (the map reads as 2D).
-const FLAT_PAN_THRESHOLD: f32 = 0.92;
+use egui::{CursorIcon, PointerButton, Sense, Ui};
 
 /// Allocates the remaining space in `ui` and renders the active tab's scene.
 pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState) {
@@ -24,18 +21,27 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState) {
 
     let pointer = response.hover_pos();
     let over_gizmo = pointer.is_some_and(|p| gizmo::contains(rect, p));
+    let over_roll_ring = pointer.is_some_and(|p| gizmo::is_over_roll_ring(rect, p));
     let gizmo_cap = pointer.and_then(|p| gizmo::hit_test(rect, &state.camera, p));
 
-    // Gizmo caps snap the view; otherwise input drives the orbit camera.
-    if response.clicked()
+    // Gizmo roll ring or caps take precedence over main orbit navigation
+    if response.dragged_by(PointerButton::Primary) && over_roll_ring {
+        if let Some(p) = pointer {
+            gizmo::handle_roll_drag(rect, &mut state.camera, p, response.drag_delta());
+        }
+    } else if response.double_clicked() && over_roll_ring {
+        state.camera.roll = 0.0;
+    } else if response.clicked()
         && let Some(axis) = gizmo_cap
     {
         state.camera.snap_to(axis);
+    } else {
+        let flat = state.tab == WorkspaceTab::Interface
+            && state.interface.flatten.value > state.view_params.navigation.flat_pan_threshold;
+        state.camera.handle_input(ui, &response, flat, &state.view_params.navigation);
     }
-    let flat = state.tab == WorkspaceTab::Interface && state.interface.flatten.value > FLAT_PAN_THRESHOLD;
-    state.camera.handle_input(ui, &response, flat);
 
-    grid::paint(&painter, rect, &state.camera);
+    grid::paint(&painter, rect, &state.camera, &state.view_params.render);
 
     match state.tab {
         WorkspaceTab::Complex => {
@@ -58,8 +64,10 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState) {
         }
     }
 
-    gizmo::paint(&painter, rect, &state.camera, gizmo_cap);
+    gizmo::paint(&painter, rect, &state.camera, gizmo_cap, over_roll_ring);
     if gizmo_cap.is_some() {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+    } else if over_roll_ring {
+        ui.ctx().set_cursor_icon(CursorIcon::Grab);
     }
 }

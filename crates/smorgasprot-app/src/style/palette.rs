@@ -65,8 +65,8 @@ pub const AXIS_U: (Color32, Color32) = (Color32::from_rgb(239, 68, 68), Color32:
 pub const AXIS_V: (Color32, Color32) = (Color32::from_rgb(34, 197, 94), Color32::from_rgb(22, 101, 52));
 pub const AXIS_N: (Color32, Color32) = (Color32::from_rgb(59, 130, 246), Color32::from_rgb(30, 64, 175));
 
-// --- Panel text ---
 pub const ACCENT: Color32 = Color32::from_rgb(14, 165, 233); // sky-500, section headings
+pub const MUTED: Color32 = Color32::from_rgb(100, 116, 139); // slate-500, muted captions
 pub const WARNING: Color32 = Color32::from_rgb(245, 158, 11); // amber-500
 pub const SUCCESS: Color32 = Color32::from_rgb(34, 197, 94); // green-500
 pub const ERROR: Color32 = Color32::from_rgb(239, 68, 68); // red-500
