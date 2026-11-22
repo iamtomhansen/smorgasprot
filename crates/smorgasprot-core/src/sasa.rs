@@ -13,7 +13,8 @@
 //!    Lattices. *Mathematical Geosciences*, 42(1), 49–64; Mitternacht, S. (2016). FreeSASA: An open
 //!    source C library for solvent accessible surface area calculations. *BMC Bioinformatics*, 17, 18.
 
-use crate::model::{ComplexStructure, InterfaceSide};
+use crate::interface::definition::{InterfacePartition, InterfaceSide};
+use crate::model::ComplexStructure;
 use crate::spatial::SpatialGrid;
 use glam::Vec3;
 
@@ -66,8 +67,12 @@ fn fibonacci_sphere(n: usize) -> Vec<Vec3> {
 }
 
 /// Computes `AtomSasa` (unbound SASA, bound SASA, ΔSASA, and closest cross-side distance)
-/// for all atoms assigned to `SideA` or `SideB` in `complex`, ignoring `Unassigned` (`InterfaceSide::None`) chains.
-pub fn compute_complex_sasa(complex: &ComplexStructure, p: &SasaParams) -> Vec<AtomSasa> {
+/// for all atoms assigned to `SideA` or `SideB` in `partition`, ignoring `Unassigned` chains.
+pub fn compute_complex_sasa(
+    complex: &ComplexStructure,
+    partition: &InterfacePartition,
+    p: &SasaParams,
+) -> Vec<AtomSasa> {
     let n_atoms = complex.atoms.len();
     let mut results = vec![
         AtomSasa {
@@ -77,10 +82,12 @@ pub fn compute_complex_sasa(complex: &ComplexStructure, p: &SasaParams) -> Vec<A
         n_atoms
     ];
 
+    let atom_sides = partition.atom_sides(complex);
+
     // 1. Index all assigned (SideA and SideB) heavy atoms into a 3D spatial grid.
     let mut grid = SpatialGrid::new(p.grid_resolution_a);
     for (i, atom) in complex.atoms.iter().enumerate() {
-        if atom.role.is_assigned() {
+        if atom_sides[i].is_assigned() {
             grid.insert(i as u32, atom.pos_3d);
         }
     }
@@ -93,7 +100,7 @@ pub fn compute_complex_sasa(complex: &ComplexStructure, p: &SasaParams) -> Vec<A
     let mut cross_neighbors: Vec<(Vec3, f32)> = Vec::with_capacity(64);
 
     for (i, atom) in complex.atoms.iter().enumerate() {
-        let side_i = atom.role;
+        let side_i = atom_sides[i];
         if !side_i.is_assigned() {
             continue;
         }
@@ -116,7 +123,7 @@ pub fn compute_complex_sasa(complex: &ComplexStructure, p: &SasaParams) -> Vec<A
                 return;
             }
             let other = &complex.atoms[j];
-            let side_j = other.role;
+            let side_j = atom_sides[j];
             if !side_j.is_assigned() {
                 return;
             }

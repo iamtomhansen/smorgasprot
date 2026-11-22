@@ -10,7 +10,7 @@ smorgasprot/
 ├── viewer.html, js/          Legacy JS viewer (frozen; superseded by export/template.html)
 └── crates/
     ├── smorgasprot-core/src/
-    │   ├── model.rs              Index newtypes, ComplexStructure, InterfaceMap, InterfaceGeometry, SurfaceMesh
+    │   ├── model.rs              Index newtypes, ComplexStructure, ChainRecord, ResidueRecord, AtomRecord, SurfaceMesh
     │   ├── params.rs             AnalysisParams + param_group! macro (every tunable, with docs and ranges)
     │   ├── ingest.rs             PDB/mmCIF (optionally gzipped) from path or bytes → ComplexStructure
     │   ├── amino_acids.rs        Residue/element classification, vdW radii
@@ -18,10 +18,15 @@ smorgasprot/
     │   ├── spatial.rs            Uniform voxel hash grid
     │   ├── sasa.rs               Shrake-Rupley ΔSASA, interface inclusion
     │   ├── physics.rs            Clashes, H-bonds, salt bridges, aliphatic packing, interface graph
-    │   ├── flatten.rs            Projection plane (SVD), 2D relaxation → build_interface_map
-    │   ├── contour.rs            Residue territory contours (SDF, Voronoi, Chaikin)
+    │   ├── selection.rs          AtomSelection algebra (predicates, combinators, and ComplexStructure queries)
+    │   ├── interface.rs          Submodule declarations and re-exports for interface cartography & geometry
+    │   ├── interface/
+    │   │   ├── definition.rs     InterfaceSide, InterfacePartition
+    │   │   ├── model.rs          InterfaceMap, ProjectionPlane, ResidueTerritory, AtomNode, InterfaceEdge, InterfaceGeometry
+    │   │   ├── flatten.rs        Projection plane (SVD), 2D relaxation → build_interface_map
+    │   │   ├── contour.rs        Residue territory contours (SDF, Voronoi, Chaikin)
+    │   │   └── geometry.rs       SDF sheet, contact envelope, sub-solvent voids + volume
     │   ├── surface.rs            Per-chain molecular surface (surface nets on a smooth-union SDF)
-    │   ├── interface_geometry.rs SDF sheet, contact envelope, sub-solvent voids + volume
     │   └── rotamers.rs, minimize.rs  Phase 5 stubs
     └── smorgasprot-app/src/
         ├── main.rs               Native CLI: load, then GUI / --export-html / --serve
@@ -30,7 +35,7 @@ smorgasprot/
         ├── camera.rs             Orbit camera, ViewAxis snapping
         ├── dataset.rs            ViewerDataset: render-ready snapshot (frozen JSON contract)
         ├── workspace.rs          Open structures: source text, groups, params snapshot, derived data
-        ├── loader.rs             Load pipeline (parse → group → map → meshes), built-in examples
+        ├── loader.rs             Load pipeline (parse → partition → map → meshes), built-in examples
         ├── jobs.rs               Background jobs (threads natively, inline on wasm)
         ├── files.rs              rfd dialogs, drag-and-drop, file-type detection
         ├── persistence.rs        config.rs (preferences), session.rs (session files)
@@ -48,11 +53,13 @@ Modules use the `foo.rs` + `foo/` layout (no `mod.rs`).
 ```mermaid
 flowchart LR
     src["StructureSource (file name + text)"] --> parse["ingest::parse_complex"]
-    parse --> groups["set_active_groups (Group A / B / unassigned)"]
-    groups --> map["flatten::build_interface_map (SASA, contacts, plane, relaxation, contours)"]
-    groups --> surf["surface::build_chain_surface_mesh (per chain)"]
+    part["InterfacePartition (Group A / B chains)"]
+    parse --> map["flatten::build_interface_map"]
+    part --> map
+    parse --> surf["surface::build_chain_surface_mesh (per chain)"]
     map --> geom["interface_geometry::build_interface_geometry"]
     surf --> geom
+    part --> geom
     map --> ds["ViewerDataset"]
     geom --> ds
     surf --> ds

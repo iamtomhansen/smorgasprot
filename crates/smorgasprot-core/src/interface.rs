@@ -3,11 +3,13 @@
 //! analysis.
 
 pub mod contour;
+pub mod definition;
 pub mod flatten;
 pub mod geometry;
 pub mod model;
 
 pub use contour::*;
+pub use definition::*;
 pub use flatten::*;
 pub use geometry::*;
 pub use model::*;

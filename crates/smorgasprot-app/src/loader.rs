@@ -4,7 +4,7 @@
 use crate::dataset::ViewerDataset;
 use smorgasprot_core::{
     AnalysisParams, ChainName, ComplexStructure, flatten::build_interface_map, ingest::load_complex,
-    ingest::set_active_groups,
+    interface::InterfacePartition,
 };
 use std::path::Path;
 
@@ -68,12 +68,19 @@ pub struct Loaded {
 
 /// Parses, groups, maps, and meshes one structure.
 pub fn load(spec: &DatasetSpec, params: &AnalysisParams) -> Result<Loaded, String> {
-    let mut complex = load_complex(&spec.path, &spec.group_a_chains, &spec.group_b_chains)
+    let complex = load_complex(&spec.path)
         .map_err(|e| format!("Failed to load {}: {e}", spec.path))?;
-    set_active_groups(&mut complex, GROUP_A_NAME, &spec.group_a_chains, GROUP_B_NAME, &spec.group_b_chains);
+    let partition = InterfacePartition::from_chains(
+        &complex,
+        &spec.id,
+        GROUP_A_NAME,
+        spec.group_a_chains.clone(),
+        GROUP_B_NAME,
+        spec.group_b_chains.clone(),
+    );
 
     let (map, stats) =
-        build_interface_map(&complex, params).map_err(|e| format!("Failed to extract and flatten interface: {e}"))?;
-    let dataset = ViewerDataset::from_complex_and_map(&spec.id, &spec.title, &complex, map, stats, params);
+        build_interface_map(&complex, &partition, params).map_err(|e| format!("Failed to extract and flatten interface: {e}"))?;
+    let dataset = ViewerDataset::from_complex_and_map(&spec.id, &spec.title, &complex, &partition, map, stats, params);
     Ok(Loaded { dataset, complex })
 }

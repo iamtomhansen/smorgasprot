@@ -8,8 +8,9 @@
 //!   overview of search algorithms and a guide to scoring functions." *Proteins*, 47(4), 409–443.
 //!   (Interface separating surfaces, cavity representations, and contact envelopes).
 
+use super::definition::{InterfacePartition, InterfaceSide};
 use super::model::{AtomNode, InterfaceEdge, InterfaceGeometry, InterfaceMap, ProjectionPlane};
-use crate::model::{ComplexStructure, GlobalAtomIdx, InterfaceSide, SurfaceMesh};
+use crate::model::{ComplexStructure, GlobalAtomIdx, SurfaceMesh};
 use glam::{Vec2, Vec3};
 
 crate::param_group! {
@@ -149,6 +150,7 @@ pub fn build_interface_sheet_mesh(
 pub fn extract_interface_envelope_mesh(
     chain_meshes: &[SurfaceMesh],
     complex: &ComplexStructure,
+    partition: &InterfacePartition,
     nodes: &[AtomNode],
 ) -> SurfaceMesh {
     if chain_meshes.is_empty() || nodes.is_empty() {
@@ -164,13 +166,16 @@ pub fn extract_interface_envelope_mesh(
     }
 
     let mut envelope = SurfaceMesh::default();
+    let atom_sides = partition.atom_sides(complex);
 
     for (c_idx, chain_mesh) in chain_meshes.iter().enumerate() {
         if c_idx >= complex.chains.len() {
             continue;
         }
-        let role = complex.chain_side(&complex.chains[c_idx].chain_id);
-        if !role.is_assigned() {
+        let chain = &complex.chains[c_idx];
+        let has_assigned = (chain.atom_range.0..chain.atom_range.1)
+            .any(|a| atom_sides.get(a as usize).map_or(false, |s| s.is_assigned()));
+        if !has_assigned {
             continue;
         }
 
@@ -599,12 +604,13 @@ pub fn compute_mesh_volume_a3(mesh: &SurfaceMesh) -> f32 {
 /// 4. Interfacial void volume in cubic Angstroms (Å³).
 pub fn build_interface_geometry(
     complex: &ComplexStructure,
+    partition: &InterfacePartition,
     map: &InterfaceMap,
     chain_meshes: &[SurfaceMesh],
     p: &GeometryParams,
 ) -> InterfaceGeometry {
     let sheet_mesh = build_interface_sheet_mesh(&map.plane, &map.nodes, &map.edges, p);
-    let envelope_mesh = extract_interface_envelope_mesh(chain_meshes, complex, &map.nodes);
+    let envelope_mesh = extract_interface_envelope_mesh(chain_meshes, complex, partition, &map.nodes);
     let negative_mesh = build_interface_negative_mesh(complex, &map.nodes, p);
     let void_volume_a3 = compute_mesh_volume_a3(&negative_mesh);
 
@@ -620,7 +626,7 @@ pub fn build_interface_geometry(
 mod tests {
     use super::*;
     use super::super::model::{AtomNodeIdx, EdgeKind, TerritoryIdx};
-    use crate::model::InterfaceSide;
+    use crate::interface::definition::InterfaceSide;
 
     #[test]
     fn test_empty_edges_build_empty_sheet() {

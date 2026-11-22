@@ -25,11 +25,12 @@
 //!    *Journal of Molecular Biology*, 280(1), 1–9.
 
 use crate::amino_acids::{ChemistryClass, ElementExt, print_three_letter_code};
+use crate::interface::definition::{InterfacePartition, InterfaceSide};
 use crate::interface::model::{
     AtomInteraction, AtomNode, AtomNodeIdx, EdgeKind, InterfaceEdge, ResidueTerritory, TerritoryIdx,
 };
 use crate::model::{
-    AtomRecord, ComplexStructure, Element, GlobalResidueIdx, InterfaceSide, ResidueRecord, SecStruct,
+    AtomRecord, ComplexStructure, Element, GlobalResidueIdx, ResidueRecord, SecStruct,
 };
 use crate::sasa::{SasaParams, compute_complex_sasa, is_interfacial_atom};
 use crate::spatial::SpatialGrid;
@@ -333,14 +334,20 @@ pub fn fermi_distance_kernel(dist_a: f32, p: &ContactParams) -> f32 {
 /// Combines non-negative apolar carbon/sulfur weights [`intrinsic_aliphatic_weight`] (wj in [0, 1])
 /// with the exact **UCSF ChimeraX / Laguerre et al. (1997) Fermi distance-decay kernel** [`fermi_distance_kernel`]
 /// over all neighboring non-same-residue apolar atoms within `p.aliphatic_env_radius_a`:
-pub fn compute_aliphatic_packing_scores(complex: &ComplexStructure, p: &ContactParams) -> Vec<f32> {
+pub fn compute_aliphatic_packing_scores(
+    complex: &ComplexStructure,
+    partition: &InterfacePartition,
+    p: &ContactParams,
+) -> Vec<f32> {
     let n_atoms = complex.atoms.len();
     let mut scores = vec![0.0_f32; n_atoms];
     let mut weights = vec![0.0_f32; n_atoms];
 
+    let atom_sides = partition.atom_sides(complex);
+
     let mut grid = SpatialGrid::new(p.aliphatic_env_radius_a);
     for (i, atom) in complex.atoms.iter().enumerate() {
-        if !atom.role.is_assigned() {
+        if !atom_sides[i].is_assigned() {
             continue;
         }
         let res = &complex.residues[atom.residue_idx.0 as usize];
@@ -352,7 +359,7 @@ pub fn compute_aliphatic_packing_scores(complex: &ComplexStructure, p: &ContactP
     }
 
     for (i, atom) in complex.atoms.iter().enumerate() {
-        if !atom.role.is_assigned() {
+        if !atom_sides[i].is_assigned() {
             continue;
         }
         let mut env_sum = weights[i];
@@ -374,24 +381,26 @@ pub fn compute_aliphatic_packing_scores(complex: &ComplexStructure, p: &ContactP
 }
 
 /// Extracts the 3D interfacial atom nodes, residue groups, and classified 3D interaction edges
-/// from `complex`.
+/// from `complex` using the active `partition`.
 pub fn extract_3d_interface_graph(
     complex: &ComplexStructure,
+    partition: &InterfacePartition,
     sasa_p: &SasaParams,
     p: &ContactParams,
 ) -> Result<(Vec<ResidueTerritory>, Vec<AtomNode>, Vec<InterfaceEdge>), String> {
-    let sasa_vec = compute_complex_sasa(complex, sasa_p);
-    let aliphatic_scores = compute_aliphatic_packing_scores(complex, p);
+    let sasa_vec = compute_complex_sasa(complex, partition, sasa_p);
+    let aliphatic_scores = compute_aliphatic_packing_scores(complex, partition, p);
 
-    let multi_chain_a = complex.group_a_chains.len() > 1;
-    let multi_chain_b = complex.group_b_chains.len() > 1;
+    let multi_chain_a = partition.group_a_chains.len() > 1;
+    let multi_chain_b = partition.group_b_chains.len() > 1;
+    let atom_sides = partition.atom_sides(complex);
 
     let mut res_to_territory: HashMap<GlobalResidueIdx, TerritoryIdx> = HashMap::new();
     let mut territories: Vec<ResidueTerritory> = Vec::new();
     let mut nodes: Vec<AtomNode> = Vec::new();
 
     for (a_idx, atom) in complex.atoms.iter().enumerate() {
-        let side = atom.role;
+        let side = atom_sides[a_idx];
         if !side.is_assigned() {
             continue;
         }

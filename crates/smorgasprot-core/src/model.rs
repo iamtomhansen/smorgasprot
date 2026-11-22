@@ -1,4 +1,4 @@
-//! Core domain data structures for 3D molecular complexes and two-sided flattened interface maps.
+//! Core domain data structures for 3D molecular complexes.
 
 use crate::amino_acids::ResidueKind;
 pub use pdbtbx::Element;
@@ -18,30 +18,6 @@ pub struct GlobalResidueIdx(pub u32);
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 #[serde(transparent)]
 pub struct ChainIdx(pub u32);
-
-/// Which side of an arbitrarily defined interface a given chain, residue, or atom belongs to.
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum InterfaceSide {
-    SideA,
-    SideB,
-    None,
-}
-
-impl InterfaceSide {
-    #[inline]
-    pub const fn opposite(self) -> Self {
-        match self {
-            Self::SideA => Self::SideB,
-            Self::SideB => Self::SideA,
-            Self::None => Self::None,
-        }
-    }
-
-    #[inline]
-    pub const fn is_assigned(self) -> bool {
-        !matches!(self, Self::None)
-    }
-}
 
 /// Secondary structure classification for residue labels and rendering.
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -132,82 +108,27 @@ impl AsRef<str> for ChainName {
     }
 }
 
-/// Demarcation of an interface partition between two groups of chains.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct InterfacePartition {
-    pub name: String,
-    pub group_a_name: String,
-    pub group_b_name: String,
-    pub group_a_chains: Vec<ChainName>,
-    pub group_b_chains: Vec<ChainName>,
-}
-
-impl InterfacePartition {
-    pub fn new(
-        name: impl Into<String>,
-        group_a_name: impl Into<String>,
-        group_b_name: impl Into<String>,
-        group_a_chains: Vec<ChainName>,
-        group_b_chains: Vec<ChainName>,
-    ) -> Self {
-        Self {
-            name: name.into(),
-            group_a_name: group_a_name.into(),
-            group_b_name: group_b_name.into(),
-            group_a_chains,
-            group_b_chains,
-        }
-    }
-
-    /// Returns `InterfaceSide::SideA` if `chain_id` is assigned to Group A,
-    /// `InterfaceSide::SideB` if assigned to Group B, or `InterfaceSide::None` if unassigned.
-    pub fn chain_side(&self, chain_id: &str) -> InterfaceSide {
-        if self.group_a_chains.iter().any(|c| c.as_str() == chain_id) {
-            InterfaceSide::SideA
-        } else if self.group_b_chains.iter().any(|c| c.as_str() == chain_id) {
-            InterfaceSide::SideB
-        } else {
-            InterfaceSide::None
-        }
-    }
-}
-
-/// Layer 1: Full 3D complex containing all loaded protein chains and the active SideA / SideB partition.
+/// Full 3D complex containing all loaded protein chains, residues, and atoms.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ComplexStructure {
-    /// User-facing name of the complex (e.g. "7JVB", "nanobody-spike receptor", "my_cool_proteins", etc.)
+    /// User-facing name of the complex (e.g. "7JVB", "nanobody-spike receptor", etc.)
     pub name: String,
-    pub group_a_name: String,
-    pub group_b_name: String,
-    pub group_a_chains: Vec<ChainName>,
-    pub group_b_chains: Vec<ChainName>,
     pub chains: Vec<ChainRecord>,
     pub residues: Vec<ResidueRecord>,
     pub atoms: Vec<AtomRecord>,
 }
 
 impl ComplexStructure {
-    /// Returns `InterfaceSide::SideA` if `chain_id` is assigned to Group A,
-    /// `InterfaceSide::SideB` if assigned to Group B, or `InterfaceSide::None` if unassigned.
-    pub fn chain_side(&self, chain_id: &str) -> InterfaceSide {
-        if self.group_a_chains.iter().any(|c| c.as_str() == chain_id) {
-            InterfaceSide::SideA
-        } else if self.group_b_chains.iter().any(|c| c.as_str() == chain_id) {
-            InterfaceSide::SideB
-        } else {
-            InterfaceSide::None
-        }
+    /// Evaluates an [`AtomSelection`] query across all atoms, returning matching indices.
+    #[inline]
+    pub fn select(&self, sel: &crate::selection::AtomSelection) -> Vec<GlobalAtomIdx> {
+        sel.select_indices(self)
     }
 
-    /// Returns the active interface partition for this complex.
-    pub fn partition(&self) -> InterfacePartition {
-        InterfacePartition {
-            name: self.name.clone(),
-            group_a_name: self.group_a_name.clone(),
-            group_b_name: self.group_b_name.clone(),
-            group_a_chains: self.group_a_chains.clone(),
-            group_b_chains: self.group_b_chains.clone(),
-        }
+    /// Evaluates an [`AtomSelection`] query across all atoms, returning a boolean mask.
+    #[inline]
+    pub fn select_mask(&self, sel: &crate::selection::AtomSelection) -> Vec<bool> {
+        sel.select_mask(self)
     }
 }
 
@@ -226,7 +147,6 @@ pub struct ChainRecord {
 pub struct ResidueRecord {
     pub idx: GlobalResidueIdx,
     pub chain_idx: ChainIdx,
-    pub role: InterfaceSide,
     pub kind: ResidueKind,
     pub chain_id: ChainName,
     pub seq_num: i32,
@@ -240,25 +160,29 @@ pub struct ResidueRecord {
 /// Data for a single atom in a [`ComplexStructure`].
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AtomRecord {
+    /// Dense index into `ComplexStructure::atoms` (0-based).
     pub idx: GlobalAtomIdx,
+    /// Dense index into `ComplexStructure::residues` (0-based).
     pub residue_idx: GlobalResidueIdx,
+    /// Dense index into `ComplexStructure::chains` (0-based).
     pub chain_idx: ChainIdx,
-    pub role: InterfaceSide,
+    /// Atom serial number from the source PDB/mmCIF file (1-based).
     pub atom_serial: usize,
     pub atom_name: [u8; 4],
     pub element: Element,
     pub vdw_radius_a: f32,
     pub pos_3d: [f32; 3],
+    /// B-factor (temperature factor) for the atom.
     pub b_factor: f32,
     pub occupancy: f32,
 }
 
-/// 3D triangle mesh for a chain's molecular surface (or the inter-chain interface sheet in Cartoon mode).
+/// 3D triangle mesh for a chain's molecular surface.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct SurfaceMesh {
     pub vertices: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
-    /// Nearest heavy atom index for each surface vertex (enables O(1) live interface vertex highlighting).
+    /// Nearest heavy atom index for each surface vertex (enables O(1) live vertex highlighting).
     pub nearest_atom: Vec<GlobalAtomIdx>,
     /// Triangle index triplets `(i0, i1, i2)` into `vertices`.
     pub triangles: Vec<[u32; 3]>,

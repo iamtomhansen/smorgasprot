@@ -2,10 +2,11 @@
 //! solver, and bas-relief/butterfly kinematics.
 
 use super::contour::compute_territory_contours;
+use super::definition::{InterfacePartition, InterfaceSide};
 use super::model::{
     AtomNode, EdgeKind, InterfaceEdge, InterfaceMap, ProjectionPlane, ResidueTerritory,
 };
-use crate::model::{ComplexStructure, InterfaceSide};
+use crate::model::ComplexStructure;
 use crate::params::AnalysisParams;
 use crate::physics::extract_3d_interface_graph;
 use glam::{Vec2, Vec3};
@@ -74,11 +75,12 @@ pub struct FlatteningStats {
 /// residue territory contours, and generates the 3D inter-chain interface separator sheet mesh.
 pub fn build_interface_map(
     complex: &ComplexStructure,
+    partition: &InterfacePartition,
     params: &AnalysisParams,
 ) -> Result<(InterfaceMap, FlatteningStats), String> {
     // 1. Extract the 3D biophysical interface graph (SASA, aliphatic scores, classified 3D edges)
     let (mut territories, mut nodes, mut edges) =
-        extract_3d_interface_graph(complex, &params.sasa, &params.contacts)?;
+        extract_3d_interface_graph(complex, partition, &params.sasa, &params.contacts)?;
 
     let cross_contacts_count = edges.iter().filter(|e| e.is_cross_interface).count();
     let intra_edges_count = edges.len() - cross_contacts_count;
@@ -570,11 +572,10 @@ mod tests {
 
     #[test]
     fn test_flatten_7jvb_and_latentx() {
-        let c_7jvb =
-            load_complex("../../examples/7JVB.cif", &["A".into()], &["C".into()])
-                .unwrap();
+        let c_7jvb = load_complex("../../examples/7JVB.cif").unwrap();
+        let part_7jvb = InterfacePartition::new("7JVB", "Group A", vec!["A".into()], "Group B", vec!["C".into()]);
         assert_eq!(c_7jvb.chains.len(), 4);
-        let (map_7jvb, stats_7jvb) = build_interface_map(&c_7jvb, &Default::default()).unwrap();
+        let (map_7jvb, stats_7jvb) = build_interface_map(&c_7jvb, &part_7jvb, &Default::default()).unwrap();
         println!("7JVB stats: {stats_7jvb:?}");
         assert!(stats_7jvb.side_a_atoms > 30);
         assert!(stats_7jvb.side_b_atoms > 30);
@@ -589,13 +590,9 @@ mod tests {
         assert!(!map_7jvb.nodes.is_empty());
         assert!(!map_7jvb.edges.is_empty());
 
-        let c_lx = load_complex(
-            "../../examples/fold_r8s15_mp3_model_0.cif",
-            &["B".into()],
-            &["A".into()],
-        )
-        .unwrap();
-        let (_map_lx, stats_lx) = build_interface_map(&c_lx, &Default::default()).unwrap();
+        let c_lx = load_complex("../../examples/fold_r8s15_mp3_model_0.cif").unwrap();
+        let part_lx = InterfacePartition::new("LatentX", "Group A", vec!["B".into()], "Group B", vec!["A".into()]);
+        let (_map_lx, stats_lx) = build_interface_map(&c_lx, &part_lx, &Default::default()).unwrap();
         println!("LatentX stats: {stats_lx:?}");
         assert!(stats_lx.side_a_atoms > 20);
         assert!(stats_lx.side_b_atoms > 20);

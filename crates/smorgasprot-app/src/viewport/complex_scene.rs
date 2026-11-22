@@ -55,12 +55,13 @@ impl View<'_> {
 /// Molecular surface per chain, pushed apart along ±n by the explode slider.
 fn add_chain_surfaces(list: &mut DrawList, view: &View, ds: &ViewerDataset, s: &ComplexViewSettings) {
     for ch in &ds.chains {
-        let offset = explode_offset(ch.side, s.explode.value);
-        let alpha = match ch.side {
+        let side = ds.chain_side(&ch.chain_id);
+        let offset = explode_offset(side, s.explode.value);
+        let alpha = match side {
             InterfaceSide::None => s.surface_alpha * UNASSIGNED_ALPHA_SCALE,
             _ => s.surface_alpha,
         };
-        let base = palette::side(ch.side);
+        let base = palette::side(side);
         add_mesh(list, view, &ch.surface_mesh, offset, s.cull_backfaces, |_, shade| {
             (palette::shaded(base, shade, alpha), Stroke::NONE)
         });
@@ -103,8 +104,9 @@ fn add_interface_geometry(list: &mut DrawList, view: &View, ds: &ViewerDataset, 
 fn add_cartoon(list: &mut DrawList, view: &View, ds: &ViewerDataset, s: &ComplexViewSettings) {
     let width = (view.camera.zoom * 0.28).max(3.0);
     for ch in &ds.chains {
-        let offset = explode_offset(ch.side, s.explode.value);
-        let (color, alpha) = match ch.side {
+        let side = ds.chain_side(&ch.chain_id);
+        let offset = explode_offset(side, s.explode.value);
+        let (color, alpha) = match side {
             InterfaceSide::None => (palette::UNASSIGNED, s.cartoon_alpha * UNASSIGNED_ALPHA_SCALE),
             side => (palette::side_dark(side), s.cartoon_alpha),
         };

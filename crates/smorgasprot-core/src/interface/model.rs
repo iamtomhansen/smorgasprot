@@ -1,6 +1,7 @@
 //! Domain model for macromolecular interfaces and cartographic maps.
 
-use crate::model::{ChainName, GlobalAtomIdx, GlobalResidueIdx, InterfaceSide, SurfaceMesh};
+use super::definition::InterfaceSide;
+use crate::model::{ChainName, GlobalAtomIdx, GlobalResidueIdx, SurfaceMesh};
 use serde::{Deserialize, Serialize};
 
 /// Dense index into `InterfaceMap::nodes`.

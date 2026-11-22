@@ -462,9 +462,7 @@ mod tests {
 
     #[test]
     fn test_file_header_and_computed_dssp() {
-        let mut c_7jvb =
-            load_complex("../../examples/7JVB.cif", &["A".into()], &["C".into()])
-                .unwrap();
+        let mut c_7jvb = load_complex("../../examples/7JVB.cif").unwrap();
         let file_helices = c_7jvb
             .residues
             .iter()
@@ -494,12 +492,7 @@ mod tests {
         assert!(dssp_sheets > 50);
 
         // De novo protein structure has no _struct_conf header -> automatically uses coordinate DSSP
-        let c_lx = load_complex(
-            Path::new("../../examples/fold_r8s15_mp3_model_0.cif"),
-            &["B".into()],
-            &["A".into()],
-        )
-        .unwrap();
+        let c_lx = load_complex(Path::new("../../examples/fold_r8s15_mp3_model_0.cif")).unwrap();
         let lx_structured = c_lx
             .residues
             .iter()

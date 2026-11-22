@@ -5,7 +5,7 @@ use crate::dataset::{AtomMeta, ViewerDataset};
 use serde::{Deserialize, Serialize};
 use smorgasprot_core::{
     AnalysisParams, ChainName, ComplexStructure, InterfaceMap, flatten::FlatteningStats, flatten::build_interface_map,
-    ingest::set_active_groups,
+    interface::InterfacePartition,
 };
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -66,10 +66,17 @@ fn recompute(request: &str, complexes: &mut HashMap<String, ComplexStructure>) -
     let req: RecomputeRequest = serde_json::from_str(body).ok()?;
     let complex = complexes.get_mut(&req.dataset_id)?;
 
-    set_active_groups(complex, &req.group_a_name, &req.group_a_chains, &req.group_b_name, &req.group_b_chains);
+    let partition = InterfacePartition::from_chains(
+        complex,
+        &req.dataset_id,
+        &req.group_a_name,
+        req.group_a_chains,
+        &req.group_b_name,
+        req.group_b_chains,
+    );
     let params = AnalysisParams::default();
-    let (map, stats) = build_interface_map(complex, &params).ok()?;
-    let ds = ViewerDataset::from_complex_and_map(&req.dataset_id, "", complex, map, stats, &params);
+    let (map, stats) = build_interface_map(complex, &partition, &params).ok()?;
+    let ds = ViewerDataset::from_complex_and_map(&req.dataset_id, "", complex, &partition, map, stats, &params);
     serde_json::to_string(&RecomputeResponse { map: ds.map, atom_meta: ds.atom_meta, stats: ds.stats }).ok()
 }
 

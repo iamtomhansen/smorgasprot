@@ -1,28 +1,21 @@
-//! Direct `.pdb` and `.cif` structure ingestion and group assignment via `pdbtbx`.
+//! Direct `.pdb` and `.cif` structure ingestion via `pdbtbx`.
 
 use crate::amino_acids::{ElementExt, ResidueKind};
 use crate::dssp::{SecStructMode, assign_secondary_structure};
 use crate::model::{
     AtomRecord, ChainIdx, ChainName, ChainRecord, ComplexStructure, Element, GlobalAtomIdx, GlobalResidueIdx,
-    InterfacePartition, InterfaceSide, ResidueRecord, SecStruct,
+    ResidueRecord, SecStruct,
 };
 use std::path::Path;
 
 /// Loads all chains from a `.pdb` or `.cif` structure into an unpartitioned [`ComplexStructure`].
 pub fn load_structure(path: impl AsRef<Path>) -> Result<ComplexStructure, String> {
-    load_complex(path, &[], &[])
+    load_complex(path)
 }
 
 /// Loads all chains from a `.pdb` or `.cif` structure, classifying canonical amino acids,
 /// modified residues, coordinating metal ions, and ligands via [`ResidueKind`].
-///
-/// Sets initial `SideA` (`group_a_chains`) and `SideB` (`group_b_chains`) partition;
-/// any remaining chains in the file are loaded with [`InterfaceSide::None`].
-pub fn load_complex(
-    path: impl AsRef<Path>,
-    group_a_chains: &[ChainName],
-    group_b_chains: &[ChainName],
-) -> Result<ComplexStructure, String> {
+pub fn load_complex(path: impl AsRef<Path>) -> Result<ComplexStructure, String> {
     let path_ref = path.as_ref();
     let path_str = path_ref
         .to_str()
@@ -41,21 +34,13 @@ pub fn load_complex(
         .and_then(|s| s.to_str())
         .unwrap_or("complex")
         .to_string();
-    
+
     let mut chains = Vec::new();
     let mut residues = Vec::new();
     let mut atoms = Vec::new();
 
     for chain in model.chains() {
         let cid = chain.id().to_string();
-        let role = if group_a_chains.iter().any(|c| c.as_str() == cid) {
-            InterfaceSide::SideA
-        } else if group_b_chains.iter().any(|c| c.as_str() == cid) {
-            InterfaceSide::SideB
-        } else {
-            InterfaceSide::None
-        };
-
         let chain_idx = ChainIdx(chains.len() as u32);
         let chain_res_start = residues.len() as u32;
         let chain_atom_start = atoms.len() as u32;
@@ -96,7 +81,6 @@ pub fn load_complex(
                     idx: atom_idx,
                     residue_idx: res_idx,
                     chain_idx,
-                    role,
                     atom_serial: atom.serial_number(),
                     atom_name,
                     element,
@@ -125,7 +109,6 @@ pub fn load_complex(
             residues.push(ResidueRecord {
                 idx: res_idx,
                 chain_idx,
-                role,
                 kind,
                 chain_id: ChainName::new(&cid),
                 seq_num: res.serial_number() as i32,
@@ -155,10 +138,6 @@ pub fn load_complex(
 
     let mut complex = ComplexStructure {
         name,
-        group_a_name: "Group A".to_string(),
-        group_b_name: "Group B".to_string(),
-        group_a_chains: group_a_chains.to_vec(),
-        group_b_chains: group_b_chains.to_vec(),
         chains,
         residues,
         atoms,
@@ -170,38 +149,4 @@ pub fn load_complex(
         SecStructMode::FromFileOrComputeDssp,
     );
     Ok(complex)
-}
-
-/// Updates the active [`InterfaceSide`] partition in-place using an [`InterfacePartition`].
-pub fn set_active_partition(complex: &mut ComplexStructure, partition: &InterfacePartition) {
-    complex.group_a_name = partition.group_a_name.clone();
-    complex.group_b_name = partition.group_b_name.clone();
-    complex.group_a_chains = partition.group_a_chains.clone();
-    complex.group_b_chains = partition.group_b_chains.clone();
-
-    for res in &mut complex.residues {
-        let side = partition.chain_side(res.chain_id.as_str());
-        res.role = side;
-        for a_idx in res.atom_range.0..res.atom_range.1 {
-            complex.atoms[a_idx as usize].role = side;
-        }
-    }
-}
-
-/// Updates the active [`InterfaceSide`] partition in-place on an already-loaded [`ComplexStructure`].
-pub fn set_active_groups(
-    complex: &mut ComplexStructure,
-    group_a_name: impl Into<String>,
-    group_a_chains: &[ChainName],
-    group_b_name: impl Into<String>,
-    group_b_chains: &[ChainName],
-) {
-    let partition = InterfacePartition::new(
-        &complex.name,
-        group_a_name,
-        group_b_name,
-        group_a_chains.to_vec(),
-        group_b_chains.to_vec(),
-    );
-    set_active_partition(complex, &partition);
 }

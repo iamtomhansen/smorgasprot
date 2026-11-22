@@ -111,18 +111,19 @@ fn paint_backbone(cx: &Ctx) {
     let width = (cx.camera.zoom * 0.16).max(2.0);
 
     for ch in &cx.ds.chains {
-        let alpha = cx.s.side_alpha(ch.side);
+        let side = cx.ds.chain_side(&ch.chain_id);
+        let alpha = cx.s.side_alpha(side);
         if alpha <= MIN_DRAW_ALPHA {
             continue;
         }
-        let stroke = Stroke::new(width, palette::with_alpha(palette::side_dark(ch.side), fade * alpha * 0.45));
+        let stroke = Stroke::new(width, palette::with_alpha(palette::side_dark(side), fade * alpha * 0.45));
         // Use each Cα's own tangent-plane (u, v) so the trace follows the butterfly hinge.
         let pts: Vec<Pos2> = ch
             .ca_positions
             .iter()
             .map(|&p| {
                 let local = cx.frame.to_local(p);
-                cx.morph(p, [local.x, local.y], ch.side)
+                cx.morph(p, [local.x, local.y], side)
             })
             .collect();
         for w in pts.windows(2) {
