@@ -3,52 +3,68 @@
 
 use serde::Serialize;
 use smorgasprot_core::{
-    AnalysisParams, AtomNode, AtomNodeIdx, ChainIdx, ComplexStructure, Element, InterfaceGeometry, InterfaceMap, InterfaceSide,
-    ResidueTerritory, SurfaceMesh, TerritoryIdx, flatten::FlatteningStats, interface_geometry::build_interface_geometry,
-    surface::build_chain_surface_mesh,
+    AnalysisParams, AtomNode, AtomNodeIdx, ChainIdx, ChainName, ComplexStructure, Element, InterfaceGeometry, InterfaceMap,
+    InterfaceSide, ResidueTerritory, SurfaceMesh, TerritoryIdx, flatten::FlatteningStats,
+    interface_geometry::build_interface_geometry, surface::build_chain_surface_mesh,
 };
 
-/// Per-chain geometry for the Complex tab (Cα trace + molecular surface).
+/// Per-chain geometry for the Complex tab (alpha carbon trace + molecular surface).
 #[derive(Serialize, Clone, Debug)]
 pub struct ChainVisualData {
-    pub chain_id: String,
+    /// PDB-style chain ID (e.g. "A", "B")
+    pub chain_id: ChainName,
+    /// Number of residues in this chain.
     pub residue_count: usize,
+    /// Number of atoms in this chain.
     pub atom_count: usize,
+    /// Alpha carbon positions in plane-local space.
     pub ca_positions: Vec<[f32; 3]>,
+    /// Molecular surface mesh in plane-local space.
     pub surface_mesh: SurfaceMesh,
-    /// Interface side of this chain (render cache, not exported).
+    /// Which (if any) side of the interface this chain belongs to (render cache, not exported).
     #[serde(skip)]
     pub side: InterfaceSide,
 }
 
-/// Display labels for one interface node, parallel to `InterfaceMap::nodes`.
+/// User inspectable information about a given atom.
 #[derive(Serialize, Clone, Debug)]
 pub struct AtomMeta {
+    /// Atom name, e.g. "CA" or "OE1".
     pub atom_name: String,
+    /// Atom serial number from the source PDB/mmCIF file (1-based).
+    pub atom_serial: usize,
+    /// Residue name, e.g. "GLU" or "ALA".
     pub res_name: String,
-    pub seq_num: i32,
-    pub chain_id: String,
+    /// Residue sequence number (1-based).
+    pub res_num: i32,
+    /// Chain ID, e.g. "A" or "B".
+    pub chain_id: ChainName,
+    /// Element type for this atom.
     pub element: Element,
+    /// van der Waals radius in Ångströms.
     pub vdw_radius_a: f32,
+    /// B-factor (temperature factor) or pLDDT for this atom.
     pub b_factor: f32,
+    /// Occupancy for this atom (0.0–1.0).
+    pub occupancy: f32,
 }
 
 impl AtomMeta {
     /// Compact residue:atom label, e.g. `GLU 42:OE1`.
     pub fn residue_atom_label(&self) -> String {
-        format!("{} {}:{}", self.res_name, self.seq_num, self.atom_name)
+        format!("{} {}:{}", self.res_name, self.res_num, self.atom_name)
     }
 }
 
-/// Everything the viewer needs for one complex: chains, interface map, derived geometry, and stats.
+/// The user-facing names and data for a [`ComplexStructure`].
 #[derive(Serialize, Clone, Debug)]
 pub struct ViewerDataset {
     pub id: String,
     pub title: String,
     pub group_a_name: String,
     pub group_b_name: String,
-    pub group_a_chains: Vec<String>,
-    pub group_b_chains: Vec<String>,
+    pub group_a_chains: Vec<ChainName>,
+    pub group_b_chains: Vec<ChainName>,
     pub chains: Vec<ChainVisualData>,
     pub map: InterfaceMap,
     pub geometry: InterfaceGeometry,
@@ -57,6 +73,9 @@ pub struct ViewerDataset {
     /// Interface side of each `geometry.envelope_mesh` vertex (render cache, not exported).
     #[serde(skip)]
     pub envelope_sides: Vec<InterfaceSide>,
+    /// Source complex structure (retained in-memory for live recomputation and remeshing; not exported).
+    #[serde(skip)]
+    pub complex: Option<ComplexStructure>,
 }
 
 impl ViewerDataset {
@@ -111,7 +130,36 @@ impl ViewerDataset {
             atom_meta,
             stats,
             envelope_sides,
+            complex: Some(complex.clone()),
         }
+    }
+
+    /// Recomputes the chain surface meshes and interface geometry using updated parameters.
+    pub fn recompute_surfaces(&mut self, params: &AnalysisParams) {
+        let Some(complex) = &self.complex else { return };
+        for (c_idx, chain) in self.chains.iter_mut().enumerate() {
+            chain.surface_mesh = build_chain_surface_mesh(complex, ChainIdx(c_idx as u32), &params.surface);
+        }
+        let chain_meshes: Vec<SurfaceMesh> = self.chains.iter().map(|c| c.surface_mesh.clone()).collect();
+        self.geometry = build_interface_geometry(complex, &self.map, &chain_meshes, &params.geometry);
+        self.envelope_sides = self
+            .geometry
+            .envelope_mesh
+            .nearest_atom
+            .iter()
+            .map(|g| complex.atoms.get(g.0 as usize).map_or(InterfaceSide::None, |a| a.role))
+            .collect();
+    }
+
+    /// Re-extracts and flattens the interface, updating the map, derived meshes, and atom metadata.
+    pub fn recompute_interface(&mut self, params: &AnalysisParams) -> Result<(), String> {
+        let Some(complex) = &self.complex else { return Ok(()) };
+        let (map, stats) = smorgasprot_core::flatten::build_interface_map(complex, params)?;
+        self.atom_meta = map.nodes.iter().map(|n| atom_meta(complex, n)).collect();
+        self.map = map;
+        self.stats = stats;
+        self.recompute_surfaces(params);
+        Ok(())
     }
 
     pub fn node(&self, idx: AtomNodeIdx) -> Option<&AtomNode> {
@@ -153,17 +201,19 @@ fn ca_trace(complex: &ComplexStructure, residue_range: (u32, u32)) -> Vec<[f32; 
         .collect()
 }
 
-/// Builds display labels for one interface node from its source atom and residue.
+/// Builds metadata for one atom from the complex.
 fn atom_meta(complex: &ComplexStructure, node: &AtomNode) -> AtomMeta {
     let atom = &complex.atoms[node.global_atom.0 as usize];
     let res = &complex.residues[atom.residue_idx.0 as usize];
     AtomMeta {
         atom_name: std::str::from_utf8(&atom.atom_name).unwrap_or("?").trim().to_string(),
+        atom_serial: atom.atom_serial,
         res_name: std::str::from_utf8(&res.res_name).unwrap_or("UNK").trim().to_string(),
-        seq_num: res.seq_num,
+        res_num: res.seq_num,
         chain_id: res.chain_id.clone(),
         element: atom.element,
         vdw_radius_a: atom.vdw_radius_a,
         b_factor: atom.b_factor,
+        occupancy: atom.occupancy,
     }
 }

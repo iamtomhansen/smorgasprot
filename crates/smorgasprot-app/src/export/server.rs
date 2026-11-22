@@ -3,7 +3,10 @@
 
 use crate::dataset::{AtomMeta, ViewerDataset};
 use serde::{Deserialize, Serialize};
-use smorgasprot_core::{AnalysisParams, ComplexStructure, InterfaceMap, flatten::FlatteningStats, flatten::build_interface_map, ingest::set_active_groups};
+use smorgasprot_core::{
+    AnalysisParams, ChainName, ComplexStructure, InterfaceMap, flatten::FlatteningStats, flatten::build_interface_map,
+    ingest::set_active_groups,
+};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -19,8 +22,8 @@ struct RecomputeRequest {
     dataset_id: String,
     group_a_name: String,
     group_b_name: String,
-    group_a_chains: Vec<String>,
-    group_b_chains: Vec<String>,
+    group_a_chains: Vec<ChainName>,
+    group_b_chains: Vec<ChainName>,
 }
 
 /// JSON reply to `POST /api/recompute`; field names are part of the JS contract.

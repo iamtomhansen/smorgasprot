@@ -25,10 +25,11 @@
 //!    *Journal of Molecular Biology*, 280(1), 1–9.
 
 use crate::amino_acids::{ChemistryClass, ElementExt, print_three_letter_code};
+use crate::interface::model::{
+    AtomInteraction, AtomNode, AtomNodeIdx, EdgeKind, InterfaceEdge, ResidueTerritory, TerritoryIdx,
+};
 use crate::model::{
-    AtomInteraction, AtomNode, AtomNodeIdx, AtomRecord, ComplexStructure, EdgeKind, Element,
-    GlobalResidueIdx, InterfaceEdge, InterfaceSide, ResidueRecord, ResidueTerritory, SecStruct,
-    TerritoryIdx,
+    AtomRecord, ComplexStructure, Element, GlobalResidueIdx, InterfaceSide, ResidueRecord, SecStruct,
 };
 use crate::sasa::{SasaParams, compute_complex_sasa, is_interfacial_atom};
 use crate::spatial::SpatialGrid;

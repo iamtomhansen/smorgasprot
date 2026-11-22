@@ -8,10 +8,8 @@
 //!   overview of search algorithms and a guide to scoring functions." *Proteins*, 47(4), 409–443.
 //!   (Interface separating surfaces, cavity representations, and contact envelopes).
 
-use crate::model::{
-    AtomNode, ComplexStructure, GlobalAtomIdx, InterfaceEdge, InterfaceGeometry, InterfaceMap,
-    InterfaceSide, ProjectionPlane, SurfaceMesh,
-};
+use super::model::{AtomNode, InterfaceEdge, InterfaceGeometry, InterfaceMap, ProjectionPlane};
+use crate::model::{ComplexStructure, GlobalAtomIdx, InterfaceSide, SurfaceMesh};
 use glam::{Vec2, Vec3};
 
 crate::param_group! {
@@ -621,7 +619,8 @@ pub fn build_interface_geometry(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{AtomNodeIdx, EdgeKind, InterfaceSide, TerritoryIdx};
+    use super::super::model::{AtomNodeIdx, EdgeKind, TerritoryIdx};
+    use crate::model::InterfaceSide;
 
     #[test]
     fn test_empty_edges_build_empty_sheet() {

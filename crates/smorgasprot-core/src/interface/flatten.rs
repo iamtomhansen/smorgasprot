@@ -1,11 +1,11 @@
 //! Shared projection-plane singular value decomposition (SVD) basis, coupled 2D spring/repulsion
 //! solver, and bas-relief/butterfly kinematics.
 
-use crate::contour::compute_territory_contours;
-use crate::model::{
-    AtomNode, ComplexStructure, EdgeKind, InterfaceEdge, InterfaceMap, InterfaceSide,
-    ProjectionPlane, ResidueTerritory,
+use super::contour::compute_territory_contours;
+use super::model::{
+    AtomNode, EdgeKind, InterfaceEdge, InterfaceMap, ProjectionPlane, ResidueTerritory,
 };
+use crate::model::{ComplexStructure, InterfaceSide};
 use crate::params::AnalysisParams;
 use crate::physics::extract_3d_interface_graph;
 use glam::{Vec2, Vec3};
@@ -571,7 +571,7 @@ mod tests {
     #[test]
     fn test_flatten_7jvb_and_latentx() {
         let c_7jvb =
-            load_complex("../../examples/7JVB.cif", &["A".to_string()], &["C".to_string()])
+            load_complex("../../examples/7JVB.cif", &["A".into()], &["C".into()])
                 .unwrap();
         assert_eq!(c_7jvb.chains.len(), 4);
         let (map_7jvb, stats_7jvb) = build_interface_map(&c_7jvb, &Default::default()).unwrap();
@@ -591,8 +591,8 @@ mod tests {
 
         let c_lx = load_complex(
             "../../examples/fold_r8s15_mp3_model_0.cif",
-            &["B".to_string()],
-            &["A".to_string()],
+            &["B".into()],
+            &["A".into()],
         )
         .unwrap();
         let (_map_lx, stats_lx) = build_interface_map(&c_lx, &Default::default()).unwrap();

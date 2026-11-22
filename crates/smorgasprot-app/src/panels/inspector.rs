@@ -65,14 +65,15 @@ fn residue_card(ui: &mut Ui, ds: &ViewerDataset, terr: &ResidueTerritory) {
 
 fn atom_card(ui: &mut Ui, ds: &ViewerDataset, node: &AtomNode, mode: BFactorMode) {
     let Some(meta) = ds.meta(node.idx) else { return };
-    ui.label(RichText::new(format!("Atom: {} ({:?})", meta.atom_name, meta.element)).strong());
+    ui.label(RichText::new(format!("Atom: #{} {} ({:?})", meta.atom_serial, meta.atom_name, meta.element)).strong());
+    ui.label(format!("Residue: {} {} (Chain {})", meta.res_name, meta.res_num, meta.chain_id));
     ui.label(format!(
         "Buried: {:.1} Å² (Unbound {:.1} → Bound {:.1} Å²)",
         node.buried_sasa_a2, node.free_sasa_a2, node.complex_sasa_a2
     ));
     ui.label(match mode {
-        BFactorMode::AlphaFold => format!("pLDDT: {:.1}", node.b_factor),
-        BFactorMode::Crystallographic => format!("B-Factor: {:.1} Å²", node.b_factor),
+        BFactorMode::AlphaFold => format!("pLDDT: {:.1} • Occ: {:.2}", node.b_factor, meta.occupancy),
+        BFactorMode::Crystallographic => format!("B-Factor: {:.1} Å² • Occ: {:.2}", node.b_factor, meta.occupancy),
     });
     ui.label(format!("2D Relaxed (u, v): ({:.2}, {:.2})", node.pos_uv[0], node.pos_uv[1]));
 }

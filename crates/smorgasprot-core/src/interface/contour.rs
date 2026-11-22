@@ -15,7 +15,7 @@
 //!    Chaikin, G. M. (1974). An algorithm for high-speed curve generation.
 //!    *Computer Graphics and Image Processing*, 3(4), 346–349.
 
-use crate::model::{AtomNode, ProjectionPlane, ResidueTerritory};
+use super::model::{AtomNode, ProjectionPlane, ResidueTerritory};
 use glam::{Vec2, Vec3};
 
 crate::param_group! {

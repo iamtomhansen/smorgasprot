@@ -3,7 +3,8 @@
 
 use crate::dataset::ViewerDataset;
 use smorgasprot_core::{
-    AnalysisParams, ComplexStructure, flatten::build_interface_map, ingest::load_complex, ingest::set_active_groups,
+    AnalysisParams, ChainName, ComplexStructure, flatten::build_interface_map, ingest::load_complex,
+    ingest::set_active_groups,
 };
 use std::path::Path;
 
@@ -17,8 +18,8 @@ pub struct DatasetSpec {
     pub id: String,
     pub title: String,
     pub path: String,
-    pub group_a_chains: Vec<String>,
-    pub group_b_chains: Vec<String>,
+    pub group_a_chains: Vec<ChainName>,
+    pub group_b_chains: Vec<ChainName>,
 }
 
 impl DatasetSpec {
@@ -28,8 +29,8 @@ impl DatasetSpec {
             id: path.to_owned(),
             title: format!("{path} (Group A: {chain_a} vs Group B: {chain_b})"),
             path: path.to_owned(),
-            group_a_chains: vec![chain_a.to_owned()],
-            group_b_chains: vec![chain_b.to_owned()],
+            group_a_chains: vec![ChainName::new(chain_a)],
+            group_b_chains: vec![ChainName::new(chain_b)],
         }
     }
 
@@ -52,8 +53,8 @@ impl DatasetSpec {
                 id: id.to_owned(),
                 title: title.to_owned(),
                 path: path.to_owned(),
-                group_a_chains: vec![a.to_owned()],
-                group_b_chains: vec![b.to_owned()],
+                group_a_chains: vec![ChainName::new(a)],
+                group_b_chains: vec![ChainName::new(b)],
             })
             .collect()
     }

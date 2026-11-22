@@ -7,9 +7,6 @@ use glam::Vec3;
 use serde::{Deserialize, Serialize};
 use std::f32::consts::{FRAC_PI_2, PI};
 
-/// Default zoom in screen pixels per Ångström.
-pub const DEFAULT_ZOOM: f32 = 14.5;
-
 /// One of the six signed plane axes `(±u, ±v, ±n)`, used for gizmo caps and view snapping.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ViewAxis {
@@ -22,6 +19,7 @@ pub enum ViewAxis {
 }
 
 impl ViewAxis {
+    /// All six axes in display order, for generic editors.
     pub const ALL: [Self; 6] = [Self::PosU, Self::NegU, Self::PosV, Self::NegV, Self::PosN, Self::NegN];
 
     /// Unit direction of this axis in plane-local space.
@@ -48,6 +46,7 @@ impl ViewAxis {
         }
     }
 
+    /// Returns true if this axis points toward the positive half-space of the coordinate system.
     pub fn is_positive(self) -> bool {
         matches!(self, Self::PosU | Self::PosV | Self::PosN)
     }
@@ -80,7 +79,7 @@ impl Default for CameraState {
             roll: 0.0,
             origin: Vec3::ZERO,
             pan: Vec2::ZERO,
-            zoom: DEFAULT_ZOOM,
+            zoom: NavigationParams::default().default_zoom,
         }
     }
 }
@@ -96,6 +95,7 @@ impl CameraState {
         let x2 = x1;
         let y2 = p.y * cp - z1 * sp;
         let z2 = p.y * sp + z1 * cp;
+        // If roll is applied, rotate about the rotated n.
         if self.roll != 0.0 {
             let (sr, cr) = self.roll.sin_cos();
             Vec3::new(x2 * cr - y2 * sr, x2 * sr + y2 * cr, z2)
