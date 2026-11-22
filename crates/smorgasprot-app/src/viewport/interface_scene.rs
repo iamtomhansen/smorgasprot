@@ -38,7 +38,7 @@ impl Ctx<'_> {
 }
 
 /// Screen positions of every interface node under the current morph, indexed like `map.nodes`.
-pub fn project_nodes(ds: &ViewerDataset, camera: &CameraState, rect: Rect, s: &InterfaceViewSettings) -> Vec<Pos2> {
+pub fn project_nodes(ds: &ViewerDataset, rect: Rect, s: &InterfaceViewSettings) -> Vec<Pos2> {
     let Some(iface) = ds.active_interface() else { return Vec::new() };
     let frame = PlaneFrame::from(&iface.map.plane);
     iface
@@ -48,7 +48,7 @@ pub fn project_nodes(ds: &ViewerDataset, camera: &CameraState, rect: Rect, s: &I
         .map(|n| {
             let uv = if s.use_relaxed_uv { n.pos_uv } else { n.pos_uv_raw };
             let local = frame.morph(n.pos_3d, uv, n.role, s.flatten.value, s.book.value);
-            camera.project(local, rect).0
+            s.camera.project(local, rect).0
         })
         .collect()
 }
@@ -71,13 +71,12 @@ pub fn paint(
     painter: &Painter,
     rect: Rect,
     ds: &ViewerDataset,
-    camera: &CameraState,
     s: &InterfaceViewSettings,
     selection: &Selection,
     nodes: &[Pos2],
 ) {
     let Some(iface) = ds.active_interface() else { return };
-    let cx = Ctx { painter, rect, ds, iface, camera, frame: PlaneFrame::from(&iface.map.plane), s };
+    let cx = Ctx { painter, rect, ds, iface, camera: &s.camera, frame: PlaneFrame::from(&iface.map.plane), s };
 
     paint_hinge(&cx);
     if s.show_backbone {
@@ -151,7 +150,7 @@ fn paint_territories(cx: &Ctx, selection: &Selection) {
             let pts: Vec<Pos2> =
                 terr.contour_uv.iter().zip(&terr.contour_3d).map(|(&uv, &p)| cx.morph(p, uv, side)).collect();
 
-            let selected = selection.selected_territory == Some(terr.idx);
+            let selected = selection.selected_residue == Some(terr.global_residue);
             let (fill_a, width): (f32, f32) = if selected { (0.40, 2.0) } else { (0.14, 1.2) };
             let fill = palette::with_alpha(palette::side(side), alpha * fill_a);
             let stroke = Stroke::new(width, palette::with_alpha(palette::side_dark(side), alpha * 0.7));
@@ -180,7 +179,7 @@ fn paint_intra_edges(cx: &Ctx, nodes: &[Pos2]) {
 
 /// Cross-interface contacts colored by interaction kind.
 fn paint_cross_arcs(cx: &Ctx, nodes: &[Pos2]) {
-    let alpha = cx.s.side_a_alpha.min(cx.s.side_b_alpha);
+    let alpha = cx.s.side_a_alpha.value.min(cx.s.side_b_alpha.value);
     if alpha <= MIN_INTERACTIVE_ALPHA {
         return;
     }
@@ -200,7 +199,7 @@ fn paint_atoms(cx: &Ctx, selection: &Selection, nodes: &[Pos2]) {
         let radius = sizing::atom_radius_px(node, cx.s.size_mode, cx.camera.zoom);
         let fill = palette::with_alpha(lenses::atom_fill_color(node, meta, cx.s.lens, cx.s.bfactor_mode), alpha);
 
-        let hovered = selection.hovered_atom == Some(node.idx);
+        let hovered = selection.hovered_atom == Some(node.global_atom);
         let outline = if hovered { Stroke::new(2.5_f32, egui::Color32::WHITE) } else { Stroke::new(1.0_f32, palette::INK) };
         cx.painter.circle(pos, radius, fill, outline);
         if hovered {

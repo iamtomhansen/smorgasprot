@@ -16,13 +16,17 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &UiState) {
     ui.heading("🔍 Inspector & Diagnostics");
     ui.add_space(4.0);
 
-    let hovered = state.selection.hovered_atom.and_then(|idx| ds.node(idx));
+    let hovered = state
+        .selection
+        .hovered_atom
+        .or(state.selection.selected_atom)
+        .and_then(|g| ds.node_by_global_atom(g));
     // A clicked residue wins; otherwise follow the hovered atom's residue.
     let territory = state
         .selection
-        .selected_territory
-        .or(hovered.map(|n| n.territory))
-        .and_then(|idx| ds.territory(idx));
+        .selected_residue
+        .and_then(|r| ds.territory_by_global_residue(r))
+        .or_else(|| hovered.and_then(|n| ds.territory(n.territory)));
 
     section(ui, "Selected Residue / Atom", |ui| match territory {
         Some(terr) => {

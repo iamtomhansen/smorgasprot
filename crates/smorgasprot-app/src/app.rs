@@ -1,9 +1,11 @@
 //! `SmorgasprotApp`: the `eframe::App` that owns datasets and UI state and lays out the panels.
 //! Each frame: advance animations, draw panels, then apply queued `Action`s.
 
+use crate::action::Action;
 use crate::dataset::ViewerDataset;
 use crate::panels;
-use crate::state::{Action, StatusMessage, UiState};
+use crate::state::UiState;
+use crate::status::StatusMessage;
 use crate::viewport;
 use egui::{CentralPanel, Context, SidePanel, TopBottomPanel};
 
@@ -37,32 +39,38 @@ impl SmorgasprotApp {
         match action {
             Action::SelectDataset(idx) if idx < self.datasets.len() => {
                 self.active = idx;
-                // Node and territory indices are per-dataset, so the old selection is meaningless.
+                // Atom and residue indices are per-dataset, so the old selection is cleared.
                 self.state.selection.clear();
             }
             Action::SelectDataset(_) => {}
             Action::ExportHtml => self.status = Some(self.export_html(now)),
+            Action::DismissStatus => self.status = None,
         }
     }
 
     /// Writes the standalone HTML report and returns a status message describing the outcome.
     #[cfg(not(target_arch = "wasm32"))]
     fn export_html(&self, now: f64) -> StatusMessage {
+        let params = &self.state.view_params.status;
         let written = crate::export::generate_viewer_html(&self.datasets)
             .and_then(|html| std::fs::write(EXPORT_PATH, html).map_err(|e| format!("Failed to write {EXPORT_PATH}: {e}")));
         match written {
             Ok(()) => {
                 let path = std::fs::canonicalize(EXPORT_PATH).unwrap_or_else(|_| EXPORT_PATH.into());
-                StatusMessage::info(format!("Exported self-contained report to {}", path.display()), now)
+                StatusMessage::success(format!("Exported self-contained report to {}", path.display()), now, params)
             }
-            Err(e) => StatusMessage::error(e, now),
+            Err(e) => StatusMessage::error(e, now, params),
         }
     }
 
     /// Browser builds have no filesystem; a download-based export is future work.
     #[cfg(target_arch = "wasm32")]
     fn export_html(&self, now: f64) -> StatusMessage {
-        StatusMessage::error("HTML export is not yet available in the browser build.", now)
+        StatusMessage::error(
+            "HTML export is not yet available in the browser build.",
+            now,
+            &self.state.view_params.status,
+        )
     }
 }
 
@@ -73,12 +81,12 @@ impl eframe::App for SmorgasprotApp {
             ctx.request_repaint();
         }
 
-        // Expire the status message, and wake up again when the current one is due.
+        // Expire auto-timed status messages, and schedule a wake-up when due.
         if let Some(msg) = &self.status {
-            if now >= msg.expires_at {
+            if msg.is_expired(now) {
                 self.status = None;
-            } else {
-                ctx.request_repaint_after(std::time::Duration::from_secs_f64(msg.expires_at - now));
+            } else if let Some(rem) = msg.remaining_s(now) {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(rem));
             }
         }
 
@@ -88,21 +96,27 @@ impl eframe::App for SmorgasprotApp {
         TopBottomPanel::top("top_bar").show(ctx, |ui| {
             panels::top_bar::show(ui, &self.datasets, self.active, &mut self.state, &mut actions);
         });
-        TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
-            panels::status_bar::show(ui, self.datasets.get(self.active), self.status.as_ref());
-        });
+        if self.state.panels.status_bar {
+            TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
+                panels::status_bar::show(ui, self.datasets.get(self.active), self.status.as_ref(), &mut actions);
+            });
+        }
 
         if let Some(ds) = self.datasets.get_mut(self.active) {
-            SidePanel::left("controls")
-                .resizable(true)
-                .default_width(LEFT_PANEL_WIDTH)
-                .width_range(SIDE_PANEL_RANGE)
-                .show(ctx, |ui| panels::controls(ui, ds, &mut self.state));
-            SidePanel::right("inspector")
-                .resizable(true)
-                .default_width(RIGHT_PANEL_WIDTH)
-                .width_range(SIDE_PANEL_RANGE)
-                .show(ctx, |ui| panels::inspector(ui, ds, &self.state));
+            if self.state.panels.left_controls {
+                SidePanel::left("controls")
+                    .resizable(true)
+                    .default_width(LEFT_PANEL_WIDTH)
+                    .width_range(SIDE_PANEL_RANGE)
+                    .show(ctx, |ui| panels::controls(ui, ds, &mut self.state));
+            }
+            if self.state.panels.right_inspector {
+                SidePanel::right("inspector")
+                    .resizable(true)
+                    .default_width(RIGHT_PANEL_WIDTH)
+                    .width_range(SIDE_PANEL_RANGE)
+                    .show(ctx, |ui| panels::inspector(ui, ds, &self.state));
+            }
             CentralPanel::default().show(ctx, |ui| viewport::show(ui, ds, &mut self.state));
         } else {
             CentralPanel::default().show(ctx, |ui| {

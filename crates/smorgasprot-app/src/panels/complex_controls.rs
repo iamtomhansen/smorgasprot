@@ -79,14 +79,15 @@ pub fn show(ui: &mut Ui, ds: &mut ViewerDataset, state: &mut UiState) {
         }
     });
 
+    let explode_params = &state.view_params.explode;
     section(ui, "3. Explode Separation Along ±n", |ui| {
-        let label = format!("{:.1} Å", s.explode_distance_a());
+        let label = format!("{:.1} Å", s.explode_distance_a(explode_params));
         tween_slider(ui, &mut s.explode, label);
         tween_presets(ui, &mut s.explode, &[("Closed (0 Å)", 0.0), ("Half (12 Å)", 0.5), ("Exploded (24 Å)", 1.0)]);
     });
 
     ui.add_space(4.0);
     if ui.button(RichText::new("Inspect Unwrapped Interface Map →").strong()).clicked() {
-        state.tab = WorkspaceTab::Interface;
+        state.switch_tab(WorkspaceTab::Interface);
     }
 }

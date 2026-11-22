@@ -18,11 +18,14 @@ pub fn section(ui: &mut Ui, title: &str, add_contents: impl FnOnce(&mut Ui)) {
     ui.add_space(6.0);
 }
 
-/// Labelled opacity slider in `[0.05, 1]`.
-pub fn alpha_slider(ui: &mut Ui, label: impl Into<egui::WidgetText>, alpha: &mut f32) {
+/// Labelled opacity slider in `[0.05, 1]` driving a [`Tween`].
+pub fn alpha_slider(ui: &mut Ui, label: impl Into<egui::WidgetText>, alpha: &mut Tween) {
     ui.horizontal(|ui| {
         ui.label(label);
-        ui.add(Slider::new(alpha, ALPHA_RANGE).step_by(0.01));
+        let mut value = alpha.value;
+        if ui.add(Slider::new(&mut value, ALPHA_RANGE).step_by(0.01)).changed() {
+            alpha.snap_to(value);
+        }
     });
 }
 

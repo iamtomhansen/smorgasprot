@@ -5,7 +5,7 @@ use super::draw_list::DrawList;
 use super::plane_space::{PlaneFrame, explode_offset};
 use crate::camera::CameraState;
 use crate::dataset::{InterfaceViewData, ViewerDataset};
-use crate::state::{ComplexViewSettings, InterfaceDisplayMode};
+use crate::state::{ComplexViewSettings, ExplodeParams, InterfaceDisplayMode};
 use crate::style::palette;
 use egui::{Color32, Painter, Pos2, Rect, Stroke};
 use glam::Vec3;
@@ -19,21 +19,21 @@ const UNASSIGNED_ALPHA_SCALE: f32 = 0.45;
 const LIGHT_DIR: Vec3 = Vec3::new(0.3, 0.5, 0.8);
 
 /// Paints the Complex tab for the active dataset.
-pub fn paint(painter: &Painter, rect: Rect, ds: &ViewerDataset, camera: &CameraState, s: &ComplexViewSettings) {
+pub fn paint(painter: &Painter, rect: Rect, ds: &ViewerDataset, s: &ComplexViewSettings, explode: &ExplodeParams) {
     let Some(iface) = ds.active_interface() else { return };
-    let view = View { frame: PlaneFrame::from(&iface.map.plane), camera, rect };
+    let view = View { frame: PlaneFrame::from(&iface.map.plane), camera: &s.camera, explode, rect };
     let mut list = DrawList::default();
 
-    if s.show_surface && s.surface_alpha > MIN_VISIBLE_ALPHA {
+    if s.show_surface && s.surface_alpha.value > MIN_VISIBLE_ALPHA {
         add_chain_surfaces(&mut list, &view, ds, s);
     }
-    if s.interface_mode != InterfaceDisplayMode::Off && s.interface_alpha > MIN_VISIBLE_ALPHA {
+    if s.interface_mode != InterfaceDisplayMode::Off && s.interface_alpha.value > MIN_VISIBLE_ALPHA {
         add_interface_geometry(&mut list, &view, iface, s);
     }
-    if s.show_cartoon && s.cartoon_alpha > MIN_VISIBLE_ALPHA {
+    if s.show_cartoon && s.cartoon_alpha.value > MIN_VISIBLE_ALPHA {
         add_cartoon(&mut list, &view, ds, s);
     }
-    if s.show_spheres && s.spheres_alpha > MIN_VISIBLE_ALPHA {
+    if s.show_spheres && s.spheres_alpha.value > MIN_VISIBLE_ALPHA {
         add_spheres(&mut list, &view, iface, s);
     }
     list.paint(painter);
@@ -43,6 +43,7 @@ pub fn paint(painter: &Painter, rect: Rect, ds: &ViewerDataset, camera: &CameraS
 struct View<'a> {
     frame: PlaneFrame,
     camera: &'a CameraState,
+    explode: &'a ExplodeParams,
     rect: Rect,
 }
 
@@ -57,10 +58,10 @@ impl View<'_> {
 fn add_chain_surfaces(list: &mut DrawList, view: &View, ds: &ViewerDataset, s: &ComplexViewSettings) {
     for ch in &ds.chains {
         let side = ds.chain_side(&ch.chain_id);
-        let offset = explode_offset(side, s.explode.value);
+        let offset = explode_offset(side, s.explode.value, view.explode);
         let alpha = match side {
-            InterfaceSide::None => s.surface_alpha * UNASSIGNED_ALPHA_SCALE,
-            _ => s.surface_alpha,
+            InterfaceSide::None => s.surface_alpha.value * UNASSIGNED_ALPHA_SCALE,
+            _ => s.surface_alpha.value,
         };
         let base = palette::side(side);
         add_mesh(list, view, &ch.surface_mesh, offset, s.cull_backfaces, |_, shade| {
@@ -71,7 +72,7 @@ fn add_chain_surfaces(list: &mut DrawList, view: &View, ds: &ViewerDataset, s: &
 
 /// The selected derived interface mesh; anchored at the interface, so it ignores explode.
 fn add_interface_geometry(list: &mut DrawList, view: &View, iface: &InterfaceViewData, s: &ComplexViewSettings) {
-    let a = s.interface_alpha;
+    let a = s.interface_alpha.value;
     let geo = &iface.geometry;
     match s.interface_mode {
         InterfaceDisplayMode::SmoothedSdf => {
@@ -106,10 +107,10 @@ fn add_cartoon(list: &mut DrawList, view: &View, ds: &ViewerDataset, s: &Complex
     let width = (view.camera.zoom * 0.28).max(3.0);
     for ch in &ds.chains {
         let side = ds.chain_side(&ch.chain_id);
-        let offset = explode_offset(side, s.explode.value);
+        let offset = explode_offset(side, s.explode.value, view.explode);
         let (color, alpha) = match side {
-            InterfaceSide::None => (palette::UNASSIGNED, s.cartoon_alpha * UNASSIGNED_ALPHA_SCALE),
-            side => (palette::side_dark(side), s.cartoon_alpha),
+            InterfaceSide::None => (palette::UNASSIGNED, s.cartoon_alpha.value * UNASSIGNED_ALPHA_SCALE),
+            side => (palette::side_dark(side), s.cartoon_alpha.value),
         };
         let stroke = Stroke::new(width, palette::with_alpha(color, alpha));
         let pts: Vec<(Pos2, f32)> = ch.ca_positions.iter().map(|&p| view.project(p, offset)).collect();
@@ -123,9 +124,9 @@ fn add_cartoon(list: &mut DrawList, view: &View, ds: &ViewerDataset, s: &Complex
 fn add_spheres(list: &mut DrawList, view: &View, iface: &InterfaceViewData, s: &ComplexViewSettings) {
     let outline = Stroke::new(1.0_f32, palette::INK);
     for (node, meta) in iface.map.nodes.iter().zip(&iface.atom_meta) {
-        let (center, depth) = view.project(node.pos_3d, explode_offset(node.role, s.explode.value));
+        let (center, depth) = view.project(node.pos_3d, explode_offset(node.role, s.explode.value, view.explode));
         let radius = (meta.vdw_radius_a * view.camera.zoom * 0.35).max(3.5);
-        let fill = palette::with_alpha(palette::side_light(node.role), s.spheres_alpha);
+        let fill = palette::with_alpha(palette::side_light(node.role), s.spheres_alpha.value);
         list.disc(center, radius, depth, fill, outline);
     }
 }

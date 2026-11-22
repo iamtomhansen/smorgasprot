@@ -1,16 +1,16 @@
 //! Reference grid drawn on the interface tangent plane (plane-local `n = 0`).
 
 use crate::camera::CameraState;
-use crate::state::RenderParams;
+use crate::state::GridParams;
 use crate::style::palette;
 use egui::{Painter, Rect, Stroke};
 use glam::Vec3;
 
 /// Paints the tangent-plane grid underneath all scene geometry.
-pub fn paint(painter: &Painter, rect: Rect, camera: &CameraState, render: &RenderParams) {
+pub fn paint(painter: &Painter, rect: Rect, camera: &CameraState, grid: &GridParams) {
     let stroke = Stroke::new(1.0_f32, palette::GRID);
-    let extent = render.grid_extent_a;
-    let step = render.grid_step_a.max(0.5);
+    let extent = grid.grid_extent_a;
+    let step = grid.grid_step_a.max(0.5);
     let line = |a: Vec3, b: Vec3| {
         painter.line_segment([camera.project(a, rect).0, camera.project(b, rect).0], stroke);
     };

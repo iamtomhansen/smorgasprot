@@ -30,8 +30,8 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState) {
         tween_slider(ui, &mut s.book, label);
         let preset = tween_presets(ui, &mut s.book, &[("Overlay (0°)", 0.0), ("90°", 0.5), ("Open-Book (180°)", 1.0)]);
         // Opening the book exposes side B, so make sure it is visible.
-        if preset == Some(1.0) && s.side_b_alpha < OPEN_BOOK_MIN_B_ALPHA {
-            s.side_b_alpha = 1.0;
+        if preset == Some(1.0) && s.side_b_alpha.target < OPEN_BOOK_MIN_B_ALPHA {
+            s.side_b_alpha.animate_to(1.0);
         }
     });
 

@@ -2,9 +2,9 @@
 
 use serde::Serialize;
 use smorgasprot_core::{
-    AnalysisParams, AtomNode, AtomNodeIdx, ChainIdx, ChainName, ComplexStructure, Element, InterfaceGeometry, InterfaceMap,
-    InterfacePartition, InterfaceSide, ResidueTerritory, SurfaceMesh, TerritoryIdx, flatten::FlatteningStats,
-    interface_geometry::build_interface_geometry, surface::build_chain_surface_mesh,
+    AnalysisParams, AtomNode, AtomNodeIdx, ChainIdx, ChainName, ComplexStructure, Element, GlobalAtomIdx, GlobalResidueIdx,
+    InterfaceGeometry, InterfaceMap, InterfacePartition, InterfaceSide, ResidueTerritory, SurfaceMesh, TerritoryIdx,
+    flatten::FlatteningStats, interface_geometry::build_interface_geometry, surface::build_chain_surface_mesh,
 };
 
 /// Per-chain geometry for the Complex tab (alpha carbon trace + molecular surface).
@@ -52,7 +52,8 @@ impl AtomMeta {
     }
 }
 
-/// Precomputed visual & geometric data for one macromolecular interface partition.
+/// Precomputed visual & geometric data for one macromolecular interface partition. Many interfaces
+/// can be precomputed for a single complex. They are stored in the [`ViewerDataset`].
 #[derive(Serialize, Clone, Debug)]
 pub struct InterfaceViewData {
     /// Interface partition demarcation rules & atom membership.
@@ -124,7 +125,8 @@ impl InterfaceViewData {
     }
 }
 
-/// The user-facing names and data for a [`ComplexStructure`].
+/// The user-facing names and data for a [`ComplexStructure`]. All loaded data is identified and
+/// labelled here.
 #[derive(Serialize, Clone, Debug)]
 pub struct ViewerDataset {
     /// Unique ID for this dataset.
@@ -252,6 +254,17 @@ impl ViewerDataset {
 
     pub fn territory(&self, idx: TerritoryIdx) -> Option<&ResidueTerritory> {
         self.active_interface().and_then(|i| i.map.territories.get(idx.0 as usize))
+    }
+
+    /// Finds the active interface node corresponding to `atom`, if it is interfacial.
+    pub fn node_by_global_atom(&self, atom: GlobalAtomIdx) -> Option<&AtomNode> {
+        self.active_interface().and_then(|i| i.map.nodes.iter().find(|n| n.global_atom == atom))
+    }
+
+    /// Finds the active interface territory corresponding to `residue`, if it is interfacial.
+    pub fn territory_by_global_residue(&self, residue: GlobalResidueIdx) -> Option<&ResidueTerritory> {
+        self.active_interface()
+            .and_then(|i| i.map.territories.iter().find(|t| t.global_residue == residue))
     }
 
     /// User-facing name of one interface side.

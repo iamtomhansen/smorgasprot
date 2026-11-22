@@ -1,5 +1,5 @@
-//! Tunable display and navigation values (the app-side counterpart of core `AnalysisParams`).
-//! Pure layout chrome (gizmo geometry, panel widths) stays `const`; anything that changes what a value looks like or how input feels lives here.
+//! Tunable display and navigation parameter groups (app-side counterpart of core `AnalysisParams`).
+//! Feature-scoped groups keep domain tunables separate from unrelated rendering settings.
 
 use serde::{Deserialize, Serialize};
 use smorgasprot_core::param_group;
@@ -9,15 +9,79 @@ use smorgasprot_core::params::ParamGroup;
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(default)]
 pub struct ViewParams {
+    pub explode: ExplodeParams,
+    pub morph: MorphParams,
+    pub grid: GridParams,
+    pub opacity: OpacityParams,
+    pub atom_draw: AtomDrawParams,
     pub lenses: LensParams,
-    pub render: RenderParams,
     pub navigation: NavigationParams,
+    pub status: StatusParams,
 }
 
 impl ViewParams {
     /// All groups in display order, for generic editors.
-    pub fn groups_mut(&mut self) -> [&mut dyn ParamGroup; 3] {
-        [&mut self.lenses, &mut self.render, &mut self.navigation]
+    pub fn groups_mut(&mut self) -> [&mut dyn ParamGroup; 8] {
+        [
+            &mut self.explode,
+            &mut self.morph,
+            &mut self.grid,
+            &mut self.opacity,
+            &mut self.atom_draw,
+            &mut self.lenses,
+            &mut self.navigation,
+            &mut self.status,
+        ]
+    }
+}
+
+param_group! {
+    /// Controls for 3D complex sandwich separation along the interface normal.
+    pub struct ExplodeParams("explode", "Complex Explode") {
+        /// Separation between the two groups at full explode (Å).
+        max_explode_a: f32 = 24.0, 0.0..=100.0, "Max explode distance", "Å";
+    }
+}
+
+param_group! {
+    /// Geometry parameters for 3D-to-2D flattening and open-book butterfly hinging.
+    pub struct MorphParams("morph", "Interface Morph & Butterfly") {
+        /// Offset along ±n keeping the two flat sheets from z-fighting (Å).
+        sheet_offset_a: f32 = 0.08, 0.0..=2.0, "Dual-sheet z-offset", "Å";
+        /// Half-length of the drawn open-book hinge line (Å).
+        hinge_half_len_a: f32 = 28.0, 0.0..=100.0, "Hinge line half-length", "Å";
+    }
+}
+
+param_group! {
+    /// Dimensions of the tangent-plane reference grid.
+    pub struct GridParams("grid", "Reference Grid") {
+        /// Half-width of the tangent-plane reference grid (Å).
+        grid_extent_a: f32 = 40.0, 0.0..=200.0, "Reference grid extent", "Å";
+        /// Reference grid spacing (Å).
+        grid_step_a: f32 = 5.0, 1.0..=50.0, "Reference grid spacing", "Å";
+    }
+}
+
+param_group! {
+    /// Opacity cutoffs and dimming scales for scene layers.
+    pub struct OpacityParams("opacity", "Layer Visibility & Opacity") {
+        /// Layers at or below this opacity are not drawn.
+        min_draw_alpha: f32 = 0.02, 0.0..=0.5, "Draw opacity cutoff", "";
+        /// Sides at or below this opacity are ghosted: no picking, springs, or arcs.
+        min_interactive_alpha: f32 = 0.05, 0.0..=0.5, "Interactive opacity cutoff", "";
+        /// Opacity multiplier for unassigned chains in the Complex tab.
+        unassigned_alpha_scale: f32 = 0.45, 0.0..=1.0, "Unassigned chain opacity scale", "";
+    }
+}
+
+param_group! {
+    /// Screen-space sizing of atom discs and backbone traces.
+    pub struct AtomDrawParams("atom_draw", "Atom & Ribbon Sizing") {
+        /// Smallest drawn atom radius (px).
+        min_atom_radius_px: f32 = 3.5, 0.5..=20.0, "Min atom radius", "px";
+        /// Atom base radius as a fraction of zoom (px per Å).
+        atom_radius_per_zoom: f32 = 0.28, 0.05..=1.0, "Atom radius zoom scale", "";
     }
 }
 
@@ -44,32 +108,6 @@ param_group! {
 }
 
 param_group! {
-    /// Scene geometry and visibility cutoffs.
-    pub struct RenderParams("render", "Rendering") {
-        /// Separation between the two groups at full explode (Å).
-        max_explode_a: f32 = 24.0, 0.0..=100.0, "Max explode distance", "Å";
-        /// Offset along ±n keeping the two flat sheets from z-fighting (Å).
-        sheet_offset_a: f32 = 0.08, 0.0..=2.0, "Dual-sheet z-offset", "Å";
-        /// Layers at or below this opacity are not drawn.
-        min_draw_alpha: f32 = 0.02, 0.0..=0.5, "Draw opacity cutoff", "";
-        /// Sides at or below this opacity are ghosted: no picking, springs, or arcs.
-        min_interactive_alpha: f32 = 0.05, 0.0..=0.5, "Interactive opacity cutoff", "";
-        /// Opacity multiplier for unassigned chains in the Complex tab.
-        unassigned_alpha_scale: f32 = 0.45, 0.0..=1.0, "Unassigned chain opacity scale", "";
-        /// Half-length of the drawn open-book hinge line (Å).
-        hinge_half_len_a: f32 = 28.0, 0.0..=100.0, "Hinge line half-length", "Å";
-        /// Half-width of the tangent-plane reference grid (Å).
-        grid_extent_a: f32 = 40.0, 0.0..=200.0, "Reference grid extent", "Å";
-        /// Reference grid spacing (Å).
-        grid_step_a: f32 = 5.0, 1.0..=50.0, "Reference grid spacing", "Å";
-        /// Smallest drawn atom radius (px).
-        min_atom_radius_px: f32 = 3.5, 0.5..=20.0, "Min atom radius", "px";
-        /// Atom base radius as a fraction of zoom (px per Å).
-        atom_radius_per_zoom: f32 = 0.28, 0.05..=1.0, "Atom radius zoom scale", "";
-    }
-}
-
-param_group! {
     /// Camera and pointer behavior.
     pub struct NavigationParams("navigation", "Navigation") {
         /// Orbit speed (radians per dragged pixel).
@@ -88,5 +126,13 @@ param_group! {
         flat_pan_threshold: f32 = 0.92, 0.0..=1.0, "2D pan mode threshold", "";
         /// Slider animation easing rate (1/s); higher is snappier.
         animation_rate_per_s: f32 = 12.0, 1.0..=60.0, "Animation easing rate", "1/s";
+    }
+}
+
+param_group! {
+    /// Status bar notification display duration (`0` = persist until dismissed).
+    pub struct StatusParams("status", "Status Bar Notifications") {
+        /// How long status messages stay visible before auto-hiding (0 = until dismissed).
+        lifetime_s: f32 = 6.0, 0.0..=60.0, "Message lifetime (0 = until dismissed)", "s";
     }
 }

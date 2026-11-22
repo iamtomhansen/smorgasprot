@@ -1,7 +1,8 @@
 //! Top menu bar: File and View menus, workspace tabs, and the dataset picker.
 
+use crate::action::Action;
 use crate::dataset::ViewerDataset;
-use crate::state::{Action, UiState, WorkspaceTab};
+use crate::state::{UiState, WorkspaceTab};
 use egui::{Align, ComboBox, Layout, Ui};
 use smorgasprot_core::InterfaceSide;
 
@@ -25,7 +26,7 @@ pub fn show(ui: &mut Ui, datasets: &[ViewerDataset], active: usize, state: &mut 
 
         ui.menu_button("View", |ui| {
             if ui.button("🧭 Reset Camera / Align to Tangent Plane Π").clicked() {
-                state.camera.reset();
+                state.active_camera_mut().reset();
                 ui.close_menu();
             }
             ui.separator();
@@ -42,11 +43,21 @@ pub fn show(ui: &mut Ui, datasets: &[ViewerDataset], active: usize, state: &mut 
                 s.show_both();
                 ui.close_menu();
             }
+            ui.separator();
+            ui.checkbox(&mut state.panels.left_controls, "Controls Panel");
+            ui.checkbox(&mut state.panels.right_inspector, "Inspector Panel");
+            ui.checkbox(&mut state.panels.status_bar, "Status Bar");
         });
 
         ui.separator();
-        ui.selectable_value(&mut state.tab, WorkspaceTab::Complex, "🧊 1. Complex (3D Sandwich)");
-        ui.selectable_value(&mut state.tab, WorkspaceTab::Interface, "🗺️ 2. Interface (2D/3D Cartography)");
+        for (tab, label) in [
+            (WorkspaceTab::Complex, "🧊 1. Complex (3D Sandwich)"),
+            (WorkspaceTab::Interface, "🗺️ 2. Interface (2D/3D Cartography)"),
+        ] {
+            if ui.selectable_label(state.active_tab == tab, label).clicked() {
+                state.switch_tab(tab);
+            }
+        }
 
         // Right-aligned dataset picker (layout is right-to-left, so the label comes last).
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {

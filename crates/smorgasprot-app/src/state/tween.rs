@@ -1,8 +1,6 @@
-//! Smoothly animated scalar used for the flatten, butterfly, and explode sliders.
+//! Smoothly animated scalar used for morph, explode, and opacity sliders.
 //! Exponential easing is frame-rate independent, so it behaves the same at 30 or 144 FPS.
 
-/// Easing rate in 1/s (≈ 18 % of the remaining distance per frame at 60 FPS).
-const RATE_PER_S: f32 = 12.0;
 /// Distance below which the value snaps to its target.
 const SNAP_EPS: f32 = 1e-3;
 
@@ -29,14 +27,19 @@ impl Tween {
         self.target = value;
     }
 
-    /// Advances by `dt` seconds; returns `true` while still moving.
-    pub fn step(&mut self, dt: f32) -> bool {
+    /// Completes any in-flight animation immediately by snapping `value` to `target`.
+    pub fn finish(&mut self) {
+        self.value = self.target;
+    }
+
+    /// Advances by `dt` seconds at `rate_per_s` (1/s); returns `true` while still moving.
+    pub fn step(&mut self, dt: f32, rate_per_s: f32) -> bool {
         let remaining = self.target - self.value;
         if remaining.abs() < SNAP_EPS {
             self.value = self.target;
             return false;
         }
-        self.value += remaining * (1.0 - (-RATE_PER_S * dt).exp());
+        self.value += remaining * (1.0 - (-rate_per_s * dt).exp());
         true
     }
 }

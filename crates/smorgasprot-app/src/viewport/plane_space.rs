@@ -1,7 +1,7 @@
 //! World space → interface plane-local space `(u, v, n)`, plus the flatten/butterfly morph.
 //! Everything the camera projects is first expressed in this frame.
 
-use crate::state::MAX_EXPLODE_A;
+use crate::state::ExplodeParams;
 use glam::Vec3;
 use smorgasprot_core::{InterfaceSide, ProjectionPlane};
 
@@ -55,8 +55,8 @@ impl PlaneFrame {
 }
 
 /// Translation along ±n applied to one side when the complex is exploded.
-pub fn explode_offset(side: InterfaceSide, explode_t: f32) -> Vec3 {
-    let d = 0.5 * explode_t * MAX_EXPLODE_A;
+pub fn explode_offset(side: InterfaceSide, explode_t: f32, params: &ExplodeParams) -> Vec3 {
+    let d = 0.5 * explode_t * params.max_explode_a;
     match side {
         InterfaceSide::SideA => Vec3::new(0.0, 0.0, d),
         InterfaceSide::SideB => Vec3::new(0.0, 0.0, -d),

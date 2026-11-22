@@ -14,7 +14,7 @@ use egui::{ScrollArea, Ui};
 
 /// Left-hand controls for the active workspace tab.
 pub fn controls(ui: &mut Ui, ds: &mut ViewerDataset, state: &mut UiState) {
-    ScrollArea::vertical().show(ui, |ui| match state.tab {
+    ScrollArea::vertical().show(ui, |ui| match state.active_tab {
         WorkspaceTab::Complex => complex_controls::show(ui, ds, state),
         WorkspaceTab::Interface => interface_controls::show(ui, ds, state),
     });
