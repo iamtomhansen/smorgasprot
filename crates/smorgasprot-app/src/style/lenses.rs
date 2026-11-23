@@ -1,18 +1,28 @@
 //! Color visual-channel encodings: node fill, node border stroke, edge stroke, territory fill, labels, and legends.
-//! Projects categorical and continuous scalar metrics through [`Palette`] and [`ColorMap`].
+//! Projects categorical rules and unified [`ScalarMetric`]s through [`Palette`] and [`ColorMap`].
 
 use crate::dataset::AtomMeta;
 use crate::state::{
     BFactorMode, ColorLens, EdgeColorLens, LabelBuilder, LabelValueChannel, LensParams, NodeStrokeColorLens,
-    ResidueNameStyle, TerritoryColorLens,
+    ResidueNameStyle, ScalarMetric, TerritoryColorLens,
 };
-use crate::style::sizing::node_mobility_t;
 use crate::style::{ContactPalette, Palette};
 use egui::Color32;
 use smorgasprot_core::{
     AminoAcid, AtomNode, EdgeKind, InterfaceEdge, InterfaceSide, ResidueTerritory, print_three_letter_code,
     residue_full_name,
 };
+
+/// Samples the appropriate continuous [`ColorMap`] on `palette` for a normalized `[0, 1]` [`ScalarMetric`].
+fn sample_metric_color(metric: ScalarMetric, t: f32, palette: &Palette) -> Color32 {
+    match metric {
+        ScalarMetric::ClashSeverity => palette.charge.sample(t),
+        ScalarMetric::BuriedSasa
+        | ScalarMetric::Mobility
+        | ScalarMetric::Rigidity
+        | ScalarMetric::AliphaticScore => palette.mobility.sample(t),
+    }
+}
 
 /// Fill color for an interface atom node under the active [`ColorLens`].
 pub fn atom_fill_color(
@@ -24,13 +34,16 @@ pub fn atom_fill_color(
     params: &LensParams,
     palette: &Palette,
 ) -> Color32 {
+    if let Some(metric) = lens.scalar_metric() {
+        return sample_metric_color(metric, metric.atom_norm(node, bfactor_mode, params), palette);
+    }
     match lens {
         ColorLens::Fixed => fixed_color,
         ColorLens::Off => Color32::TRANSPARENT,
         ColorLens::Interactions => {
             let c = &palette.contacts;
             // Priority: clash > salt bridge > H-bond > plain side color.
-            if worst_clash_overlap(node) > params.clash_threshold_a {
+            if ScalarMetric::ClashSeverity.atom_raw(node) > params.clash_threshold_a {
                 c.clash
             } else if has_cross_interaction(node, EdgeKind::SaltBridge) {
                 c.salt_bridge
@@ -42,13 +55,12 @@ pub fn atom_fill_color(
                 palette.sides.side_light(InterfaceSide::SideB)
             }
         }
-        ColorLens::Chemistry => aa_chemistry_color(&meta.res_name, node.aliphatic_score, params, palette),
+        ColorLens::AaChemistry => aa_chemistry_color(&meta.res_name, node.aliphatic_score, params, palette),
         ColorLens::ModernCpk => palette.elements.color(meta.element),
         ColorLens::InterfaceSide => palette.sides.side(node.role),
-        ColorLens::Bfactor => palette.mobility.sample(node_mobility_t(node, bfactor_mode, params)),
-        ColorLens::BuriedSasa => palette.mobility.sample_range(node.buried_sasa_a2, 0.0, 25.0),
-        ColorLens::AliphaticScore => palette.mobility.sample(node.aliphatic_score),
-        ColorLens::ClashSeverity => palette.charge.sample_range(worst_clash_overlap(node), 0.0, 0.6),
+        ColorLens::Bfactor | ColorLens::BuriedSasa | ColorLens::AliphaticScore | ColorLens::ClashSeverity => {
+            unreachable!()
+        }
     }
 }
 
@@ -81,7 +93,7 @@ pub fn atom_stroke_color(
             atom_fill_color(node, meta, ColorLens::Interactions, fixed_color, bfactor_mode, params, palette)
         }
         NodeStrokeColorLens::Chemistry => {
-            atom_fill_color(node, meta, ColorLens::Chemistry, fixed_color, bfactor_mode, params, palette)
+            atom_fill_color(node, meta, ColorLens::AaChemistry, fixed_color, bfactor_mode, params, palette)
         }
         NodeStrokeColorLens::ModernCpk => {
             atom_fill_color(node, meta, ColorLens::ModernCpk, fixed_color, bfactor_mode, params, palette)
@@ -107,13 +119,21 @@ pub fn edge_stroke_color(
         EdgeColorLens::Fixed => fixed_color,
         EdgeColorLens::Off => Color32::TRANSPARENT,
         EdgeColorLens::InteractionKind => palette.contacts.color(edge.kind),
-        EdgeColorLens::Strain2D => palette.charge.sample_range(edge.strain_2d_a, -1.2, 1.2),
+        EdgeColorLens::Strain2D => {
+            palette.charge.sample_range(edge.strain_2d_a, -params.edge_strain_max_a, params.edge_strain_max_a)
+        }
         EdgeColorLens::EndpointMobility => {
-            let ma = nodes.get(edge.a.0 as usize).map_or(0.5, |n| node_mobility_t(n, bfactor_mode, params));
-            let mb = nodes.get(edge.b.0 as usize).map_or(0.5, |n| node_mobility_t(n, bfactor_mode, params));
+            let ma = nodes
+                .get(edge.a.0 as usize)
+                .map_or(0.5, |n| ScalarMetric::Mobility.atom_norm(n, bfactor_mode, params));
+            let mb = nodes
+                .get(edge.b.0 as usize)
+                .map_or(0.5, |n| ScalarMetric::Mobility.atom_norm(n, bfactor_mode, params));
             palette.mobility.sample(0.5 * (ma + mb))
         }
-        EdgeColorLens::Distance3D => palette.mobility.sample_range(edge.dist_3d_a, 2.3, 4.5),
+        EdgeColorLens::Distance3D => {
+            palette.mobility.sample_range(edge.dist_3d_a, params.edge_dist_min_a, params.edge_dist_max_a)
+        }
     }
 }
 
@@ -128,6 +148,9 @@ pub fn territory_fill_color(
     params: &LensParams,
     palette: &Palette,
 ) -> Color32 {
+    if let Some(metric) = lens.scalar_metric() {
+        return sample_metric_color(metric, metric.territory_norm(terr, nodes, bfactor_mode, params), palette);
+    }
     match lens {
         TerritoryColorLens::Fixed => fixed_color,
         TerritoryColorLens::Off => Color32::TRANSPARENT,
@@ -138,32 +161,8 @@ pub fn territory_fill_color(
                 .first()
                 .and_then(|idx| metas.get(idx.0 as usize))
                 .map_or("", |m| m.res_name.as_str());
-            let avg_aliphatic = if terr.patch_atoms.is_empty() {
-                0.0
-            } else {
-                let sum: f32 = terr
-                    .patch_atoms
-                    .iter()
-                    .filter_map(|idx| nodes.get(idx.0 as usize))
-                    .map(|n| n.aliphatic_score)
-                    .sum();
-                sum / terr.patch_atoms.len() as f32
-            };
+            let avg_aliphatic = ScalarMetric::AliphaticScore.territory_raw(terr, nodes);
             aa_chemistry_color(res_name, avg_aliphatic, params, palette)
-        }
-        TerritoryColorLens::BuriedSasa => palette.mobility.sample_range(terr.buried_sasa_a2, 0.0, 90.0),
-        TerritoryColorLens::AvgMobility => {
-            if terr.patch_atoms.is_empty() {
-                palette.sides.side(terr.role)
-            } else {
-                let sum: f32 = terr
-                    .patch_atoms
-                    .iter()
-                    .filter_map(|idx| nodes.get(idx.0 as usize))
-                    .map(|n| node_mobility_t(n, bfactor_mode, params))
-                    .sum();
-                palette.mobility.sample(sum / terr.patch_atoms.len() as f32)
-            }
         }
         TerritoryColorLens::UnsatisfiedPolar => {
             if terr.has_unsatisfied_polar {
@@ -172,6 +171,7 @@ pub fn territory_fill_color(
                 palette.sides.side(terr.role)
             }
         }
+        TerritoryColorLens::BuriedSasa | TerritoryColorLens::AvgMobility => unreachable!(),
     }
 }
 
@@ -296,44 +296,11 @@ pub fn format_atom_label(node: &AtomNode, meta: &AtomMeta, builder: &LabelBuilde
 }
 
 fn format_territory_value(terr: &ResidueTerritory, nodes: &[AtomNode], ch: LabelValueChannel) -> Option<String> {
+    if let Some(metric) = ch.scalar_metric() {
+        return Some(metric.format_value(metric.territory_raw(terr, nodes)));
+    }
     match ch {
         LabelValueChannel::Off => None,
-        LabelValueChannel::BuriedSasa => Some(format!("{:.1}Å²", terr.buried_sasa_a2)),
-        LabelValueChannel::Bfactor => {
-            if terr.patch_atoms.is_empty() {
-                None
-            } else {
-                let sum: f32 = terr
-                    .patch_atoms
-                    .iter()
-                    .filter_map(|idx| nodes.get(idx.0 as usize))
-                    .map(|n| n.b_factor)
-                    .sum();
-                Some(format!("{:.1}", sum / terr.patch_atoms.len() as f32))
-            }
-        }
-        LabelValueChannel::AliphaticScore => {
-            if terr.patch_atoms.is_empty() {
-                None
-            } else {
-                let sum: f32 = terr
-                    .patch_atoms
-                    .iter()
-                    .filter_map(|idx| nodes.get(idx.0 as usize))
-                    .map(|n| n.aliphatic_score)
-                    .sum();
-                Some(format!("{:.2}", sum / terr.patch_atoms.len() as f32))
-            }
-        }
-        LabelValueChannel::ClashSeverity => {
-            let worst = terr
-                .patch_atoms
-                .iter()
-                .filter_map(|idx| nodes.get(idx.0 as usize))
-                .map(worst_clash_overlap)
-                .fold(0.0, f32::max);
-            Some(format!("{worst:.2}Å"))
-        }
         LabelValueChannel::ContactCount => {
             let count: usize = terr
                 .patch_atoms
@@ -343,20 +310,21 @@ fn format_territory_value(terr: &ResidueTerritory, nodes: &[AtomNode], ch: Label
                 .sum();
             Some(format!("({count})"))
         }
+        _ => unreachable!(),
     }
 }
 
 fn format_atom_value(node: &AtomNode, ch: LabelValueChannel) -> Option<String> {
+    if let Some(metric) = ch.scalar_metric() {
+        return Some(metric.format_value(metric.atom_raw(node)));
+    }
     match ch {
         LabelValueChannel::Off => None,
-        LabelValueChannel::BuriedSasa => Some(format!("{:.1}Å²", node.buried_sasa_a2)),
-        LabelValueChannel::Bfactor => Some(format!("{:.1}", node.b_factor)),
-        LabelValueChannel::AliphaticScore => Some(format!("{:.2}", node.aliphatic_score)),
-        LabelValueChannel::ClashSeverity => Some(format!("{:.2}Å", worst_clash_overlap(node))),
         LabelValueChannel::ContactCount => {
             let count = node.interactions.iter().filter(|i| i.is_cross_interface).count();
             Some(format!("({count})"))
         }
+        _ => unreachable!(),
     }
 }
 
@@ -384,77 +352,19 @@ pub fn legend(
     params: &LensParams,
     palette: &Palette,
 ) -> Vec<(Color32, String)> {
+    if let Some(metric) = lens.scalar_metric() {
+        return metric.legend_entries(bfactor_mode, params, palette);
+    }
     match lens {
         ColorLens::Fixed => vec![(fixed_color, "Fixed Node Color".into())],
         ColorLens::Off => Vec::new(),
-        ColorLens::Interactions => {
-            let c = &palette.contacts;
-            vec![
-                (c.clash, "VdW Clash".into()),
-                (c.hbond, "H-Bond".into()),
-                (c.salt_bridge, "Salt Bridge".into()),
-                (palette.sides.side_a, group_a.into()),
-                (palette.sides.side_light(InterfaceSide::SideB), group_b.into()),
-            ]
+        ColorLens::Interactions => palette.contacts.legend_entries(&palette.sides, group_a, group_b),
+        ColorLens::AaChemistry => palette.aa_chemistry.legend_entries(),
+        ColorLens::ModernCpk => palette.elements.legend_entries(),
+        ColorLens::InterfaceSide => palette.sides.legend_entries(group_a, group_b),
+        ColorLens::Bfactor | ColorLens::BuriedSasa | ColorLens::AliphaticScore | ColorLens::ClashSeverity => {
+            unreachable!()
         }
-        ColorLens::Chemistry => {
-            let ch = &palette.aa_chemistry;
-            vec![
-                (ch.aliphatic, "Aliphatic".into()),
-                (ch.aromatic, "Aromatic".into()),
-                (ch.polar, "Polar".into()),
-                (ch.positive, "Positive".into()),
-                (ch.negative, "Negative".into()),
-                (ch.gly_pro, "Gly / Pro".into()),
-            ]
-        }
-        ColorLens::ModernCpk => {
-            let el = &palette.elements;
-            vec![
-                (el.c, "Carbon (C)".into()),
-                (el.n, "Nitrogen (N)".into()),
-                (el.o, "Oxygen (O)".into()),
-                (el.s, "Sulfur (S)".into()),
-            ]
-        }
-        ColorLens::InterfaceSide => vec![
-            (palette.sides.side_a, group_a.into()),
-            (palette.sides.side_b, group_b.into()),
-        ],
-        ColorLens::Bfactor => {
-            let labels = mobility_swatch_labels(bfactor_mode, params);
-            palette.mobility.swatches::<4>().into_iter().zip(labels).collect()
-        }
-        ColorLens::BuriedSasa => {
-            let labels = ["0 Å² (Rim)".into(), "~8 Å²".into(), "~16 Å²".into(), "≥25 Å² (Core)".into()];
-            palette.mobility.swatches::<4>().into_iter().zip(labels).collect()
-        }
-        ColorLens::AliphaticScore => {
-            let labels = ["0.0 (Polar)".into(), "0.33".into(), "0.67".into(), "1.0 (Aliphatic)".into()];
-            palette.mobility.swatches::<4>().into_iter().zip(labels).collect()
-        }
-        ColorLens::ClashSeverity => {
-            let labels = ["0.0 Å (Clean)".into(), "0.2 Å".into(), "0.4 Å".into(), "≥0.6 Å (Severe)".into()];
-            palette.charge.swatches::<4>().into_iter().zip(labels).collect()
-        }
-    }
-}
-
-/// Legend labels for 4 sampled swatches along the continuous mobility [`ColorMap`].
-fn mobility_swatch_labels(mode: BFactorMode, p: &LensParams) -> [String; 4] {
-    match mode {
-        BFactorMode::AlphaFold => [
-            format!("Very High (≥{:.0})", p.plddt_very_high_min),
-            format!("Confident (~{:.0})", p.plddt_confident_min),
-            format!("Low (~{:.0})", p.plddt_low_min),
-            format!("Very Low (<{:.0})", p.plddt_low_min),
-        ],
-        BFactorMode::Crystallographic => [
-            format!("Rigid (≤{:.0} Å²)", p.bfactor_rigid_max_a2),
-            format!("Ordered (~{:.0} Å²)", p.bfactor_ordered_max_a2),
-            format!("Flexible (~{:.0} Å²)", p.bfactor_flexible_max_a2),
-            format!("Labile (>{:.0} Å²)", p.bfactor_flexible_max_a2),
-        ],
     }
 }
 

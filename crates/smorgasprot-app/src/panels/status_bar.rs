@@ -27,16 +27,23 @@ pub fn show(
                 actions.push(Action::DismissStatus);
             }
         } else if let Some(ds) = ds {
-            let (node_count, hinge_u) = ds
-                .active_interface()
-                .map_or((0, 0.0), |i| (i.map.nodes.len(), i.map.plane.hinge_u));
-            ui.label(format!(
-                "Active Complex: {} | {} Nodes | {} Cross-Contacts | Tangent Plane Hinge: {:.1} Å",
-                ds.id,
-                node_count,
-                ds.cross_contact_count(),
-                hinge_u,
-            ));
+            if let Some(iface) = ds.active_interface() {
+                ui.label(format!(
+                    "Active Complex: {} | {} Nodes | {} Cross-Contacts | Tangent Plane Hinge: {:.1} Å",
+                    ds.id,
+                    iface.map.nodes.len(),
+                    ds.cross_contact_count(),
+                    iface.map.plane.hinge_u,
+                ));
+            } else {
+                let total_atoms: usize = ds.chains.iter().map(|c| c.atom_count).sum();
+                ui.label(format!(
+                    "Active Complex: {} (Bare Complex) | {} Chains | {} Heavy Atoms",
+                    ds.id,
+                    ds.chains.len(),
+                    total_atoms,
+                ));
+            }
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.weak("Orbit: Left Drag • Pan: Shift+Left / Right Drag • Zoom: Scroll / Pinch • Click gizmo to snap");

@@ -135,11 +135,14 @@ pub struct ViewerDataset {
     pub title: String,
     /// Per-chain geometry (alpha carbon trace + molecular surface).
     pub chains: Vec<ChainVisualData>,
-    /// Precomputed interfaces available for inspection.
+    /// Precomputed interfaces available for inspection (may be empty for a bare complex).
     pub interfaces: Vec<InterfaceViewData>,
-    /// Index of the active interface in `interfaces`.
+    /// Index of the active interface in `interfaces`, or `None` when viewing a bare complex with no active interface.
     #[serde(skip)]
-    pub active_interface: usize,
+    pub active_interface: Option<usize>,
+    /// Geometric centroid of the complex in world coordinates. Used as the camera origin when no interface is active.
+    #[serde(skip)]
+    pub default_origin: [f32; 3],
     /// Source complex structure (retained in-memory for live recomputation; not exported).
     #[serde(skip)]
     pub complex: Option<ComplexStructure>,
@@ -172,18 +175,20 @@ impl ViewerDataset {
         for part in partitions {
             interfaces.push(InterfaceViewData::compute(complex, part, &chain_meshes, params)?);
         }
+        let active_interface = if interfaces.is_empty() { None } else { Some(0) };
 
         Ok(Self {
             id: id.into(),
             title: title.into(),
             chains,
             interfaces,
-            active_interface: 0,
+            active_interface,
+            default_origin: complex_centroid(complex),
             complex: Some(complex.clone()),
         })
     }
 
-    /// Adds a new interface partition, precomputing its map and geometry.
+    /// Adds a new interface partition, precomputing its map and geometry and making it active.
     pub fn add_interface(&mut self, partition: InterfacePartition, params: &AnalysisParams) -> Result<usize, String> {
         let Some(complex) = &self.complex else {
             return Err("No complex structure available for interface computation".into());
@@ -191,7 +196,15 @@ impl ViewerDataset {
         let chain_meshes: Vec<SurfaceMesh> = self.chains.iter().map(|c| c.surface_mesh.clone()).collect();
         let iface = InterfaceViewData::compute(complex, partition, &chain_meshes, params)?;
         self.interfaces.push(iface);
-        Ok(self.interfaces.len() - 1)
+        let idx = self.interfaces.len() - 1;
+        self.active_interface = Some(idx);
+        Ok(idx)
+    }
+
+    /// Removes all computed interface partitions, leaving the bare 3D complex.
+    pub fn remove_all_interfaces(&mut self) {
+        self.interfaces.clear();
+        self.active_interface = None;
     }
 
     /// Recomputes the chain surface meshes and interface geometry using updated parameters.
@@ -209,19 +222,20 @@ impl ViewerDataset {
     /// Re-extracts and flattens the active interface, updating the map, derived meshes, and atom metadata.
     pub fn recompute_interface(&mut self, params: &AnalysisParams) -> Result<(), String> {
         let Some(complex) = &self.complex else { return Ok(()) };
+        let Some(active_idx) = self.active_interface else { return Ok(()) };
         let chain_meshes: Vec<SurfaceMesh> = self.chains.iter().map(|c| c.surface_mesh.clone()).collect();
-        if let Some(iface) = self.interfaces.get_mut(self.active_interface) {
+        if let Some(iface) = self.interfaces.get_mut(active_idx) {
             iface.recompute_interface(complex, &chain_meshes, params)?;
         }
         Ok(())
     }
 
     pub fn active_interface(&self) -> Option<&InterfaceViewData> {
-        self.interfaces.get(self.active_interface)
+        self.active_interface.and_then(|idx| self.interfaces.get(idx))
     }
 
     pub fn active_interface_mut(&mut self) -> Option<&mut InterfaceViewData> {
-        self.interfaces.get_mut(self.active_interface)
+        self.active_interface.and_then(|idx| self.interfaces.get_mut(idx))
     }
 
     pub fn active_partition(&self) -> Option<&InterfacePartition> {
@@ -284,6 +298,21 @@ impl ViewerDataset {
         self.active_map()
             .map_or(0, |m| m.edges.iter().filter(|e| e.is_cross_interface).count())
     }
+}
+
+/// Computes the world-space geometric center of all heavy atoms in `complex`.
+fn complex_centroid(complex: &ComplexStructure) -> [f32; 3] {
+    if complex.atoms.is_empty() {
+        return [0.0, 0.0, 0.0];
+    }
+    let mut sum = [0.0_f64; 3];
+    for a in &complex.atoms {
+        sum[0] += a.pos_3d[0] as f64;
+        sum[1] += a.pos_3d[1] as f64;
+        sum[2] += a.pos_3d[2] as f64;
+    }
+    let n = complex.atoms.len() as f64;
+    [(sum[0] / n) as f32, (sum[1] / n) as f32, (sum[2] / n) as f32]
 }
 
 /// Collects one Cα position per residue in `residue_range` (residues without Cα are skipped).

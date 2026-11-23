@@ -1,16 +1,18 @@
-//! Interface tab controls: flatten and butterfly morphs, multi-channel visual encodings, label builders, and per-side layers.
+//! Interface tab controls: flatten and butterfly morphs, quick presets, layer customization popovers, and group visibility.
 
 use super::widgets::{alpha_slider, channel_combo, choice_combo, section, tween_presets, tween_slider};
 use crate::dataset::ViewerDataset;
 use crate::state::{
-    AtomSizeMode, Choice, ColorLens, EdgeColorLens, EdgeWidthLens, LabelBuilder, NodeStrokeColorLens,
-    TerritoryColorLens, TerritoryStrokeLens, UiState,
+    AtomSizeMode, ChannelPreset, Choice, ColorLens, EdgeColorLens, EdgeWidthLens, LabelBuilder, NodeStrokeColorLens,
+    TerritoryColorLens, TerritoryStrokeLens, UiState, VisualChannel,
 };
 use egui::{Color32, RichText, Slider, Ui};
 use smorgasprot_core::InterfaceSide;
 
 /// Side B opacity below which the Open-Book preset raises it to fully opaque.
 const OPEN_BOOK_MIN_B_ALPHA: f32 = 0.85;
+/// Minimum width of a layer customization popover so dropdown labels fit cleanly.
+const POPOVER_MIN_WIDTH: f32 = 290.0;
 
 /// Renders the Interface tab's side panel.
 pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState) {
@@ -39,111 +41,133 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState) {
         }
     });
 
-    section(ui, "3. Visual Channel Encodings", |ui| {
-        ui.label(RichText::new("Atom Nodes").strong());
-        color_channel_row(
-            ui,
-            "if_node_fill_lens",
-            "Fill Color",
-            &mut s.lens_enabled,
-            &mut s.lens,
-            ColorLens::Fixed,
-            ColorLens::default(),
-            &mut s.fixed_node_fill,
-        );
-        scalar_channel_row(
-            ui,
-            "if_node_size_mode",
-            "Node Size (Radius)",
-            &mut s.size_mode_enabled,
-            &mut s.size_mode,
-            AtomSizeMode::Fixed,
-            AtomSizeMode::default(),
-            &mut s.fixed_node_radius_scale,
-            0.3..=3.0,
-            "× scale",
-        );
-        color_channel_row(
-            ui,
-            "if_node_stroke_color",
-            "Stroke (Border) Color",
-            &mut s.stroke_color_enabled,
-            &mut s.stroke_color_lens,
-            NodeStrokeColorLens::Fixed,
-            NodeStrokeColorLens::default(),
-            &mut s.fixed_node_stroke_color,
-        );
-        scalar_channel_row(
-            ui,
-            "if_node_stroke_width",
-            "Stroke (Border) Width",
-            &mut s.stroke_width_enabled,
-            &mut s.stroke_width_lens,
-            AtomSizeMode::Fixed,
-            AtomSizeMode::Fixed,
-            &mut s.fixed_node_stroke_width_px,
-            0.5..=6.0,
-            "px",
-        );
-        label_builder_row(ui, "if_atom_labels", "Atom Labels", &mut s.atom_labels, true);
+    section(ui, "3. Visual Lenses & Layer Channels", |ui| {
+        ui.label(RichText::new("Quick Lens Presets:").strong());
+        ui.horizontal_wrapped(|ui| {
+            for &preset in ChannelPreset::ALL {
+                if ui.button(preset.label()).clicked() {
+                    s.apply_preset(preset);
+                }
+            }
+        });
 
         ui.separator();
-        ui.label(RichText::new("Contact Edges").strong());
-        color_channel_row(
-            ui,
-            "if_edge_color_lens",
-            "Edge Color",
-            &mut s.edge_color_enabled,
-            &mut s.edge_color_lens,
-            EdgeColorLens::Fixed,
-            EdgeColorLens::default(),
-            &mut s.fixed_edge_color,
-        );
-        scalar_channel_row(
-            ui,
-            "if_edge_width_lens",
-            "Edge Width",
-            &mut s.edge_width_enabled,
-            &mut s.edge_width_lens,
-            EdgeWidthLens::Fixed,
-            EdgeWidthLens::default(),
-            &mut s.fixed_edge_width_px,
-            0.5..=6.0,
-            "px",
-        );
 
-        ui.separator();
-        ui.label(RichText::new("Residue Territories").strong());
-        color_channel_row(
-            ui,
-            "if_terr_color_lens",
-            "Territory Fill Color",
-            &mut s.territory_color_enabled,
-            &mut s.territory_color_lens,
-            TerritoryColorLens::Fixed,
-            TerritoryColorLens::default(),
-            &mut s.fixed_territory_fill,
-        );
-        scalar_channel_row(
-            ui,
-            "if_terr_stroke_lens",
-            "Territory Border Width",
-            &mut s.territory_stroke_enabled,
-            &mut s.territory_stroke_lens,
-            TerritoryStrokeLens::Fixed,
-            TerritoryStrokeLens::Fixed,
-            &mut s.fixed_territory_stroke_width_px,
-            0.5..=6.0,
-            "px",
-        );
-        label_builder_row(ui, "if_territory_labels", "Territory Labels", &mut s.territory_labels, false);
+        // Atom Nodes layer row + customization popover
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Atom Nodes").strong());
+            ui.weak(format!("• {}", s.atoms.fill.lens.label()));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let btn_label = if s.atoms.is_default() { "⚙ Customize…" } else { "⚙ Customize*…" };
+                ui.menu_button(btn_label, |ui| {
+                    ui.set_min_width(POPOVER_MIN_WIDTH);
+                    popover_header(ui, "Atom Nodes Layer", !s.atoms.is_default(), || s.atoms.reset());
+                    color_channel_control(ui, "if_node_fill_lens", "Fill Color", &mut s.atoms.fill, ColorLens::Fixed);
+                    scalar_channel_control(
+                        ui,
+                        "if_node_size_mode",
+                        "Node Size (Radius)",
+                        &mut s.atoms.radius,
+                        AtomSizeMode::Fixed,
+                        0.3..=3.0,
+                        "× scale",
+                    );
+                    color_channel_control(
+                        ui,
+                        "if_node_stroke_color",
+                        "Stroke (Border) Color",
+                        &mut s.atoms.stroke_color,
+                        NodeStrokeColorLens::Fixed,
+                    );
+                    scalar_channel_control(
+                        ui,
+                        "if_node_stroke_width",
+                        "Stroke (Border) Width",
+                        &mut s.atoms.stroke_width,
+                        AtomSizeMode::Fixed,
+                        0.5..=6.0,
+                        "px",
+                    );
+                    ui.separator();
+                    label_builder_control(
+                        ui,
+                        "if_atom_labels",
+                        "Atom Labels",
+                        &mut s.atoms.labels,
+                        LabelBuilder::default_atom(),
+                        true,
+                    );
+                });
+            });
+        });
+
+        // Contact Edges layer row + customization popover
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Contact Edges").strong());
+            ui.weak(format!("• {}", s.edges.color.lens.label()));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let btn_label = if s.edges.is_default() { "⚙ Customize…" } else { "⚙ Customize*…" };
+                ui.menu_button(btn_label, |ui| {
+                    ui.set_min_width(POPOVER_MIN_WIDTH);
+                    popover_header(ui, "Contact Edges Layer", !s.edges.is_default(), || s.edges.reset());
+                    color_channel_control(ui, "if_edge_color_lens", "Edge Color", &mut s.edges.color, EdgeColorLens::Fixed);
+                    scalar_channel_control(
+                        ui,
+                        "if_edge_width_lens",
+                        "Edge Width",
+                        &mut s.edges.width,
+                        EdgeWidthLens::Fixed,
+                        0.5..=6.0,
+                        "px",
+                    );
+                });
+            });
+        });
+
+        // Residue Territories layer row + customization popover
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Residue Territories").strong());
+            ui.weak(format!("• {}", s.territories.fill.lens.label()));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let btn_label = if s.territories.is_default() { "⚙ Customize…" } else { "⚙ Customize*…" };
+                ui.menu_button(btn_label, |ui| {
+                    ui.set_min_width(POPOVER_MIN_WIDTH);
+                    popover_header(ui, "Residue Territories Layer", !s.territories.is_default(), || s.territories.reset());
+                    color_channel_control(
+                        ui,
+                        "if_terr_color_lens",
+                        "Territory Fill Color",
+                        &mut s.territories.fill,
+                        TerritoryColorLens::Fixed,
+                    );
+                    scalar_channel_control(
+                        ui,
+                        "if_terr_stroke_lens",
+                        "Territory Border Width",
+                        &mut s.territories.stroke_width,
+                        TerritoryStrokeLens::Fixed,
+                        0.5..=6.0,
+                        "px",
+                    );
+                    ui.separator();
+                    label_builder_control(
+                        ui,
+                        "if_territory_labels",
+                        "Territory Labels",
+                        &mut s.territories.labels,
+                        LabelBuilder::default_territory(),
+                        false,
+                    );
+                });
+            });
+        });
 
         ui.separator();
         ui.label("Mobility Column Interpretation:");
         choice_combo(ui, "if_bfactor_mode", &mut s.bfactor_mode);
     });
 
-    section(ui, "4. Group Opacity & Visibility", |ui| {
+    section(ui, "4. Group Opacity & Layer Visibility", |ui| {
         let name_a = RichText::new(format!("{}:", ds.group_name(InterfaceSide::SideA))).color(side_a_color);
         let name_b = RichText::new(format!("{}:", ds.group_name(InterfaceSide::SideB))).color(side_b_color);
         alpha_slider(ui, name_a, &mut s.side_a_alpha);
@@ -161,77 +185,92 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState) {
         });
 
         ui.separator();
-        ui.checkbox(&mut s.show_territories, "Residue Territory Contours");
-        ui.checkbox(&mut s.show_intra_edges, "1st-Shell Intra-Chain Springs");
-        ui.checkbox(&mut s.show_cross_arcs, "Cross-Interface Contact Arcs");
+        ui.checkbox(&mut s.territories.visible, "Residue Territory Contours");
+        ui.checkbox(&mut s.edges.show_intra, "1st-Shell Intra-Chain Springs");
+        ui.checkbox(&mut s.edges.show_cross, "Cross-Interface Contact Arcs");
         ui.checkbox(&mut s.show_backbone, "3D Cα Backbone Ribbons");
     });
 }
 
-/// Checkbox + optional dropdown (`Fixed`, `Off`, divider, data lenses) + color picker when `Fixed`.
-#[allow(clippy::too_many_arguments)]
-fn color_channel_row<T: Choice>(
-    ui: &mut Ui,
-    id_salt: &str,
-    label: &str,
-    enabled: &mut bool,
-    lens: &mut T,
-    fixed_variant: T,
-    fallback: T,
-    fixed_color: &mut Color32,
-) {
+/// Title row inside a layer customization popover with a layer-wide reset button.
+fn popover_header(ui: &mut Ui, title: &str, modified: bool, on_reset: impl FnOnce()) {
+    // `ui.menu_button` sets `button_frame = false` for flat menu items; restore normal widget frames inside popovers.
+    ui.visuals_mut().button_frame = true;
     ui.horizontal(|ui| {
-        ui.checkbox(enabled, label);
-        if !*enabled {
-            ui.weak(format!("(Default: {})", fallback.label()));
+        ui.label(RichText::new(title).strong());
+        if modified {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("↺ Reset Layer").clicked() {
+                    on_reset();
+                }
+            });
         }
     });
-    if *enabled {
-        ui.indent(id_salt, |ui| {
-            channel_combo(ui, id_salt, lens);
-            if *lens == fixed_variant {
-                ui.horizontal(|ui| {
-                    ui.label("Color:");
-                    ui.color_edit_button_srgba(fixed_color);
-                });
-            }
-        });
-    }
+    ui.separator();
 }
 
-/// Checkbox + optional dropdown (`Fixed`, `Off`, divider, data lenses) + numeric slider when `Fixed`.
-#[allow(clippy::too_many_arguments)]
-fn scalar_channel_row<T: Choice>(
+/// Color channel dropdown (`Fixed`, `Off`, divider, data lenses) + inline reset button + color picker when `Fixed`.
+fn color_channel_control<T: Choice>(
     ui: &mut Ui,
     id_salt: &str,
     label: &str,
-    enabled: &mut bool,
-    lens: &mut T,
+    ch: &mut VisualChannel<T, Color32>,
     fixed_variant: T,
-    fallback: T,
-    fixed_value: &mut f32,
+) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(format!("{label}:")).strong());
+        if !ch.is_default() && ui.small_button("↺").on_hover_text("Reset channel to default").clicked() {
+            ch.reset();
+        }
+    });
+    channel_combo(ui, id_salt, &mut ch.lens);
+    if ch.lens == fixed_variant {
+        ui.horizontal(|ui| {
+            ui.label("Fixed Color:");
+            ui.color_edit_button_srgba(&mut ch.fixed);
+        });
+    }
+    ui.add_space(4.0);
+}
+
+/// Scalar channel dropdown (`Fixed`, `Off`, divider, data lenses) + inline reset button + numeric slider when `Fixed`.
+fn scalar_channel_control<T: Choice>(
+    ui: &mut Ui,
+    id_salt: &str,
+    label: &str,
+    ch: &mut VisualChannel<T, f32>,
+    fixed_variant: T,
     range: std::ops::RangeInclusive<f32>,
     unit: &str,
 ) {
     ui.horizontal(|ui| {
-        ui.checkbox(enabled, label);
-        if !*enabled {
-            ui.weak(format!("(Default: {})", fallback.label()));
+        ui.label(RichText::new(format!("{label}:")).strong());
+        if !ch.is_default() && ui.small_button("↺").on_hover_text("Reset channel to default").clicked() {
+            ch.reset();
         }
     });
-    if *enabled {
-        ui.indent(id_salt, |ui| {
-            channel_combo(ui, id_salt, lens);
-            if *lens == fixed_variant {
-                ui.add(Slider::new(fixed_value, range).step_by(0.05).text(unit));
-            }
-        });
+    channel_combo(ui, id_salt, &mut ch.lens);
+    if ch.lens == fixed_variant {
+        ui.add(Slider::new(&mut ch.fixed, range).step_by(0.05).text(unit));
     }
+    ui.add_space(4.0);
 }
 
-/// Composable label builder UI for either atom nodes or residue territories.
-fn label_builder_row(ui: &mut Ui, id_salt: &str, title: &str, builder: &mut LabelBuilder, is_atom: bool) {
-    ui.checkbox(&mut builder.enabled, title);
+/// Composable label builder inside a layer customization popover, with reset-to-default.
+fn label_builder_control(
+    ui: &mut Ui,
+    id_salt: &str,
+    title: &str,
+    builder: &mut LabelBuilder,
+    default_builder: LabelBuilder,
+    is_atom: bool,
+) {
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut builder.enabled, RichText::new(title).strong());
+        if *builder != default_builder && ui.small_button("↺").on_hover_text("Reset labels to default").clicked() {
+            *builder = default_builder;
+        }
+    });
     if builder.enabled {
         ui.indent(id_salt, |ui| {
             ui.label("Residue Name:");

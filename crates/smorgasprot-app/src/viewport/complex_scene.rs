@@ -28,21 +28,26 @@ pub fn paint(
     sides: &InterfaceSidePalette,
     chrome: &ChromePalette,
 ) {
-    let Some(iface) = ds.active_interface() else { return };
-    let view = View { frame: PlaneFrame::from(&iface.map.plane), camera: &s.camera, explode, sides, chrome, rect };
+    let iface = ds.active_interface();
+    let frame = iface.map_or_else(|| PlaneFrame::world_centered(ds.default_origin), |i| PlaneFrame::from(&i.map.plane));
+    let view = View { frame, camera: &s.camera, explode, sides, chrome, rect };
     let mut list = DrawList::default();
 
     if s.show_surface && s.surface_alpha.value > MIN_VISIBLE_ALPHA {
         add_chain_surfaces(&mut list, &view, ds, s);
     }
-    if s.interface_mode != InterfaceDisplayMode::Off && s.interface_alpha.value > MIN_VISIBLE_ALPHA {
-        add_interface_geometry(&mut list, &view, iface, s);
+    if let Some(iface) = iface {
+        if s.interface_mode != InterfaceDisplayMode::Off && s.interface_alpha.value > MIN_VISIBLE_ALPHA {
+            add_interface_geometry(&mut list, &view, iface, s);
+        }
     }
     if s.show_cartoon && s.cartoon_alpha.value > MIN_VISIBLE_ALPHA {
         add_cartoon(&mut list, &view, ds, s);
     }
-    if s.show_spheres && s.spheres_alpha.value > MIN_VISIBLE_ALPHA {
-        add_spheres(&mut list, &view, iface, s);
+    if let Some(iface) = iface {
+        if s.show_spheres && s.spheres_alpha.value > MIN_VISIBLE_ALPHA {
+            add_spheres(&mut list, &view, iface, s);
+        }
     }
     list.paint(painter);
 }

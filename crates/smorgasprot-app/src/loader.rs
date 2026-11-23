@@ -34,6 +34,17 @@ impl DatasetSpec {
         }
     }
 
+    /// A user-supplied structure file loaded as a bare complex with no initial interface partition.
+    pub fn bare(path: &str) -> Self {
+        Self {
+            id: path.to_owned(),
+            title: format!("{path} (Bare Complex)"),
+            path: path.to_owned(),
+            group_a_chains: Vec::new(),
+            group_b_chains: Vec::new(),
+        }
+    }
+
     /// Bundled example structures that exist relative to the working directory.
     pub fn builtin_examples() -> Vec<Self> {
         let examples = [
@@ -67,18 +78,27 @@ pub struct Loaded {
 }
 
 /// Parses, groups, maps, and meshes one structure.
+/// If no interface chains are requested (or the requested chains form no interface, e.g. a monomer),
+/// loads the structure as a bare 3D complex with zero interfaces.
 pub fn load(spec: &DatasetSpec, params: &AnalysisParams) -> Result<Loaded, String> {
     let complex = load_complex(&spec.path)
         .map_err(|e| format!("Failed to load {}: {e}", spec.path))?;
-    let partition = InterfacePartition::from_chains(
-        &complex,
-        &spec.id,
-        GROUP_A_NAME,
-        spec.group_a_chains.clone(),
-        GROUP_B_NAME,
-        spec.group_b_chains.clone(),
-    );
+    let partitions = if spec.group_a_chains.is_empty() || spec.group_b_chains.is_empty() {
+        Vec::new()
+    } else {
+        vec![InterfacePartition::from_chains(
+            &complex,
+            &spec.id,
+            GROUP_A_NAME,
+            spec.group_a_chains.clone(),
+            GROUP_B_NAME,
+            spec.group_b_chains.clone(),
+        )]
+    };
 
-    let dataset = ViewerDataset::new(&spec.id, &spec.title, &complex, vec![partition], params)?;
+    let dataset = match ViewerDataset::new(&spec.id, &spec.title, &complex, partitions, params) {
+        Ok(ds) => ds,
+        Err(_) => ViewerDataset::new(&spec.id, &spec.title, &complex, Vec::new(), params)?,
+    };
     Ok(Loaded { dataset, complex })
 }

@@ -285,6 +285,11 @@ impl InterfaceSidePalette {
             _ => self.envelope_b,
         }
     }
+
+    /// Legend swatch entries `(color, label)` for the two interface groups.
+    pub fn legend_entries(&self, group_a: &str, group_b: &str) -> Vec<(Color32, String)> {
+        vec![(self.side_a, group_a.into()), (self.side_b, group_b.into())]
+    }
 }
 
 /// Purpose-named colors for interatomic interactions and contact edges.
@@ -322,6 +327,17 @@ impl ContactPalette {
             EdgeKind::VanDerWaalsContact | EdgeKind::SameResidue => self.contact,
         }
     }
+
+    /// Legend swatch entries `(color, label)` for the Interactions lens, including group fallback colors.
+    pub fn legend_entries(&self, sides: &InterfaceSidePalette, group_a: &str, group_b: &str) -> Vec<(Color32, String)> {
+        vec![
+            (self.clash, "VdW Clash".into()),
+            (self.hbond, "H-Bond".into()),
+            (self.salt_bridge, "Salt Bridge".into()),
+            (sides.side_a, group_a.into()),
+            (sides.side_light(InterfaceSide::SideB), group_b.into()),
+        ]
+    }
 }
 
 /// Purpose-named colors for the chemical category lens.
@@ -346,6 +362,20 @@ impl Default for AaChemistryPalette {
             gly_pro: Color32::from_rgb(168, 85, 247),
             polar: Color32::from_rgb(6, 182, 212),
         }
+    }
+}
+
+impl AaChemistryPalette {
+    /// Legend swatch entries `(color, label)` for the AA Chemistry lens.
+    pub fn legend_entries(&self) -> Vec<(Color32, String)> {
+        vec![
+            (self.aliphatic, "Aliphatic".into()),
+            (self.aromatic, "Aromatic".into()),
+            (self.polar, "Polar".into()),
+            (self.positive, "Positive".into()),
+            (self.negative, "Negative".into()),
+            (self.gly_pro, "Gly / Pro".into()),
+        ]
     }
 }
 
@@ -439,6 +469,16 @@ impl ElementPalette {
             Element::I => self.i,
             _ => self.other,
         }
+    }
+
+    /// Core organic element legend swatch entries `(color, label)` for the Modern CPK lens.
+    pub fn legend_entries(&self) -> Vec<(Color32, String)> {
+        vec![
+            (self.c, "Carbon (C)".into()),
+            (self.n, "Nitrogen (N)".into()),
+            (self.o, "Oxygen (O)".into()),
+            (self.s, "Sulfur (S)".into()),
+        ]
     }
 }
 

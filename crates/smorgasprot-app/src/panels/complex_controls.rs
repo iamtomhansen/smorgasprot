@@ -11,26 +11,35 @@ pub fn show(ui: &mut Ui, ds: &mut ViewerDataset, state: &mut UiState) {
     ui.heading("🧊 3D Complex Sandwich Setup");
     ui.add_space(4.0);
 
-    if ds.interfaces.len() > 1 {
-        section(ui, "Active Interface", |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Selected:");
-                let current_name = ds.active_interface().map_or("None", |i| i.partition.name.as_str());
-                egui::ComboBox::from_id_salt("complex_active_interface_select")
-                    .selected_text(current_name)
-                    .show_ui(ui, |ui| {
-                        for (idx, iface) in ds.interfaces.iter().enumerate() {
-                            let label = if iface.partition.name.is_empty() {
-                                format!("Interface {}", idx + 1)
-                            } else {
-                                iface.partition.name.clone()
-                            };
-                            ui.selectable_value(&mut ds.active_interface, idx, label);
-                        }
-                    });
-            });
+    section(ui, "Active Interface", |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Selected:");
+            let current_name = match ds.active_interface() {
+                Some(i) if !i.partition.name.is_empty() => i.partition.name.as_str(),
+                Some(_) => "Active Interface",
+                None => "None (Bare Complex)",
+            };
+            egui::ComboBox::from_id_salt("complex_active_interface_select")
+                .selected_text(current_name)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut ds.active_interface, None, "None (Bare Complex)");
+                    if !ds.interfaces.is_empty() {
+                        ui.separator();
+                    }
+                    for (idx, iface) in ds.interfaces.iter().enumerate() {
+                        let label = if iface.partition.name.is_empty() {
+                            format!("Interface {}", idx + 1)
+                        } else {
+                            iface.partition.name.clone()
+                        };
+                        ui.selectable_value(&mut ds.active_interface, Some(idx), label);
+                    }
+                });
+            if !ds.interfaces.is_empty() && ui.small_button("Clear All").clicked() {
+                ds.remove_all_interfaces();
+            }
         });
-    }
+    });
 
     // Display-only rename and color customization; does not affect chain assignment.
     section(ui, "1. Interface Group Names & Palette", |ui| {
@@ -63,6 +72,8 @@ pub fn show(ui: &mut Ui, ds: &mut ViewerDataset, state: &mut UiState) {
                 ui.label(RichText::new("Group B:").color(state.palette.sides.side_light(InterfaceSide::SideB)));
                 ui.text_edit_singleline(&mut iface.partition.group_b_name);
             });
+        } else {
+            ui.weak("No active interface selected (viewing bare 3D complex).");
         }
     });
 

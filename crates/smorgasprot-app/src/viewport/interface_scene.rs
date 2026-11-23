@@ -74,7 +74,16 @@ pub fn pick_atom(ds: &ViewerDataset, s: &InterfaceViewSettings, nodes: &[Pos2], 
 
 /// Paints the Interface tab; `nodes` comes from [`project_nodes`] for this frame.
 pub fn paint(painter: &Painter, rect: Rect, ds: &ViewerDataset, state: &UiState, nodes: &[Pos2]) {
-    let Some(iface) = ds.active_interface() else { return };
+    let Some(iface) = ds.active_interface() else {
+        painter.text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            "No active interface selected — select or create an interface in the Complex tab.",
+            FontId::proportional(14.0),
+            palette::with_alpha(state.palette.chrome.ink, 0.55),
+        );
+        return;
+    };
     let s = &state.interface;
     let cx = Ctx {
         painter,
@@ -93,16 +102,17 @@ pub fn paint(painter: &Painter, rect: Rect, ds: &ViewerDataset, state: &UiState,
     if s.show_backbone {
         paint_backbone(&cx);
     }
-    if s.show_territories {
+    if s.territories.visible {
         paint_territories(&cx, &state.selection);
     }
-    if s.show_intra_edges {
+    if s.edges.show_intra {
         paint_intra_edges(&cx, nodes);
     }
-    if s.show_cross_arcs {
+    if s.edges.show_cross {
         paint_cross_arcs(&cx, nodes);
     }
     paint_atoms(&cx, &state.selection, nodes);
+    paint_labels(&cx, nodes);
 }
 
 /// Hinge line for the open-book butterfly, shown once the map is mostly flat and opened.
@@ -147,11 +157,11 @@ fn paint_backbone(cx: &Ctx) {
     }
 }
 
-/// Residue territory polygons with labels; side B first so side A reads on top.
+/// Residue territory polygons; side B first so side A reads on top.
 fn paint_territories(cx: &Ctx, selection: &Selection) {
-    let font = FontId::proportional((cx.camera.zoom * 0.22).clamp(9.0, 14.0));
-    let color_lens = cx.s.effective_territory_color_lens();
-    let (stroke_lens, fixed_stroke_w) = cx.s.effective_territory_stroke_lens();
+    let color_lens = cx.s.territories.fill.lens;
+    let stroke_lens = cx.s.territories.stroke_width.lens;
+    let fixed_stroke_w = cx.s.territories.stroke_width.fixed;
 
     for side in [InterfaceSide::SideB, InterfaceSide::SideA] {
         let alpha = cx.s.side_alpha(side);
@@ -170,7 +180,7 @@ fn paint_territories(cx: &Ctx, selection: &Selection) {
                 &cx.iface.map.nodes,
                 &cx.iface.atom_meta,
                 color_lens,
-                cx.s.fixed_territory_fill,
+                cx.s.territories.fill.fixed,
                 cx.s.bfactor_mode,
                 cx.lenses,
                 cx.pal,
@@ -203,25 +213,14 @@ fn paint_territories(cx: &Ctx, selection: &Selection) {
                 // Voronoi cells clipped to a convex hull stay convex, so a convex fill is valid.
                 cx.painter.add(Shape::convex_polygon(pts, fill, stroke));
             }
-
-            if let Some(label_text) = lenses::format_territory_label(
-                terr,
-                &cx.iface.map.nodes,
-                &cx.iface.atom_meta,
-                &cx.s.territory_labels,
-            ) {
-                let label_pos = cx.morph(terr.label_center_3d, terr.label_center_uv, side);
-                let ink = palette::with_alpha(cx.pal.chrome.ink, alpha * 0.85);
-                cx.painter.text(label_pos, Align2::CENTER_CENTER, label_text, font.clone(), ink);
-            }
         }
     }
 }
 
 /// First-shell springs within each side.
 fn paint_intra_edges(cx: &Ctx, nodes: &[Pos2]) {
-    let color_lens = cx.s.effective_edge_color_lens();
-    let width_lens = cx.s.effective_edge_width_lens();
+    let color_lens = cx.s.edges.color.lens;
+    let width_lens = cx.s.edges.width.lens;
     if color_lens == EdgeColorLens::Off || width_lens == EdgeWidthLens::Off {
         return;
     }
@@ -235,7 +234,7 @@ fn paint_intra_edges(cx: &Ctx, nodes: &[Pos2]) {
             e,
             &cx.iface.map.nodes,
             color_lens,
-            cx.s.fixed_edge_color,
+            cx.s.edges.color.fixed,
             cx.s.bfactor_mode,
             cx.lenses,
             cx.pal,
@@ -244,7 +243,7 @@ fn paint_intra_edges(cx: &Ctx, nodes: &[Pos2]) {
             e,
             &cx.iface.map.nodes,
             width_lens,
-            cx.s.fixed_edge_width_px,
+            cx.s.edges.width.fixed,
             cx.s.bfactor_mode,
             cx.lenses,
         );
@@ -258,8 +257,8 @@ fn paint_intra_edges(cx: &Ctx, nodes: &[Pos2]) {
 
 /// Cross-interface contacts colored and sized by the active edge visual channels.
 fn paint_cross_arcs(cx: &Ctx, nodes: &[Pos2]) {
-    let color_lens = cx.s.effective_edge_color_lens();
-    let width_lens = cx.s.effective_edge_width_lens();
+    let color_lens = cx.s.edges.color.lens;
+    let width_lens = cx.s.edges.width.lens;
     if color_lens == EdgeColorLens::Off || width_lens == EdgeWidthLens::Off {
         return;
     }
@@ -272,7 +271,7 @@ fn paint_cross_arcs(cx: &Ctx, nodes: &[Pos2]) {
             e,
             &cx.iface.map.nodes,
             color_lens,
-            cx.s.fixed_edge_color,
+            cx.s.edges.color.fixed,
             cx.s.bfactor_mode,
             cx.lenses,
             cx.pal,
@@ -281,7 +280,7 @@ fn paint_cross_arcs(cx: &Ctx, nodes: &[Pos2]) {
             e,
             &cx.iface.map.nodes,
             width_lens,
-            cx.s.fixed_edge_width_px,
+            cx.s.edges.width.fixed,
             cx.s.bfactor_mode,
             cx.lenses,
         );
@@ -295,11 +294,11 @@ fn paint_cross_arcs(cx: &Ctx, nodes: &[Pos2]) {
 
 /// Atom discs colored and sized by the active node fill, radius, stroke color, and stroke width channels.
 fn paint_atoms(cx: &Ctx, selection: &Selection, nodes: &[Pos2]) {
-    let fill_lens = cx.s.effective_lens();
-    let size_mode = cx.s.effective_size_mode();
-    let stroke_color_lens = cx.s.effective_stroke_color_lens();
-    let (stroke_width_lens, fixed_stroke_w) = cx.s.effective_stroke_width_lens();
-    let atom_font = FontId::proportional((cx.camera.zoom * 0.18).clamp(8.5, 12.5));
+    let fill_lens = cx.s.atoms.fill.lens;
+    let size_mode = cx.s.atoms.radius.lens;
+    let stroke_color_lens = cx.s.atoms.stroke_color.lens;
+    let stroke_width_lens = cx.s.atoms.stroke_width.lens;
+    let fixed_stroke_w = cx.s.atoms.stroke_width.fixed;
 
     for ((node, meta), &pos) in cx.iface.map.nodes.iter().zip(&cx.iface.atom_meta).zip(nodes) {
         let alpha = cx.s.side_alpha(node.role);
@@ -309,7 +308,7 @@ fn paint_atoms(cx: &Ctx, selection: &Selection, nodes: &[Pos2]) {
         let radius = sizing::atom_radius_px(
             node,
             size_mode,
-            cx.s.fixed_node_radius_scale,
+            cx.s.atoms.radius.fixed,
             cx.s.bfactor_mode,
             cx.camera.zoom,
             cx.atom_draw,
@@ -326,7 +325,7 @@ fn paint_atoms(cx: &Ctx, selection: &Selection, nodes: &[Pos2]) {
                         node,
                         meta,
                         fill_lens,
-                        cx.s.fixed_node_fill,
+                        cx.s.atoms.fill.fixed,
                         cx.s.bfactor_mode,
                         cx.lenses,
                         cx.pal,
@@ -339,7 +338,7 @@ fn paint_atoms(cx: &Ctx, selection: &Selection, nodes: &[Pos2]) {
                 node,
                 meta,
                 stroke_color_lens,
-                cx.s.fixed_node_stroke_color,
+                cx.s.atoms.stroke_color.fixed,
                 cx.s.bfactor_mode,
                 hovered,
                 cx.lenses,
@@ -365,11 +364,55 @@ fn paint_atoms(cx: &Ctx, selection: &Selection, nodes: &[Pos2]) {
                 cx.painter.circle_stroke(pos, radius + 3.0, Stroke::new(1.5_f32, cx.pal.chrome.hover_ring()));
             }
         }
+    }
+}
 
-        if let Some(label_text) = lenses::format_atom_label(node, meta, &cx.s.atom_labels) {
-            let label_pos = pos + vec2(0.0, -(radius + 2.0));
-            let ink = palette::with_alpha(cx.pal.chrome.ink, alpha * 0.92);
-            cx.painter.text(label_pos, Align2::CENTER_BOTTOM, label_text, atom_font.clone(), ink);
+/// Topmost z-layer: territory and atom text labels painted above all polygons, edges, and atom discs.
+fn paint_labels(cx: &Ctx, nodes: &[Pos2]) {
+    if cx.s.territories.visible && cx.s.territories.labels.enabled {
+        let terr_font = FontId::proportional((cx.camera.zoom * 0.22).clamp(9.0, 14.0));
+        for side in [InterfaceSide::SideB, InterfaceSide::SideA] {
+            let alpha = cx.s.side_alpha(side);
+            if alpha <= MIN_DRAW_ALPHA {
+                continue;
+            }
+            for terr in cx.iface.map.territories.iter().filter(|t| t.role == side && !t.contour_uv.is_empty()) {
+                if let Some(label_text) = lenses::format_territory_label(
+                    terr,
+                    &cx.iface.map.nodes,
+                    &cx.iface.atom_meta,
+                    &cx.s.territories.labels,
+                ) {
+                    let label_pos = cx.morph(terr.label_center_3d, terr.label_center_uv, side);
+                    let ink = palette::with_alpha(cx.pal.chrome.ink, alpha * 0.90);
+                    cx.painter.text(label_pos, Align2::CENTER_CENTER, label_text, terr_font.clone(), ink);
+                }
+            }
+        }
+    }
+
+    if cx.s.atoms.labels.enabled {
+        let size_mode = cx.s.atoms.radius.lens;
+        let atom_font = FontId::proportional((cx.camera.zoom * 0.18).clamp(8.5, 12.5));
+        for ((node, meta), &pos) in cx.iface.map.nodes.iter().zip(&cx.iface.atom_meta).zip(nodes) {
+            let alpha = cx.s.side_alpha(node.role);
+            if alpha <= MIN_DRAW_ALPHA {
+                continue;
+            }
+            if let Some(label_text) = lenses::format_atom_label(node, meta, &cx.s.atoms.labels) {
+                let radius = sizing::atom_radius_px(
+                    node,
+                    size_mode,
+                    cx.s.atoms.radius.fixed,
+                    cx.s.bfactor_mode,
+                    cx.camera.zoom,
+                    cx.atom_draw,
+                    cx.lenses,
+                );
+                let label_pos = pos + vec2(0.0, -(radius + 2.0));
+                let ink = palette::with_alpha(cx.pal.chrome.ink, alpha * 0.95);
+                cx.painter.text(label_pos, Align2::CENTER_BOTTOM, label_text, atom_font.clone(), ink);
+            }
         }
     }
 }

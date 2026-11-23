@@ -86,8 +86,8 @@ param_group! {
 }
 
 param_group! {
-    /// Thresholds that decide which category an atom is colored as.
-    pub struct LensParams("lenses", "Color Lens Thresholds") {
+    /// Thresholds and continuous normalization ranges for visual-channel lenses.
+    pub struct LensParams("lenses", "Color & Sizing Lens Ranges") {
         /// Aliphatic score at or above which the Chemistry lens colors an atom aliphatic.
         aliphatic_threshold: f32 = 0.75, 0.0..=1.0, "Aliphatic cutoff", "";
         /// Overlap above which the Interactions lens colors an atom as clashing (Å).
@@ -104,6 +104,18 @@ param_group! {
         plddt_confident_min: f32 = 70.0, 0.0..=100.0, "Confident pLDDT min", "";
         /// pLDDT lower bound of the "low" bin; below is "very low".
         plddt_low_min: f32 = 50.0, 0.0..=100.0, "Low pLDDT min", "";
+        /// Atom buried ΔSASA that saturates the continuous atom color/size range (Å²).
+        atom_buried_sasa_max_a2: f32 = 25.0, 1.0..=100.0, "Atom buried ΔSASA saturation", "Å²";
+        /// Residue buried ΔSASA that saturates the continuous territory color/border range (Å²).
+        territory_buried_sasa_max_a2: f32 = 90.0, 10.0..=300.0, "Territory buried ΔSASA saturation", "Å²";
+        /// Steric clash overlap that saturates the continuous clash severity colormap/width (Å).
+        clash_severity_max_a: f32 = 0.60, 0.1..=2.0, "Severe clash saturation", "Å";
+        /// Signed 2D metric strain magnitude that saturates the edge strain colormap/width (Å).
+        edge_strain_max_a: f32 = 1.20, 0.1..=5.0, "2D edge strain saturation", "Å";
+        /// Minimum 3D contact distance for edge distance/proximity scaling (Å).
+        edge_dist_min_a: f32 = 2.30, 1.0..=4.0, "Edge contact min distance", "Å";
+        /// Maximum 3D contact distance for edge distance/proximity scaling (Å).
+        edge_dist_max_a: f32 = 4.50, 2.5..=8.0, "Edge contact max distance", "Å";
     }
 }
 

@@ -51,8 +51,8 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &UiState) {
         let a = ds.group_name(InterfaceSide::SideA);
         let b = ds.group_name(InterfaceSide::SideB);
         for (color, label) in lenses::legend(
-            s.effective_lens(),
-            s.fixed_node_fill,
+            s.atoms.fill.lens,
+            s.atoms.fill.fixed,
             s.bfactor_mode,
             a,
             b,
@@ -126,7 +126,12 @@ fn contacts_list(ui: &mut Ui, ds: &ViewerDataset, terr: &ResidueTerritory, conta
 }
 
 fn diagnostics(ui: &mut Ui, ds: &ViewerDataset, sides: &InterfaceSidePalette) {
-    let Some(iface) = ds.active_interface() else { return };
+    let Some(iface) = ds.active_interface() else {
+        let total_res: usize = ds.chains.iter().map(|c| c.residue_count).sum();
+        let total_atoms: usize = ds.chains.iter().map(|c| c.atom_count).sum();
+        ui.label(format!("Bare Complex: {} chains, {} residues, {} heavy atoms.", ds.chains.len(), total_res, total_atoms));
+        return;
+    };
     let s = &iface.stats;
     ui.label(format!("{} Atoms/Residues: {} / {}", iface.partition.group_a_name, s.side_a_atoms, s.side_a_territories));
     ui.label(format!("{} Atoms/Residues: {} / {}", iface.partition.group_b_name, s.side_b_atoms, s.side_b_territories));

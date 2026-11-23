@@ -32,6 +32,17 @@ impl From<&ProjectionPlane> for PlaneFrame {
 }
 
 impl PlaneFrame {
+    /// Identity world-space frame centered at `origin` (used when no interface is active).
+    pub fn world_centered(origin: [f32; 3]) -> Self {
+        Self {
+            origin: origin.into(),
+            u: Vec3::X,
+            v: Vec3::Y,
+            n: Vec3::Z,
+            hinge_u: 0.0,
+        }
+    }
+
     /// Expresses a world-space point in plane-local `(u, v, n)` coordinates.
     pub fn to_local(&self, world: [f32; 3]) -> Vec3 {
         let rel = Vec3::from(world) - self.origin;

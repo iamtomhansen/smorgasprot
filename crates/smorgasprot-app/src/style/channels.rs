@@ -1,45 +1,48 @@
-//! User-selectable display and visual-channel encoding options (enums) shown in combo boxes.
-//! Each implements [`Choice`] so panels can render them with one generic widget.
+//! Visual channel wrappers, lens enums, scalar metrics, and composable label builders.
+//! Each enum implements [`Choice`] so UI controls and popovers can render them generically.
 
+use crate::state::Choice;
 use serde::{Deserialize, Serialize};
 
-/// A closed set of labelled options, rendered by `panels::widgets::choice_combo`.
-pub trait Choice: Copy + PartialEq + 'static {
-    /// Every option in display order.
-    const ALL: &'static [Self];
-    /// Human-readable label for menus.
-    fn label(self) -> &'static str;
+/// Bindings for one customizable visual channel: active lens, fixed value, and built-in defaults for reset.
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq)]
+pub struct VisualChannel<L, V> {
+    pub lens: L,
+    pub fixed: V,
+    pub default_lens: L,
+    pub default_fixed: V,
 }
 
-/// Top-level workspace tab (Blender-style).
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq)]
-pub enum WorkspaceTab {
-    /// 3D assembly setup: surfaces, cartoon, explode.
-    Complex,
-    /// Unwrapped 2D/3D interface cartography.
-    Interface,
-}
-
-/// Which derived interface geometry is drawn in the Complex tab.
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq)]
-pub enum InterfaceDisplayMode {
-    SmoothedSdf,
-    ContactEnvelope,
-    NegativeSpace,
-    Off,
-}
-
-impl Choice for InterfaceDisplayMode {
-    const ALL: &'static [Self] = &[Self::SmoothedSdf, Self::ContactEnvelope, Self::NegativeSpace, Self::Off];
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::SmoothedSdf => "Smoothed SDF Sheet",
-            Self::ContactEnvelope => "2-Sided Contact Envelope",
-            Self::NegativeSpace => "Negative Space (Sub-Solvent Voids)",
-            Self::Off => "Off",
+impl<L: Copy + PartialEq, V: Copy + PartialEq> VisualChannel<L, V> {
+    pub const fn new(default_lens: L, default_fixed: V) -> Self {
+        Self {
+            lens: default_lens,
+            fixed: default_fixed,
+            default_lens,
+            default_fixed,
         }
     }
+
+    /// True if both the active lens and fixed constant equal their defaults.
+    pub fn is_default(&self) -> bool {
+        self.lens == self.default_lens && self.fixed == self.default_fixed
+    }
+
+    /// Restores the channel's active lens and fixed constant to their defaults.
+    pub fn reset(&mut self) {
+        self.lens = self.default_lens;
+        self.fixed = self.default_fixed;
+    }
+}
+
+/// Shared continuous 1D biophysical metrics evaluated across color, sizing, and label channels.
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ScalarMetric {
+    BuriedSasa,
+    Mobility,
+    Rigidity,
+    AliphaticScore,
+    ClashSeverity,
 }
 
 /// Data projection assigned to atom node fill color.
@@ -49,7 +52,7 @@ pub enum ColorLens {
     Off,
     #[default]
     Interactions,
-    Chemistry,
+    AaChemistry,
     ModernCpk,
     InterfaceSide,
     Bfactor,
@@ -58,12 +61,25 @@ pub enum ColorLens {
     ClashSeverity,
 }
 
+impl ColorLens {
+    /// Returns the underlying [`ScalarMetric`] if this lens is a continuous 1D metric.
+    pub const fn scalar_metric(self) -> Option<ScalarMetric> {
+        match self {
+            Self::BuriedSasa => Some(ScalarMetric::BuriedSasa),
+            Self::Bfactor => Some(ScalarMetric::Mobility),
+            Self::AliphaticScore => Some(ScalarMetric::AliphaticScore),
+            Self::ClashSeverity => Some(ScalarMetric::ClashSeverity),
+            _ => None,
+        }
+    }
+}
+
 impl Choice for ColorLens {
     const ALL: &'static [Self] = &[
         Self::Fixed,
         Self::Off,
         Self::Interactions,
-        Self::Chemistry,
+        Self::AaChemistry,
         Self::ModernCpk,
         Self::InterfaceSide,
         Self::Bfactor,
@@ -77,7 +93,7 @@ impl Choice for ColorLens {
             Self::Fixed => "Fixed Color",
             Self::Off => "Off (No Fill)",
             Self::Interactions => "Specific Interactions (H-Bonds / Salt Bridges / Clashes)",
-            Self::Chemistry => "AA Chemistry (Aliphatic / Polar / Charge / Aromatic)",
+            Self::AaChemistry => "AA Chemistry (Aliphatic / Polar / Charge / Aromatic)",
             Self::ModernCpk => "Modern CPK (Elemental Core Colors)",
             Self::InterfaceSide => "Interface Group (Side A vs. Side B)",
             Self::Bfactor => "B-Factor / pLDDT Mobility (Continuous)",
@@ -142,6 +158,20 @@ pub enum AtomSizeMode {
     Rigidity,
     Mobility,
     AliphaticScore,
+}
+
+impl AtomSizeMode {
+    /// Returns the underlying [`ScalarMetric`] if this mode is data-driven.
+    pub const fn scalar_metric(self) -> Option<ScalarMetric> {
+        match self {
+            Self::SqrtBuriedSasa => Some(ScalarMetric::BuriedSasa),
+            Self::ClashSeverity => Some(ScalarMetric::ClashSeverity),
+            Self::Rigidity => Some(ScalarMetric::Rigidity),
+            Self::Mobility => Some(ScalarMetric::Mobility),
+            Self::AliphaticScore => Some(ScalarMetric::AliphaticScore),
+            Self::Fixed | Self::Off => None,
+        }
+    }
 }
 
 impl Choice for AtomSizeMode {
@@ -252,6 +282,17 @@ pub enum TerritoryColorLens {
     UnsatisfiedPolar,
 }
 
+impl TerritoryColorLens {
+    /// Returns the underlying [`ScalarMetric`] if this lens is a continuous 1D metric.
+    pub const fn scalar_metric(self) -> Option<ScalarMetric> {
+        match self {
+            Self::BuriedSasa => Some(ScalarMetric::BuriedSasa),
+            Self::AvgMobility => Some(ScalarMetric::Mobility),
+            _ => None,
+        }
+    }
+}
+
 impl Choice for TerritoryColorLens {
     const ALL: &'static [Self] = &[
         Self::Fixed,
@@ -285,6 +326,17 @@ pub enum TerritoryStrokeLens {
     BuriedSasa,
     UnsatisfiedPolar,
     AvgRigidity,
+}
+
+impl TerritoryStrokeLens {
+    /// Returns the underlying [`ScalarMetric`] if this lens is a continuous 1D metric.
+    pub const fn scalar_metric(self) -> Option<ScalarMetric> {
+        match self {
+            Self::BuriedSasa => Some(ScalarMetric::BuriedSasa),
+            Self::AvgRigidity => Some(ScalarMetric::Rigidity),
+            _ => None,
+        }
+    }
 }
 
 impl Choice for TerritoryStrokeLens {
@@ -340,6 +392,19 @@ pub enum LabelValueChannel {
     AliphaticScore,
     ClashSeverity,
     ContactCount,
+}
+
+impl LabelValueChannel {
+    /// Returns the underlying [`ScalarMetric`] if this channel is a continuous 1D metric.
+    pub const fn scalar_metric(self) -> Option<ScalarMetric> {
+        match self {
+            Self::BuriedSasa => Some(ScalarMetric::BuriedSasa),
+            Self::Bfactor => Some(ScalarMetric::Mobility),
+            Self::AliphaticScore => Some(ScalarMetric::AliphaticScore),
+            Self::ClashSeverity => Some(ScalarMetric::ClashSeverity),
+            Self::Off | Self::ContactCount => None,
+        }
+    }
 }
 
 impl Choice for LabelValueChannel {
@@ -400,6 +465,36 @@ impl LabelBuilder {
             show_atom_name: true,
             show_sec_struct: false,
             value_channel: LabelValueChannel::Off,
+        }
+    }
+}
+
+/// Curated multi-channel visual presets for rapid 1-click exploration in the Interface tab.
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ChannelPreset {
+    Interactions,
+    Mobility,
+    HydrophobicPacking,
+    StericClashes,
+    ElementalCpk,
+}
+
+impl ChannelPreset {
+    pub const ALL: &'static [Self] = &[
+        Self::Interactions,
+        Self::Mobility,
+        Self::HydrophobicPacking,
+        Self::StericClashes,
+        Self::ElementalCpk,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Interactions => "Interactions",
+            Self::Mobility => "Mobility / pLDDT",
+            Self::HydrophobicPacking => "Hydrophobic Core",
+            Self::StericClashes => "Clashes & Strain",
+            Self::ElementalCpk => "CPK Elements",
         }
     }
 }
