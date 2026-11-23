@@ -36,10 +36,12 @@ impl ViewParams {
 }
 
 param_group! {
-    /// Controls for 3D complex sandwich separation along the interface normal.
+    /// Controls for 3D interface sandwich separation and complex-wide subunit explosion.
     pub struct ExplodeParams("explode", "Complex Explode") {
-        /// Separation between the two groups at full explode (Å).
-        max_explode_a: f32 = 24.0, 0.0..=100.0, "Max explode distance", "Å";
+        /// Separation between the two groups at full interface explode (Å).
+        max_explode_a: f32 = 24.0, 0.0..=100.0, "Max interface explode distance", "Å";
+        /// Multiplier applied to complex-wide subunit explode vectors at full separation.
+        complex_explode_scale: f32 = 1.0, 0.1..=4.0, "Complex explode scale", "×";
     }
 }
 

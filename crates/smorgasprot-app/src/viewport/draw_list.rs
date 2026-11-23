@@ -42,7 +42,9 @@ impl DrawList {
         for (_, prim) in &self.items {
             match *prim {
                 Prim::Triangle { pts, fill, edge } => {
-                    add_triangle(&mut mesh, pts, fill);
+                    if fill.a() > 0 {
+                        add_triangle(&mut mesh, pts, fill);
+                    }
                     add_segment(&mut mesh, pts[0], pts[1], edge);
                     add_segment(&mut mesh, pts[1], pts[2], edge);
                     add_segment(&mut mesh, pts[2], pts[0], edge);

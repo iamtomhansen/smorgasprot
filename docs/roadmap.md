@@ -40,6 +40,7 @@ Phase 5: Live Redesign Workbench (Rotamers, χ-Minimization, Mutation & PDB/mmCI
   5. **[`flatten.rs`](file:///mnt/shared/code/smorgasprot/crates/smorgasprot-core/src/flatten.rs) & [`contour.rs`](file:///mnt/shared/code/smorgasprot/crates/smorgasprot-core/src/contour.rs):** Audit SVD tangent plane, coupled 2D spring relaxation, and Voronoi-clipped territory contours.
   6. **`surface.rs` (New Core Module):** Implement 3D Marching Cubes molecular surface mesh per chain (with `nearest_atom` vertex mapping for instant interface vertex highlighting) and the approximated inter-chain interface sheet mesh for Cartoon mode.
   7. **[`main.rs`](file:///mnt/shared/code/smorgasprot/crates/smorgasprot-app/src/main.rs) & [`viewport.rs`](file:///mnt/shared/code/smorgasprot/crates/smorgasprot-app/src/viewport.rs):** Audit and upgrade the app to a live Rust server / WASM bridge supporting the **`[1. Complex]`** tab (chain assignment, group naming, Surface/Cartoon/Spheres + independent Alphas, desaturated unassigned chains, live vertex highlighting, and 3D Explode slider) and **`[2. Interface]`** tab.
+  8. [x] **Dynamic structure loading:** File → Open Structure… and drag-and-drop both run the load pipeline on a background thread (`jobs::JobQueue`) and replace the whole workspace on success, with a status-bar message reporting elapsed load time. Session save/reload and a live Parameters/Recompute window (`persistence.rs`, `panels/parameters.rs`) remain future work — drafted but not wired in yet.
 
 ---
 

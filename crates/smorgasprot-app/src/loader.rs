@@ -36,9 +36,13 @@ impl DatasetSpec {
 
     /// A user-supplied structure file loaded as a bare complex with no initial interface partition.
     pub fn bare(path: &str) -> Self {
+        let name = Path::new(path)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(path);
         Self {
             id: path.to_owned(),
-            title: format!("{path} (Bare Complex)"),
+            title: format!("{name} (Bare complex)"),
             path: path.to_owned(),
             group_a_chains: Vec::new(),
             group_b_chains: Vec::new(),
@@ -48,24 +52,40 @@ impl DatasetSpec {
     /// Bundled example structures that exist relative to the working directory.
     pub fn builtin_examples() -> Vec<Self> {
         let examples = [
-            ("7JVB", "examples/7JVB.cif — 4-Chain Assembly (Chains A, C, B, D)", "examples/7JVB.cif", "A", "C"),
+            (
+                "7JVB",
+                "examples/7JVB.cif — 4-Chain Assembly (Chains A, C, B, D)",
+                "examples/7JVB.cif",
+                Some(("A", "C")),
+            ),
             (
                 "LatentX",
                 "examples/fold_r8s15_mp3_model_0.cif — 2-Chain Complex (Chains A, B)",
                 "examples/fold_r8s15_mp3_model_0.cif",
-                "B",
-                "A",
+                Some(("B", "A")),
+            ),
+            (
+                "8DCK",
+                "examples/8DCK.cif — 24-Chain Assembly (Chains A–X)",
+                "examples/8DCK.cif",
+                None,
             ),
         ];
         examples
             .into_iter()
-            .filter(|(_, _, path, _, _)| Path::new(path).exists())
-            .map(|(id, title, path, a, b)| Self {
-                id: id.to_owned(),
-                title: title.to_owned(),
-                path: path.to_owned(),
-                group_a_chains: vec![ChainName::new(a)],
-                group_b_chains: vec![ChainName::new(b)],
+            .filter(|(_, _, path, _)| Path::new(path).exists())
+            .map(|(id, title, path, chains)| {
+                let (group_a_chains, group_b_chains) = match chains {
+                    Some((a, b)) => (vec![ChainName::new(a)], vec![ChainName::new(b)]),
+                    None => (Vec::new(), Vec::new()),
+                };
+                Self {
+                    id: id.to_owned(),
+                    title: title.to_owned(),
+                    path: path.to_owned(),
+                    group_a_chains,
+                    group_b_chains,
+                }
             })
             .collect()
     }
@@ -75,6 +95,17 @@ impl DatasetSpec {
 pub struct Loaded {
     pub dataset: ViewerDataset,
     pub complex: ComplexStructure,
+}
+
+/// Parses, groups, maps, and meshes a user-selected file path as a bare 3D complex.
+pub fn load_path(path: &Path, params: &AnalysisParams) -> Result<Loaded, String> {
+    let path_str = path.to_str().ok_or_else(|| "Invalid UTF-8 file path".to_string())?;
+    load(&DatasetSpec::bare(path_str), params)
+}
+
+/// Loads every path as a bare 3D complex, in order; stops at the first failure.
+pub fn load_paths(paths: &[String], params: &AnalysisParams) -> Result<Vec<Loaded>, String> {
+    paths.iter().map(|p| load_path(Path::new(p), params)).collect()
 }
 
 /// Parses, groups, maps, and meshes one structure.

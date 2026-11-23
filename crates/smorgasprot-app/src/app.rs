@@ -3,11 +3,15 @@
 
 use crate::action::Action;
 use crate::dataset::ViewerDataset;
+use crate::files::{self, FileKind};
+use crate::jobs::{JobOutput, JobQueue};
+use crate::loader;
 use crate::panels;
 use crate::state::UiState;
 use crate::status::StatusMessage;
 use crate::viewport;
 use egui::{CentralPanel, Context, SidePanel, TopBottomPanel};
+use smorgasprot_core::AnalysisParams;
 
 /// Default width of the left controls panel (px).
 const LEFT_PANEL_WIDTH: f32 = 320.0;
@@ -27,16 +31,31 @@ pub struct SmorgasprotApp {
     active: usize,
     state: UiState,
     status: Option<StatusMessage>,
+    jobs: JobQueue,
 }
 
 impl SmorgasprotApp {
     pub fn new(cc: &eframe::CreationContext<'_>, datasets: Vec<ViewerDataset>) -> Self {
         crate::style::configure_fonts(&cc.egui_ctx);
-        Self { datasets, active: 0, state: UiState::default(), status: None }
+        Self { datasets, active: 0, state: UiState::default(), status: None, jobs: JobQueue::default() }
+    }
+
+    /// Spawns a background load of `paths`, discarding the current workspace on success.
+    fn start_load(&mut self, ctx: &Context, paths: Vec<String>) {
+        let label = match paths.as_slice() {
+            [one] => format!("Loading {one}…"),
+            many => format!("Loading {} structures…", many.len()),
+        };
+        self.jobs.spawn(ctx, label, move || {
+            let started = std::time::Instant::now();
+            let loaded = loader::load_paths(&paths, &AnalysisParams::default())?;
+            let datasets = loaded.into_iter().map(|l| l.dataset).collect();
+            Ok(JobOutput::Opened { datasets, elapsed: started.elapsed() })
+        });
     }
 
     /// Applies one panel-requested command; `now` is egui time in seconds.
-    fn apply(&mut self, action: Action, now: f64) {
+    fn apply(&mut self, action: Action, ctx: &Context, now: f64) {
         match action {
             Action::SelectDataset(idx) if idx < self.datasets.len() => {
                 self.active = idx;
@@ -51,9 +70,37 @@ impl SmorgasprotApp {
                 }
             }
             Action::SelectDataset(_) => {}
+            #[cfg(not(target_arch = "wasm32"))]
+            Action::OpenFileDialog => {
+                let paths: Vec<String> = files::dialogs::pick_structures()
+                    .into_iter()
+                    .filter_map(|f| f.path)
+                    .collect();
+                if !paths.is_empty() {
+                    self.start_load(ctx, paths);
+                }
+            }
             Action::ExportHtml => self.status = Some(self.export_html(now)),
             Action::DismissStatus => self.status = None,
         }
+    }
+
+    /// Applies a finished background job: a successful load replaces the whole workspace.
+    fn apply_job(&mut self, result: crate::jobs::JobResult, now: f64) {
+        let params = &self.state.view_params.status;
+        self.status = Some(match result {
+            Ok(JobOutput::Opened { datasets, elapsed }) => {
+                let what = match datasets.as_slice() {
+                    [one] => one.title.clone(),
+                    many => format!("{} structures", many.len()),
+                };
+                self.datasets = datasets;
+                self.active = 0;
+                self.state.selection.clear();
+                StatusMessage::success(format!("Loaded {what} in {:.2}s", elapsed.as_secs_f64()), now, params)
+            }
+            Err(e) => StatusMessage::error(e, now, params),
+        });
     }
 
     /// Writes the standalone HTML report and returns a status message describing the outcome.
@@ -105,6 +152,37 @@ impl eframe::App for SmorgasprotApp {
             }
         }
 
+        // Apply finished loads before drawing, so their status message shows this frame.
+        for (_label, result) in self.jobs.poll() {
+            self.apply_job(result, now);
+        }
+
+        // Dropped structure files start a load the same way the Open dialog does.
+        let dropped = files::take_dropped(ctx);
+        if !dropped.is_empty() {
+            let mut paths = Vec::new();
+            let mut unsupported = false;
+            for file in dropped {
+                match (file.kind(), file.path) {
+                    (FileKind::Structure, Some(path)) => paths.push(path),
+                    _ => unsupported = true,
+                }
+            }
+            if !paths.is_empty() {
+                self.start_load(ctx, paths);
+            } else if unsupported {
+                self.status = Some(StatusMessage::warning(
+                    "Only PDB/mmCIF structure files can be opened here (session files aren't supported yet).",
+                    now,
+                    &self.state.view_params.status,
+                ));
+            }
+        }
+
+        if self.jobs.is_busy() {
+            ctx.request_repaint();
+        }
+
         let mut actions = Vec::new();
 
         // Edge panels must be added before the central panel.
@@ -117,6 +195,7 @@ impl eframe::App for SmorgasprotApp {
                     ui,
                     self.datasets.get(self.active),
                     self.status.as_ref(),
+                    self.jobs.running().next(),
                     &self.state.palette.chrome,
                     &mut actions,
                 );
@@ -146,7 +225,7 @@ impl eframe::App for SmorgasprotApp {
         }
 
         for action in actions {
-            self.apply(action, now);
+            self.apply(action, ctx, now);
         }
 
         // Schedule wake-up if a panel scheduled a debounced presentation surface remesh during this frame.

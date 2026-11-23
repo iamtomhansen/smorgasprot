@@ -111,6 +111,10 @@ pub fn show(ui: &mut Ui, ds: &mut ViewerDataset, state: &mut UiState) {
         });
         if s.surface.visible {
             slider(ui, "Alpha:", &mut s.surface.alpha, UNIT_RANGE);
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut s.surface.show_faces, "Faces");
+                ui.checkbox(&mut s.surface.show_wireframe, "Wireframe");
+            });
         }
 
         ui.separator();
@@ -146,7 +150,10 @@ pub fn show(ui: &mut Ui, ds: &mut ViewerDataset, state: &mut UiState) {
         choice_combo(ui, "cx_interface_mode", &mut s.boundary.mode);
         if s.boundary.mode != InterfaceDisplayMode::Off {
             slider(ui, "Alpha:", &mut s.boundary.alpha, UNIT_RANGE);
-            ui.checkbox(&mut s.boundary.show_wireframe, "Show mesh wireframe");
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut s.boundary.show_faces, "Faces");
+                ui.checkbox(&mut s.boundary.show_wireframe, "Wireframe");
+            });
         }
         if s.boundary.mode == InterfaceDisplayMode::NegativeSpace {
             if let Some(iface) = ds.active_interface() {
@@ -189,10 +196,26 @@ pub fn show(ui: &mut Ui, ds: &mut ViewerDataset, state: &mut UiState) {
     });
 
     let explode_params = &state.view_params.explode;
-    section(ui, "3. Explode separation along ±n", |ui| {
-        let label = format!("{:.1} Å", s.explode_distance_a(explode_params));
-        tween_slider(ui, &mut s.explode, label);
-        tween_presets(ui, &mut s.explode, &[("Closed", 0.0), ("Half", 0.5), ("Exploded", 1.0)]);
+    let mean_complex_disp_a =
+        ds.mean_chain_explode_distance_a() * s.complex_explode.value * explode_params.complex_explode_scale;
+    section(ui, "3. Explode separation", |ui| {
+        ui.add_enabled_ui(ds.chains.len() > 1, |ui| {
+            ui.label(RichText::new("Complex subunits:").strong());
+            let label = format!("{:.1} Å", mean_complex_disp_a);
+            tween_slider(ui, &mut s.complex_explode, label);
+            tween_presets(ui, &mut s.complex_explode, &[("Closed", 0.0), ("Half", 0.5), ("Exploded", 1.0)]);
+        });
+
+        ui.add_space(4.0);
+        ui.separator();
+        ui.add_space(2.0);
+
+        ui.add_enabled_ui(ds.active_interface().is_some(), |ui| {
+            ui.label(RichText::new("Active interface (±n):").strong());
+            let label = format!("{:.1} Å", s.explode_distance_a(explode_params));
+            tween_slider(ui, &mut s.explode, label);
+            tween_presets(ui, &mut s.explode, &[("Closed", 0.0), ("Half", 0.5), ("Exploded", 1.0)]);
+        });
     });
 }
 

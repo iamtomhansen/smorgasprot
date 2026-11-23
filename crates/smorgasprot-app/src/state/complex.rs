@@ -75,6 +75,8 @@ impl Choice for GeodesicPreset {
 pub struct SurfaceLayerStyle {
     pub visible: bool,
     pub alpha: Tween,
+    pub show_faces: bool,
+    pub show_wireframe: bool,
     pub culling: SurfaceCulling,
     pub color: VisualChannel<ChainColorLens, Color32>,
     /// Presentation-only tessellation preset (separate from analytical `Octahedron66`).
@@ -88,6 +90,8 @@ impl Default for SurfaceLayerStyle {
         Self {
             visible: true,
             alpha: Tween::new(0.82),
+            show_faces: true,
+            show_wireframe: false,
             culling: SurfaceCulling::None,
             color: VisualChannel::new(ChainColorLens::InterfaceSide, Color32::from_rgb(86, 180, 233)),
             draw_preset: GeodesicPreset::Octahedron18,
@@ -152,6 +156,7 @@ impl CartoonLayerStyle {
 pub struct BoundaryLayerStyle {
     pub mode: InterfaceDisplayMode,
     pub alpha: Tween,
+    pub show_faces: bool,
     pub show_wireframe: bool,
 }
 
@@ -160,6 +165,7 @@ impl Default for BoundaryLayerStyle {
         Self {
             mode: InterfaceDisplayMode::SmoothedSdf,
             alpha: Tween::new(0.85),
+            show_faces: true,
             show_wireframe: true,
         }
     }
@@ -204,8 +210,10 @@ pub struct ComplexViewSettings {
     pub cartoon: CartoonLayerStyle,
     pub boundary: BoundaryLayerStyle,
     pub spheres: SphereLayerStyle,
-    /// Explode separation along ±n, `0` (closed) to `1` (fully apart).
+    /// Interface explode separation along ±n, `0` (closed) to `1` (fully apart).
     pub explode: Tween,
+    /// Complex-wide subunit explode separation, `0` (closed) to `1` (fully spread).
+    pub complex_explode: Tween,
 }
 
 impl Default for ComplexViewSettings {
@@ -217,6 +225,7 @@ impl Default for ComplexViewSettings {
             boundary: BoundaryLayerStyle::default(),
             spheres: SphereLayerStyle::default(),
             explode: Tween::new(0.0),
+            complex_explode: Tween::new(0.0),
         }
     }
 }
@@ -230,6 +239,7 @@ impl ComplexViewSettings {
     /// Advances all tweens in the Complex tab; returns `true` while any tween is moving.
     pub fn step_animations(&mut self, dt: f32, rate: f32) -> bool {
         self.explode.step(dt, rate)
+            | self.complex_explode.step(dt, rate)
             | self.surface.alpha.step(dt, rate)
             | self.cartoon.alpha.step(dt, rate)
             | self.boundary.alpha.step(dt, rate)
@@ -239,6 +249,7 @@ impl ComplexViewSettings {
     /// Immediately snaps all Complex tab tweens to their targets.
     pub fn finish_animations(&mut self) {
         self.explode.finish();
+        self.complex_explode.finish();
         self.surface.alpha.finish();
         self.cartoon.alpha.finish();
         self.boundary.alpha.finish();

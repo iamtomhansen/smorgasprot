@@ -7,15 +7,20 @@ use crate::style::ChromePalette;
 use egui::{Align, Layout, Ui};
 
 /// Renders the status bar; expiry of `message` is handled by the app, and manual dismissal pushes `Action::DismissStatus`.
+/// `loading`, when set, is the label of a background job in flight (e.g. a structure load) and takes priority.
 pub fn show(
     ui: &mut Ui,
     ds: Option<&ViewerDataset>,
     message: Option<&StatusMessage>,
+    loading: Option<&str>,
     chrome: &ChromePalette,
     actions: &mut Vec<Action>,
 ) {
     ui.horizontal(|ui| {
-        if let Some(msg) = message {
+        if let Some(label) = loading {
+            ui.spinner();
+            ui.colored_label(chrome.accent, label);
+        } else if let Some(msg) = message {
             let color = match msg.kind {
                 StatusKind::Info => chrome.accent,
                 StatusKind::Success => chrome.success,

@@ -42,7 +42,7 @@ pub fn paint(painter: &Painter, rect: Rect, ds: &ViewerDataset, state: &UiState)
     }
     if let Some(iface) = iface {
         if s.boundary.mode != InterfaceDisplayMode::Off && s.boundary.alpha.value > min_alpha {
-            add_interface_geometry(&mut list, &view, iface, s);
+            add_interface_geometry(&mut list, &view, ds, iface, s);
         }
     }
     if s.cartoon.visible && s.cartoon.alpha.value > min_alpha && s.cartoon.color.lens != ChainColorLens::Off {
@@ -54,7 +54,7 @@ pub fn paint(painter: &Painter, rect: Rect, ds: &ViewerDataset, state: &UiState)
             && s.spheres.fill.lens != ColorLens::Off
             && s.spheres.radius.lens != AtomSizeMode::Off
         {
-            add_spheres(&mut list, &view, iface, s);
+            add_spheres(&mut list, &view, ds, iface, s);
         }
     }
     list.paint(painter);
@@ -89,25 +89,94 @@ impl View<'_> {
     }
 }
 
-/// Molecular surface per chain, pushed apart along ±n by the explode slider.
+fn mesh_wireframe_stroke(wf_width: f32, base: Color32, alpha: f32) -> Stroke {
+    if wf_width > 0.0 {
+        Stroke::new(wf_width, palette::with_alpha(palette::edge_color(base), alpha))
+    } else {
+        Stroke::NONE
+    }
+}
+
+fn chain_total_offset(
+    view: &View,
+    side: InterfaceSide,
+    draw_explode_offset: [f32; 3],
+    s: &ComplexViewSettings,
+) -> Vec3 {
+    let iface_off = explode_offset(side, s.explode.value, view.explode);
+    let complex_off = view.frame.vector_to_local(draw_explode_offset)
+        * (s.complex_explode.value * view.explode.complex_explode_scale);
+    iface_off + complex_off
+}
+
+fn interface_complex_offset(view: &View, ds: &ViewerDataset, s: &ComplexViewSettings) -> Vec3 {
+    if s.complex_explode.value <= 0.0 {
+        return Vec3::ZERO;
+    }
+    let scale = s.complex_explode.value * view.explode.complex_explode_scale;
+    let (mut sum_a, mut count_a) = (Vec3::ZERO, 0usize);
+    let (mut sum_b, mut count_b) = (Vec3::ZERO, 0usize);
+    for ch in &ds.chains {
+        match ds.chain_side(&ch.chain_id) {
+            InterfaceSide::SideA => {
+                sum_a += view.frame.vector_to_local(ch.draw_explode_offset) * scale;
+                count_a += 1;
+            }
+            InterfaceSide::SideB => {
+                sum_b += view.frame.vector_to_local(ch.draw_explode_offset) * scale;
+                count_b += 1;
+            }
+            InterfaceSide::None => {}
+        }
+    }
+    let avg_a = if count_a > 0 { sum_a / count_a as f32 } else { Vec3::ZERO };
+    let avg_b = if count_b > 0 { sum_b / count_b as f32 } else { Vec3::ZERO };
+    0.5 * (avg_a + avg_b)
+}
+
+/// Molecular surface per chain, pushed apart by interface and complex explode sliders.
 fn add_chain_surfaces(list: &mut DrawList, view: &View, ds: &ViewerDataset, s: &ComplexViewSettings) {
+    if !s.surface.show_faces && !s.surface.show_wireframe {
+        return;
+    }
     let lens = s.surface.color.lens;
+    let wf_width = if s.surface.show_wireframe {
+        view.atom_draw.boundary_wireframe_width_px
+    } else {
+        0.0
+    };
     for (chain_idx, ch) in ds.chains.iter().enumerate() {
         let side = ds.chain_side(&ch.chain_id);
-        let offset = explode_offset(side, s.explode.value, view.explode);
+        let offset = chain_total_offset(view, side, ch.draw_explode_offset, s);
         let alpha = view.chain_alpha(side, s.surface.alpha.value, lens);
         let base = lenses::chain_surface_color(chain_idx, side, lens, s.surface.color.fixed, view.pal);
+        let edge = mesh_wireframe_stroke(wf_width, base, 0.72 * alpha);
         add_mesh(list, view, &ch.draw_surface_mesh, offset, s.surface.culling, |_, shade| {
-            (palette::shaded(base, shade, alpha), Stroke::NONE)
+            let fill = if s.surface.show_faces {
+                palette::shaded(base, shade, alpha)
+            } else {
+                Color32::TRANSPARENT
+            };
+            (fill, edge)
         });
     }
 }
 
-/// The selected derived interface mesh; anchored at the interface, so it ignores explode.
-fn add_interface_geometry(list: &mut DrawList, view: &View, iface: &InterfaceViewData, s: &ComplexViewSettings) {
+/// The selected derived interface mesh; tracks the midpoint between exploded sides.
+fn add_interface_geometry(
+    list: &mut DrawList,
+    view: &View,
+    ds: &ViewerDataset,
+    iface: &InterfaceViewData,
+    s: &ComplexViewSettings,
+) {
+    if !s.boundary.show_faces && !s.boundary.show_wireframe {
+        return;
+    }
     let a = s.boundary.alpha.value;
     let geo = &iface.draw_geometry;
     let sides = &view.pal.sides;
+    let offset = interface_complex_offset(view, ds, s);
     let wf_width = if s.boundary.show_wireframe {
         view.atom_draw.boundary_wireframe_width_px
     } else {
@@ -116,34 +185,36 @@ fn add_interface_geometry(list: &mut DrawList, view: &View, iface: &InterfaceVie
 
     match s.boundary.mode {
         InterfaceDisplayMode::SmoothedSdf => {
-            let fill = palette::with_alpha(sides.sheet, a * 0.78);
-            let edge = if wf_width > 0.0 {
-                Stroke::new(wf_width, palette::with_alpha(palette::edge_color(sides.sheet), 0.86))
+            let fill = if s.boundary.show_faces {
+                palette::with_alpha(sides.sheet, a * 0.78)
             } else {
-                Stroke::NONE
+                Color32::TRANSPARENT
             };
-            add_mesh(list, view, &geo.sheet_mesh, Vec3::ZERO, SurfaceCulling::None, |_, _| (fill, edge));
+            let edge = mesh_wireframe_stroke(wf_width, sides.sheet, 0.86 * a);
+            add_mesh(list, view, &geo.sheet_mesh, offset, SurfaceCulling::None, |_, _| (fill, edge));
         }
         InterfaceDisplayMode::ContactEnvelope => {
-            add_mesh(list, view, &geo.envelope_mesh, Vec3::ZERO, SurfaceCulling::None, |v0, shade| {
+            add_mesh(list, view, &geo.envelope_mesh, offset, SurfaceCulling::None, |v0, shade| {
                 let side = iface.draw_envelope_sides.get(v0).copied().unwrap_or(InterfaceSide::None);
-                let fill = sides.envelope(side);
-                let edge = if wf_width > 0.0 {
-                    Stroke::new(wf_width, palette::with_alpha(palette::edge_color(fill), 0.63))
+                let base = sides.envelope(side);
+                let fill = if s.boundary.show_faces {
+                    palette::shaded(base, shade, a)
                 } else {
-                    Stroke::NONE
+                    Color32::TRANSPARENT
                 };
-                (palette::shaded(fill, shade, a), edge)
+                let edge = mesh_wireframe_stroke(wf_width, base, 0.63 * a);
+                (fill, edge)
             });
         }
         InterfaceDisplayMode::NegativeSpace => {
-            let edge = if wf_width > 0.0 {
-                Stroke::new(wf_width, palette::with_alpha(palette::edge_color(sides.void), 0.78))
-            } else {
-                Stroke::NONE
-            };
-            add_mesh(list, view, &geo.negative_mesh, Vec3::ZERO, SurfaceCulling::None, |_, shade| {
-                (palette::shaded(sides.void, shade, a), edge)
+            let edge = mesh_wireframe_stroke(wf_width, sides.void, 0.78 * a);
+            add_mesh(list, view, &geo.negative_mesh, offset, SurfaceCulling::None, |_, shade| {
+                let fill = if s.boundary.show_faces {
+                    palette::shaded(sides.void, shade, a)
+                } else {
+                    Color32::TRANSPARENT
+                };
+                (fill, edge)
             });
         }
         InterfaceDisplayMode::Off => {}
@@ -156,7 +227,7 @@ fn add_cartoon(list: &mut DrawList, view: &View, ds: &ViewerDataset, s: &Complex
     let lens = s.cartoon.color.lens;
     for (chain_idx, ch) in ds.chains.iter().enumerate() {
         let side = ds.chain_side(&ch.chain_id);
-        let offset = explode_offset(side, s.explode.value, view.explode);
+        let offset = chain_total_offset(view, side, ch.draw_explode_offset, s);
         let alpha = view.chain_alpha(side, s.cartoon.alpha.value, lens);
         let color = lenses::chain_cartoon_color(chain_idx, side, lens, s.cartoon.color.fixed, view.pal);
         let stroke = Stroke::new(width, palette::with_alpha(color, alpha));
@@ -168,13 +239,26 @@ fn add_cartoon(list: &mut DrawList, view: &View, ds: &ViewerDataset, s: &Complex
 }
 
 /// Interface heavy atoms as discs colored and sized by the active 3D sphere visual channels.
-fn add_spheres(list: &mut DrawList, view: &View, iface: &InterfaceViewData, s: &ComplexViewSettings) {
+fn add_spheres(
+    list: &mut DrawList,
+    view: &View,
+    ds: &ViewerDataset,
+    iface: &InterfaceViewData,
+    s: &ComplexViewSettings,
+) {
     let outline = Stroke::new(1.0_f32, view.pal.chrome.ink);
     let fill_lens = s.spheres.fill.lens;
     let size_mode = s.spheres.radius.lens;
 
     for (node, meta) in iface.map.nodes.iter().zip(&iface.atom_meta) {
-        let (center, depth) = view.project(node.pos_3d, explode_offset(node.role, s.explode.value, view.explode));
+        let chain_explode = ds
+            .complex
+            .as_ref()
+            .and_then(|c| c.atoms.get(node.global_atom.0 as usize))
+            .and_then(|a| ds.chains.get(a.chain_idx.0 as usize))
+            .map_or([0.0; 3], |ch| ch.draw_explode_offset);
+        let offset = chain_total_offset(view, node.role, chain_explode, s);
+        let (center, depth) = view.project(node.pos_3d, offset);
         let radius = sizing::complex_sphere_radius_px(
             node,
             meta.vdw_radius_a,

@@ -6,6 +6,8 @@ pub mod app;
 pub mod camera;
 pub mod dataset;
 pub mod export;
+pub mod files;
+pub mod jobs;
 pub mod loader;
 pub mod panels;
 pub mod state;

@@ -10,6 +10,14 @@ use smorgasprot_core::InterfaceSide;
 pub fn show(ui: &mut Ui, datasets: &[ViewerDataset], active: usize, state: &mut UiState, actions: &mut Vec<Action>) {
     egui::menu::bar(ui, |ui| {
         ui.menu_button("File", |ui| {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                if ui.button("📂 Open Structure…").clicked() {
+                    actions.push(Action::OpenFileDialog);
+                    ui.close_menu();
+                }
+                ui.separator();
+            }
             if ui.button("💾 Export Standalone HTML Report…").clicked() {
                 actions.push(Action::ExportHtml);
                 ui.close_menu();

@@ -757,6 +757,96 @@ pub fn merge_mesh_vertices_by_distance(mesh: &SurfaceMesh, merge_dist_a: f32) ->
     welded
 }
 
+/// Computes world-space per-chain displacement vectors (in Å at full complex explode) by spreading
+/// chain centroids apart with pairwise soft-core repulsion and a weak outward radial anchor.
+pub fn compute_chain_explode_offsets(complex: &ComplexStructure) -> Vec<[f32; 3]> {
+    let n = complex.chains.len();
+    if n <= 1 {
+        return vec![[0.0; 3]; n];
+    }
+
+    let mut centroids = Vec::with_capacity(n);
+    let mut radii = Vec::with_capacity(n);
+    for chain in &complex.chains {
+        let start = chain.atom_range.0 as usize;
+        let end = (chain.atom_range.1 as usize).min(complex.atoms.len());
+        if start >= end {
+            centroids.push(Vec3::ZERO);
+            radii.push(4.0_f32);
+            continue;
+        }
+        let count = (end - start) as f32;
+        let mut sum = Vec3::ZERO;
+        for a in &complex.atoms[start..end] {
+            sum += Vec3::from(a.pos_3d);
+        }
+        let c = sum / count;
+        let mut r2_sum = 0.0_f32;
+        for a in &complex.atoms[start..end] {
+            r2_sum += (Vec3::from(a.pos_3d) - c).length_squared();
+        }
+        centroids.push(c);
+        radii.push((r2_sum / count).sqrt().max(4.0));
+    }
+
+    let center: Vec3 = centroids.iter().copied().sum::<Vec3>() / (n as f32);
+    let golden_angle = std::f32::consts::PI * (3.0 - 5.0_f32.sqrt());
+    let dirs: Vec<Vec3> = centroids
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| {
+            let d = c - center;
+            if d.length_squared() > 1e-4 {
+                d.normalize()
+            } else {
+                // Deterministic Fibonacci-sphere fallback for concentric chains at the center.
+                let y = 1.0 - 2.0 * (i as f32 + 0.5) / (n as f32);
+                let r = (1.0 - y * y).max(0.0).sqrt();
+                let theta = golden_angle * (i as f32);
+                Vec3::new(r * theta.cos(), y, r * theta.sin())
+            }
+        })
+        .collect();
+
+    let mut pos: Vec<Vec3> = (0..n)
+        .map(|i| centroids[i] + dirs[i] * (0.5 * radii[i] + 4.0))
+        .collect();
+    let anchors: Vec<Vec3> = (0..n)
+        .map(|i| centroids[i] + dirs[i] * (0.75 * radii[i] + 8.0))
+        .collect();
+
+    for _ in 0..90 {
+        let mut forces = vec![Vec3::ZERO; n];
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let min_dist = 1.35 * (radii[i] + radii[j]) + 6.0;
+                let diff = pos[i] - pos[j];
+                let dist = diff.length();
+                if dist < min_dist {
+                    let u = if dist > 1e-4 {
+                        diff / dist
+                    } else {
+                        (dirs[i] - dirs[j]).normalize_or(Vec3::X)
+                    };
+                    let f = u * (min_dist - dist) * 0.65;
+                    forces[i] += f;
+                    forces[j] -= f;
+                }
+            }
+            forces[i] += (anchors[i] - pos[i]) * 0.15;
+        }
+        for i in 0..n {
+            pos[i] += (forces[i] * 0.35).clamp_length_max(4.0);
+        }
+    }
+
+    let mut disps: Vec<Vec3> = (0..n).map(|i| pos[i] - centroids[i]).collect();
+    let mean_disp = disps.iter().copied().sum::<Vec3>() / (n as f32);
+    for d in &mut disps {
+        *d -= mean_disp;
+    }
+    disps.into_iter().map(|d| d.to_array()).collect()
+}
 
 #[cfg(test)]
 mod tests {

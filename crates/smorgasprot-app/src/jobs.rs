@@ -1,17 +1,13 @@
 //! Background work for expensive loads (parsing, interface mapping, surface meshing).
 //! Native builds run each job on a thread; wasm has no threads, so jobs run inline.
 
-use crate::workspace::LoadedStructure;
-use crate::state::UiState;
+use crate::dataset::ViewerDataset;
+use std::time::Duration;
 
 /// Result of a finished job, applied to the workspace by the app.
 pub enum JobOutput {
-    /// Newly opened structures, appended to the workspace.
-    Opened(Vec<LoadedStructure>),
-    /// One structure recomputed in place (new groups or parameters).
-    Recomputed(usize, Box<LoadedStructure>),
-    /// A saved session: replaces all structures and restores view state.
-    Session { structures: Vec<LoadedStructure>, ui: Box<UiState>, active: usize },
+    /// Newly opened structures, replacing the workspace, plus how long the load took.
+    Opened { datasets: Vec<ViewerDataset>, elapsed: Duration },
 }
 
 /// A unit of background work; `Err` carries a user-facing message.

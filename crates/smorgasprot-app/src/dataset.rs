@@ -10,7 +10,9 @@ use smorgasprot_core::{
         GeometryParams, build_interface_geometry, build_interface_negative_mesh, compute_mesh_volume_a3,
         extract_interface_envelope_mesh,
     },
-    surface::{GeodesicPreset, SurfaceParams, build_chain_surface_mesh_with_preset},
+    surface::{
+        GeodesicPreset, SurfaceParams, build_chain_surface_mesh_with_preset, compute_chain_explode_offsets,
+    },
 };
 
 /// Per-chain presentation geometry for the Complex tab (alpha carbon trace + display molecular surface).
@@ -27,6 +29,9 @@ pub struct ChainVisualData {
     /// Presentation-only molecular surface mesh in plane-local space.
     #[serde(rename = "surface_mesh")]
     pub draw_surface_mesh: SurfaceMesh,
+    /// Precomputed world-space subunit explode displacement (Å at full complex explode).
+    #[serde(skip)]
+    pub draw_explode_offset: [f32; 3],
 }
 
 /// User inspectable information about a given atom.
@@ -208,6 +213,7 @@ impl ViewerDataset {
     ) -> Result<Self, String> {
         let initial_preset = GeodesicPreset::Octahedron18;
         let initial_draw_surface = SurfaceParams::display();
+        let explode_offsets = compute_chain_explode_offsets(complex);
         let chains: Vec<ChainVisualData> = complex
             .chains
             .iter()
@@ -223,6 +229,7 @@ impl ViewerDataset {
                     initial_preset,
                     &initial_draw_surface,
                 ),
+                draw_explode_offset: explode_offsets.get(c_idx).copied().unwrap_or([0.0; 3]),
             })
             .collect();
 
@@ -246,6 +253,19 @@ impl ViewerDataset {
             applied_draw_surface: initial_draw_surface,
             draw_remesh_due: None,
         })
+    }
+
+    /// Average full-explode subunit displacement across all chains (Å).
+    pub fn mean_chain_explode_distance_a(&self) -> f32 {
+        if self.chains.is_empty() {
+            return 0.0;
+        }
+        let sum: f32 = self
+            .chains
+            .iter()
+            .map(|c| glam::Vec3::from(c.draw_explode_offset).length())
+            .sum();
+        sum / (self.chains.len() as f32)
     }
 
     fn draw_chain_meshes(&self) -> Vec<SurfaceMesh> {

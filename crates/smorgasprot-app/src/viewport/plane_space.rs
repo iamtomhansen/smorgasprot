@@ -49,6 +49,12 @@ impl PlaneFrame {
         Vec3::new(rel.dot(self.u), rel.dot(self.v), rel.dot(self.n))
     }
 
+    /// Rotates a world-space displacement vector into plane-local `(u, v, n)` coordinates.
+    pub fn vector_to_local(&self, world_vec: [f32; 3]) -> Vec3 {
+        let v = Vec3::from(world_vec);
+        Vec3::new(v.dot(self.u), v.dot(self.v), v.dot(self.n))
+    }
+
     /// Interpolates a point from its true 3D position (`flatten_t = 0`) to its flat map position (`1`).
     /// Side B's flat position is hinged open by `book_t × 180°` around `u = hinge_u`.
     pub fn morph(&self, world: [f32; 3], uv: [f32; 2], side: InterfaceSide, flatten_t: f32, book_t: f32) -> Vec3 {

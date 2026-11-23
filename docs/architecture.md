@@ -6,13 +6,13 @@ Two-crate Rust workspace. `smorgasprot-core` is the analysis engine: pure data i
 smorgasprot/
 ├── design.md                 Vision and doc map
 ├── docs/                     This folder
-├── examples/                 Bundled structures (7JVB.cif, fold_r8s15_mp3_model_0.cif)
+├── examples/                 Bundled structures (7JVB.cif, fold_r8s15_mp3_model_0.cif, 8DCK.cif)
 ├── viewer.html, js/          Legacy JS viewer (frozen; superseded by export/template.html)
 └── crates/
     ├── smorgasprot-core/src/
     │   ├── model.rs              Index newtypes, ComplexStructure, ChainRecord, ResidueRecord, AtomRecord, SurfaceMesh
     │   ├── params.rs             AnalysisParams + param_group! macro (every tunable, with docs and ranges)
-    │   ├── ingest.rs             PDB/mmCIF (optionally gzipped) from path or bytes → ComplexStructure
+    │   ├── ingest.rs             PDB/mmCIF from a file path → ComplexStructure (bytes/gzip ingestion is future work, needed once wasm drag-and-drop lands)
     │   ├── amino_acids.rs        Residue/element classification, vdW radii
     │   ├── dssp.rs               Secondary structure (file records, else DSSP)
     │   ├── spatial.rs            Uniform voxel hash grid
@@ -33,26 +33,34 @@ smorgasprot/
         ├── lib.rs                Module map and layering
         ├── app.rs                SmorgasprotApp: frame loop, panel layout, Action dispatch
         ├── camera.rs             Orbit camera, ViewAxis snapping
-        ├── dataset.rs            ViewerDataset: render-ready snapshot (frozen JSON contract)
-        ├── workspace.rs          Open structures: source text, groups, params snapshot, derived data
+        ├── dataset.rs            ViewerDataset: the open structure (chains, interfaces, source complex, render-ready snapshot — frozen JSON contract)
         ├── loader.rs             Load pipeline (parse → partition → map → meshes), built-in examples
         ├── jobs.rs               Background jobs (threads natively, inline on wasm)
         ├── files.rs              rfd dialogs, drag-and-drop, file-type detection
-        ├── persistence.rs        config.rs (preferences), session.rs (session files)
-        ├── state.rs              UiState, Action, StatusMessage; options, tween, view_params
+        ├── persistence.rs        config.rs (preferences), session.rs (session files) — drafted, not yet wired into lib.rs
+        ├── action.rs             Action: app-level commands queued by panels
+        ├── status.rs             StatusMessage: status-bar notifications with expiry
+        ├── state.rs              UiState; options, tween, view_params
         ├── style.rs              palette, lenses, sizing
-        ├── panels.rs             top_bar, status_bar, complex/interface controls, inspector, parameters, widgets
+        ├── panels.rs             top_bar, status_bar, complex/interface controls, inspector, widgets
+        │                         (panels/parameters.rs is drafted but not yet wired into panels.rs)
         ├── viewport.rs           Input, picking, scene dispatch; complex_scene, interface_scene, gizmo, grid, draw_list, plane_space
         └── export.rs             html.rs + template.html (frozen viewer), server.rs (--serve)
 ```
 
 Modules use the `foo.rs` + `foo/` layout (no `mod.rs`).
 
+There is deliberately **one** type for "a loaded structure": `dataset::ViewerDataset`. It
+owns the source `ComplexStructure`, every computed `InterfaceViewData`, and the
+analysis params that produced them. Editing chain-to-group membership goes through
+`InterfacePartition` (via `ViewerDataset::add_interface`/`remove_interface`), not a separate
+draft/commit pair.
+
 ## Load pipeline
 
 ```mermaid
 flowchart LR
-    src["StructureSource (file name + text)"] --> parse["ingest::parse_complex"]
+    path["file path"] --> parse["ingest::load_complex"]
     part["InterfacePartition (Group A / B chains)"]
     parse --> map["flatten::build_interface_map"]
     part --> map
@@ -65,7 +73,23 @@ flowchart LR
     surf --> ds
 ```
 
-Every step takes its slice of `AnalysisParams`. Meshing dominates the cost, so loads and recomputes run as background jobs.
+`loader::load_path`/`loader::load` run this whole pipeline for one file; every step
+takes its slice of `AnalysisParams`. Meshing dominates the cost, so loads run as
+background jobs (`jobs::JobQueue`) rather than blocking the UI thread.
+
+### Opening a structure after startup
+
+File → Open Structure… (native file dialog, `files::dialogs::pick_structures`) or
+dropping a `.pdb`/`.cif` file onto the window (`files::take_dropped`) both resolve to a
+list of paths and call `SmorgasprotApp::start_load`, which spawns one background job
+running `loader::load_paths` and timing it. On success the job's `JobOutput::Opened`
+**replaces the whole workspace** — `self.datasets`/`self.active` and the selection are
+reset to just the newly loaded structure(s) — and a success status message reports how
+long the load took. A failed load leaves the current workspace untouched and shows an
+error message instead. While a job is in flight, the status bar shows a spinner with
+the job's label instead of the usual message/dataset summary. Startup (`main.rs`) does
+not go through this path; it still loads the CLI file or bundled examples synchronously
+before the window opens.
 
 ## Core data model (`model.rs`)
 
@@ -82,13 +106,13 @@ Every step takes its slice of `AnalysisParams`. Meshing dominates the cost, so l
 
 ## App architecture
 
-Dependency order, low to high: `camera`, `dataset` → `workspace`, `state` → `style` → `panels`, `viewport` → `app`. `loader`, `jobs`, `files`, `persistence`, `export` are I/O edges used by `app` and `main`. Lower layers never import higher ones.
+Dependency order, low to high: `camera`, `dataset` → `state` → `style` → `panels`, `viewport` → `app`. `loader`, `jobs`, `files`, `persistence` (drafted, unwired), `export` are I/O edges used by `app` and `main`. Lower layers never import higher ones.
 
 Per frame, `SmorgasprotApp::update`:
 1. Advances tweens, expires the status message.
-2. Applies finished jobs (opened, recomputed, or session-restored structures).
-3. Takes dropped files and starts load jobs.
-4. Draws panels. Panels edit `UiState` directly and push `Action`s for app-level effects (open, save, export, recompute, select).
+2. Applies any finished load job, replacing the workspace on success (see above).
+3. Takes dropped files and starts a load job for any structure files among them.
+4. Draws panels. Panels edit `UiState` directly and push `Action`s for app-level effects (open, export, select, dismiss status).
 5. Draws the viewport. Only `viewport.rs` mutates camera and selection; scenes only paint.
 6. Applies the queued actions.
 
@@ -105,6 +129,11 @@ Every tunable number is a field in a `param_group!` struct: one declaration give
 Defaults reproduce the reference pipeline; the HTML export at defaults is a byte-identical regression check.
 
 ## Persistence
+
+**Not yet wired in** — `persistence.rs` and `panels/parameters.rs` are drafted for this
+but aren't declared in `lib.rs`/`panels.rs`, so none of the below exists in the running
+app today (there's no Open Recent, no Save/Open Session, and no Parameters window with
+a Recompute button). The design is kept here as the target for that follow-up milestone.
 
 | Tier | Contents | Storage |
 | --- | --- | --- |

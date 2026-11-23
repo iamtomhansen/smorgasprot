@@ -1,12 +1,13 @@
 //! File input/output: native dialogs (via `rfd`), drag-and-drop, and file-type detection.
 //! Dropped files carry a path natively and raw bytes on the web; [`InputFile`] hides the difference.
 
-use crate::persistence::session::FILE_SUFFIX;
-use smorgasprot_core::ingest::StructureFormat;
 use std::sync::Arc;
 
 /// Extensions offered by the Open Structure dialog.
 const STRUCTURE_EXTENSIONS: &[&str] = &["pdb", "ent", "cif", "mmcif", "gz"];
+/// Session file suffix; kept in sync with `persistence::session::FILE_SUFFIX` (not
+/// depended on directly since session persistence isn't wired up yet).
+const FILE_SUFFIX: &str = ".smorgasprot.json";
 
 /// What a file contains, judged by its name.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -14,6 +15,16 @@ pub enum FileKind {
     Structure,
     Session,
     Unknown,
+}
+
+/// True if `lower` (an already-lowercased file name) looks like a PDB/mmCIF structure,
+/// optionally gzipped (e.g. `foo.cif`, `foo.pdb.gz`).
+fn is_structure_file_name(lower: &str) -> bool {
+    let stripped = lower.strip_suffix(".gz").unwrap_or(lower);
+    STRUCTURE_EXTENSIONS
+        .iter()
+        .filter(|ext| **ext != "gz")
+        .any(|ext| stripped.ends_with(&format!(".{ext}")))
 }
 
 /// A file chosen by the user, by path (native) or by content (web drops).
@@ -35,7 +46,7 @@ impl InputFile {
         let lower = self.name.to_ascii_lowercase();
         if lower.ends_with(FILE_SUFFIX) || lower.ends_with(".json") {
             FileKind::Session
-        } else if StructureFormat::from_file_name(&self.name).is_some() {
+        } else if is_structure_file_name(&lower) {
             FileKind::Structure
         } else {
             FileKind::Unknown
@@ -78,8 +89,7 @@ pub fn is_hovering_files(ctx: &egui::Context) -> bool {
 /// Native file dialogs; they block the UI thread while open, which is acceptable for modal pickers.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod dialogs {
-    use super::{InputFile, STRUCTURE_EXTENSIONS};
-    use crate::persistence::session::FILE_SUFFIX;
+    use super::{FILE_SUFFIX, InputFile, STRUCTURE_EXTENSIONS};
     use std::path::PathBuf;
 
     pub fn pick_structures() -> Vec<InputFile> {

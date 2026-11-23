@@ -101,7 +101,7 @@ fn main() -> ExitCode {
     };
 
     let specs = args.specs();
-    if specs.is_empty() {
+    if specs.is_empty() && (args.export_only || args.serve) {
         eprintln!("No structure given and no bundled examples found.\n\n{USAGE}");
         return ExitCode::FAILURE;
     }
