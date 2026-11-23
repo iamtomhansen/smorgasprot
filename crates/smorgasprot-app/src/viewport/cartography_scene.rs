@@ -1,11 +1,11 @@
-//! Interface tab scene: atoms morphing between true 3D and the flat 2D map, with territories and contacts.
-//! Painted in fixed layers (territories < springs < arcs < atoms) rather than depth-sorted.
+//! Cartography ("Sandwich") tab scene: atoms morphing between true 3D and the flat 2D map, with territories and contacts.
+//! Painted in fixed layers (territories < springs < arcs < atoms < labels) rather than depth-sorted.
 
 use super::plane_space::PlaneFrame;
 use crate::camera::CameraState;
 use crate::dataset::{InterfaceViewData, ViewerDataset};
 use crate::state::{
-    AtomDrawParams, AtomSizeMode, ColorLens, EdgeColorLens, EdgeWidthLens, InterfaceViewSettings, LensParams,
+    AtomDrawParams, AtomSizeMode, CartographyViewSettings, ColorLens, EdgeColorLens, EdgeWidthLens, LensParams,
     NodeStrokeColorLens, Selection, TerritoryColorLens, UiState,
 };
 use crate::style::{Palette, lenses, palette, sizing};
@@ -29,7 +29,7 @@ struct Ctx<'a> {
     iface: &'a InterfaceViewData,
     camera: &'a CameraState,
     frame: PlaneFrame,
-    s: &'a InterfaceViewSettings,
+    s: &'a CartographyViewSettings,
     lenses: &'a LensParams,
     atom_draw: &'a AtomDrawParams,
     pal: &'a Palette,
@@ -44,7 +44,7 @@ impl Ctx<'_> {
 }
 
 /// Screen positions of every interface node under the current morph, indexed like `map.nodes`.
-pub fn project_nodes(ds: &ViewerDataset, rect: Rect, s: &InterfaceViewSettings) -> Vec<Pos2> {
+pub fn project_nodes(ds: &ViewerDataset, rect: Rect, s: &CartographyViewSettings) -> Vec<Pos2> {
     let Some(iface) = ds.active_interface() else { return Vec::new() };
     let frame = PlaneFrame::from(&iface.map.plane);
     iface
@@ -60,7 +60,7 @@ pub fn project_nodes(ds: &ViewerDataset, rect: Rect, s: &InterfaceViewSettings) 
 }
 
 /// Nearest visible node within [`PICK_RADIUS_PX`] of `pointer`.
-pub fn pick_atom(ds: &ViewerDataset, s: &InterfaceViewSettings, nodes: &[Pos2], pointer: Pos2) -> Option<AtomNodeIdx> {
+pub fn pick_atom(ds: &ViewerDataset, s: &CartographyViewSettings, nodes: &[Pos2], pointer: Pos2) -> Option<AtomNodeIdx> {
     let iface = ds.active_interface()?;
     nodes
         .iter()
@@ -72,7 +72,7 @@ pub fn pick_atom(ds: &ViewerDataset, s: &InterfaceViewSettings, nodes: &[Pos2], 
         .map(|(_, idx)| idx)
 }
 
-/// Paints the Interface tab; `nodes` comes from [`project_nodes`] for this frame.
+/// Paints the Cartography ("Sandwich") tab; `nodes` comes from [`project_nodes`] for this frame.
 pub fn paint(painter: &Painter, rect: Rect, ds: &ViewerDataset, state: &UiState, nodes: &[Pos2]) {
     let Some(iface) = ds.active_interface() else {
         painter.text(
@@ -84,7 +84,7 @@ pub fn paint(painter: &Painter, rect: Rect, ds: &ViewerDataset, state: &UiState,
         );
         return;
     };
-    let s = &state.interface;
+    let s = &state.cartography;
     let cx = Ctx {
         painter,
         rect,

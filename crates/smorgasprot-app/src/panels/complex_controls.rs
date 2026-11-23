@@ -8,7 +8,7 @@ use smorgasprot_core::InterfaceSide;
 
 /// Renders the Complex tab's side panel.
 pub fn show(ui: &mut Ui, ds: &mut ViewerDataset, state: &mut UiState) {
-    ui.heading("🧊 3D Complex Sandwich Setup");
+    ui.heading("🧊 3D Complex Assembly");
     ui.add_space(4.0);
 
     section(ui, "Active Interface", |ui| {
@@ -119,7 +119,7 @@ pub fn show(ui: &mut Ui, ds: &mut ViewerDataset, state: &mut UiState) {
     });
 
     ui.add_space(4.0);
-    if ui.button(RichText::new("Inspect Unwrapped Interface Map →").strong()).clicked() {
-        state.switch_tab(WorkspaceTab::Interface);
+    if ui.button(RichText::new("Inspect Sandwich Cartography →").strong()).clicked() {
+        state.switch_tab(WorkspaceTab::Cartography);
     }
 }

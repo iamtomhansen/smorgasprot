@@ -30,7 +30,7 @@ pub fn show(ui: &mut Ui, datasets: &[ViewerDataset], active: usize, state: &mut 
                 ui.close_menu();
             }
             ui.separator();
-            let s = &mut state.interface;
+            let s = &mut state.cartography;
             if ui.button("🔵 Solo Group A").clicked() {
                 s.solo(InterfaceSide::SideA);
                 ui.close_menu();
@@ -51,8 +51,8 @@ pub fn show(ui: &mut Ui, datasets: &[ViewerDataset], active: usize, state: &mut 
 
         ui.separator();
         for (tab, label) in [
-            (WorkspaceTab::Complex, "🧊 1. Complex (3D Sandwich)"),
-            (WorkspaceTab::Interface, "🗺️ 2. Interface (2D/3D Cartography)"),
+            (WorkspaceTab::Complex, "🧊 1. Complex (3D Assembly)"),
+            (WorkspaceTab::Cartography, "🥪 2. Sandwich (2D/3D Cartography)"),
         ] {
             if ui.selectable_label(state.active_tab == tab, label).clicked() {
                 state.switch_tab(tab);

@@ -102,9 +102,9 @@ impl TerritoryLayerStyle {
     }
 }
 
-/// Camera, morph, visual-channel layers, and tweened group settings for the Interface workspace tab.
+/// Camera, morph, visual-channel layers, and tweened group settings for the Cartography (Sandwich) workspace tab.
 #[derive(Clone, Debug)]
-pub struct InterfaceViewSettings {
+pub struct CartographyViewSettings {
     pub camera: CameraState,
     /// 3D (`0`) → bas-relief → flat 2D map (`1`).
     pub flatten: Tween,
@@ -123,7 +123,7 @@ pub struct InterfaceViewSettings {
     pub show_backbone: bool,
 }
 
-impl Default for InterfaceViewSettings {
+impl Default for CartographyViewSettings {
     fn default() -> Self {
         Self {
             camera: CameraState::default(),
@@ -141,7 +141,7 @@ impl Default for InterfaceViewSettings {
     }
 }
 
-impl InterfaceViewSettings {
+impl CartographyViewSettings {
     /// Applies a multi-channel [`ChannelPreset`] across the atom, edge, and territory layers.
     pub fn apply_preset(&mut self, preset: ChannelPreset) {
         self.atoms.reset();

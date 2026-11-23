@@ -34,7 +34,7 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &UiState) {
             residue_card(ui, ds, terr, &pal.sides, &pal.chrome);
             if let Some(node) = hovered {
                 ui.separator();
-                atom_card(ui, ds, node, state.interface.bfactor_mode);
+                atom_card(ui, ds, node, state.cartography.bfactor_mode);
             }
             ui.separator();
             contacts_list(ui, ds, terr, &pal.contacts);
@@ -46,7 +46,7 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &UiState) {
 
     section(ui, "Interface Metrics & Diagnostics", |ui| diagnostics(ui, ds, &pal.sides));
 
-    let s = &state.interface;
+    let s = &state.cartography;
     section(ui, "Legend", |ui| {
         let a = ds.group_name(InterfaceSide::SideA);
         let b = ds.group_name(InterfaceSide::SideB);

@@ -1,11 +1,11 @@
 //! Central 3D canvas: camera input, picking, and dispatch to the active tab's scene.
 //! Scenes are pure painters; only this module mutates camera and selection state.
 
+mod cartography_scene;
 mod complex_scene;
 mod draw_list;
 mod gizmo;
 mod grid;
-mod interface_scene;
 mod plane_space;
 
 use crate::dataset::ViewerDataset;
@@ -35,8 +35,8 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState) {
     {
         state.active_camera_mut().snap_to(axis);
     } else {
-        let flat = state.active_tab == WorkspaceTab::Interface
-            && state.interface.flatten.value > state.view_params.navigation.flat_pan_threshold;
+        let flat = state.active_tab == WorkspaceTab::Cartography
+            && state.cartography.flatten.value > state.view_params.navigation.flat_pan_threshold;
         let nav = state.view_params.navigation.clone();
         state.active_camera_mut().handle_input(ui, &response, flat, &nav);
     }
@@ -56,13 +56,13 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState) {
                 &state.palette.chrome,
             );
         }
-        WorkspaceTab::Interface => {
-            let nodes = interface_scene::project_nodes(ds, rect, &state.interface);
+        WorkspaceTab::Cartography => {
+            let nodes = cartography_scene::project_nodes(ds, rect, &state.cartography);
 
             // Hover picking is skipped over the gizmo so caps stay clickable.
             let hovered_node = pointer
                 .filter(|_| !over_gizmo)
-                .and_then(|p| interface_scene::pick_atom(ds, &state.interface, &nodes, p))
+                .and_then(|p| cartography_scene::pick_atom(ds, &state.cartography, &nodes, p))
                 .and_then(|idx| ds.node(idx));
             state.selection.hovered_atom = hovered_node.map(|n| n.global_atom);
 
@@ -73,7 +73,7 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState) {
                     .and_then(|n| ds.territory(n.territory))
                     .map(|t| t.global_residue);
             }
-            interface_scene::paint(&painter, rect, ds, state, &nodes);
+            cartography_scene::paint(&painter, rect, ds, state, &nodes);
         }
     }
 

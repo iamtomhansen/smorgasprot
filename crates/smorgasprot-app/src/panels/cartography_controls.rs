@@ -1,4 +1,4 @@
-//! Interface tab controls: flatten and butterfly morphs, quick presets, layer customization popovers, and group visibility.
+//! Cartography ("Sandwich") tab controls: flatten and butterfly morphs, quick presets, layer customization popovers, and group visibility.
 
 use super::widgets::{alpha_slider, channel_combo, choice_combo, section, tween_presets, tween_slider};
 use crate::dataset::ViewerDataset;
@@ -14,13 +14,13 @@ const OPEN_BOOK_MIN_B_ALPHA: f32 = 0.85;
 /// Minimum width of a layer customization popover so dropdown labels fit cleanly.
 const POPOVER_MIN_WIDTH: f32 = 290.0;
 
-/// Renders the Interface tab's side panel.
+/// Renders the Sandwich (Cartography) tab's side panel.
 pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState) {
-    ui.heading("🗺️ 2D/3D Interface Cartography");
+    ui.heading("🥪 Sandwich Cartography");
     ui.add_space(4.0);
     let side_a_color = state.palette.sides.side_light(InterfaceSide::SideA);
     let side_b_color = state.palette.sides.side_light(InterfaceSide::SideB);
-    let s = &mut state.interface;
+    let s = &mut state.cartography;
 
     section(ui, "1. 3D ↔ 2D Flattening (t)", |ui| {
         let t = s.flatten.value;

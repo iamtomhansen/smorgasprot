@@ -1,8 +1,8 @@
 //! UI session state: everything the user can change that is not part of a dataset.
 //! Global session state lives here; each workspace tab encapsulates its state in a submodule.
 
+pub mod cartography;
 pub mod complex;
-pub mod interface;
 mod tween;
 pub mod view_params;
 
@@ -10,8 +10,8 @@ pub use crate::style::{
     AtomSizeMode, BFactorMode, ChannelPreset, ColorLens, EdgeColorLens, EdgeWidthLens, LabelBuilder, LabelValueChannel,
     NodeStrokeColorLens, ResidueNameStyle, ScalarMetric, TerritoryColorLens, TerritoryStrokeLens, VisualChannel,
 };
+pub use cartography::{AtomLayerStyle, CartographyViewSettings, EdgeLayerStyle, TerritoryLayerStyle};
 pub use complex::{ComplexViewSettings, InterfaceDisplayMode};
-pub use interface::{AtomLayerStyle, EdgeLayerStyle, InterfaceViewSettings, TerritoryLayerStyle};
 pub use tween::Tween;
 pub use view_params::{
     AtomDrawParams, ExplodeParams, GridParams, LensParams, MorphParams, NavigationParams, OpacityParams, StatusParams,
@@ -34,10 +34,10 @@ pub trait Choice: Copy + PartialEq + 'static {
 /// Top-level workspace tab (Blender-style).
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq)]
 pub enum WorkspaceTab {
-    /// 3D assembly setup: surfaces, cartoon, explode.
+    /// 3D macromolecular complex assembly setup: surfaces, cartoon, explode.
     Complex,
-    /// Unwrapped 2D/3D interface cartography.
-    Interface,
+    /// Unwrapped 2D/3D interface cartography ("Sandwich" workspace).
+    Cartography,
 }
 
 /// Visibility toggles for collapsible side/bottom panels and floating windows.
@@ -60,14 +60,13 @@ impl Default for PanelVisibility {
     }
 }
 
-/// Complete per-session UI state, owned by the app and shared by panels and viewport. A selected
-/// interface, and selections within, are carried across workspace tabs.
+/// Complete per-session UI state, owned by the app and shared by panels and viewport.
 #[derive(Clone, Debug)]
 pub struct UiState {
     pub active_tab: WorkspaceTab,
     pub panels: PanelVisibility,
     pub complex: ComplexViewSettings,
-    pub interface: InterfaceViewSettings,
+    pub cartography: CartographyViewSettings,
     pub selection: Selection,
     pub view_params: ViewParams,
     pub palette: Palette,
@@ -79,7 +78,7 @@ impl Default for UiState {
             active_tab: WorkspaceTab::Complex,
             panels: PanelVisibility::default(),
             complex: ComplexViewSettings::default(),
-            interface: InterfaceViewSettings::default(),
+            cartography: CartographyViewSettings::default(),
             selection: Selection::default(),
             view_params: ViewParams::default(),
             palette: Palette::load_default(),
@@ -92,7 +91,7 @@ impl UiState {
     pub fn active_camera(&self) -> &CameraState {
         match self.active_tab {
             WorkspaceTab::Complex => &self.complex.camera,
-            WorkspaceTab::Interface => &self.interface.camera,
+            WorkspaceTab::Cartography => &self.cartography.camera,
         }
     }
 
@@ -100,7 +99,7 @@ impl UiState {
     pub fn active_camera_mut(&mut self) -> &mut CameraState {
         match self.active_tab {
             WorkspaceTab::Complex => &mut self.complex.camera,
-            WorkspaceTab::Interface => &mut self.interface.camera,
+            WorkspaceTab::Cartography => &mut self.cartography.camera,
         }
     }
 
@@ -109,7 +108,7 @@ impl UiState {
         if self.active_tab != tab {
             match self.active_tab {
                 WorkspaceTab::Complex => self.complex.finish_animations(),
-                WorkspaceTab::Interface => self.interface.finish_animations(),
+                WorkspaceTab::Cartography => self.cartography.finish_animations(),
             }
             self.active_tab = tab;
         }
@@ -120,7 +119,7 @@ impl UiState {
         let rate = self.view_params.navigation.animation_rate_per_s;
         match self.active_tab {
             WorkspaceTab::Complex => self.complex.step_animations(dt, rate),
-            WorkspaceTab::Interface => self.interface.step_animations(dt, rate),
+            WorkspaceTab::Cartography => self.cartography.step_animations(dt, rate),
         }
     }
 }
