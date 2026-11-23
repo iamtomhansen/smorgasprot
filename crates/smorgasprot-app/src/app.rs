@@ -42,6 +42,13 @@ impl SmorgasprotApp {
                 self.active = idx;
                 // Atom and residue indices are per-dataset, so the old selection is cleared.
                 self.state.selection.clear();
+                let draw_preset = self.state.complex.surface.draw_preset;
+                let draw_surface = &self.state.complex.surface.draw_mesh;
+                if self.datasets[idx].applied_draw_preset() != draw_preset
+                    || self.datasets[idx].applied_draw_surface() != draw_surface
+                {
+                    self.datasets[idx].recompute_draw_surfaces(draw_preset, draw_surface);
+                }
             }
             Action::SelectDataset(_) => {}
             Action::ExportHtml => self.status = Some(self.export_html(now)),
@@ -80,6 +87,13 @@ impl eframe::App for SmorgasprotApp {
         let (now, dt) = ctx.input(|i| (i.time, i.stable_dt.min(MAX_DT_S)));
         if self.state.step_animations(dt) {
             ctx.request_repaint();
+        }
+
+        // Apply any debounced presentation surface remesh whose timer has elapsed before rendering.
+        let draw_preset = self.state.complex.surface.draw_preset;
+        let draw_surface = self.state.complex.surface.draw_mesh.clone();
+        for ds in &mut self.datasets {
+            ds.poll_draw_surface_remesh(now, draw_preset, &draw_surface);
         }
 
         // Expire auto-timed status messages, and schedule a wake-up when due.
@@ -133,6 +147,15 @@ impl eframe::App for SmorgasprotApp {
 
         for action in actions {
             self.apply(action, now);
+        }
+
+        // Schedule wake-up if a panel scheduled a debounced presentation surface remesh during this frame.
+        let draw_preset = self.state.complex.surface.draw_preset;
+        let draw_surface = &self.state.complex.surface.draw_mesh;
+        for ds in &mut self.datasets {
+            if let Some(rem) = ds.poll_draw_surface_remesh(now, draw_preset, draw_surface) {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(rem));
+            }
         }
     }
 }

@@ -2,9 +2,9 @@
 //! customization popovers, and group visibility.
 
 use super::widgets::{
-    EDGE_WIDTH_RANGE, RADIUS_RANGE, bare_alpha_slider, choice_combo, choice_combo_short, color_channel_control,
-    customize_popover, max_text_width, popover_header, scalar_channel_control, section, truncate_paren, tween_presets,
-    tween_slider,
+    EDGE_WIDTH_RANGE, RADIUS_RANGE, UNIT_RANGE, bare_slider, choice_combo, choice_combo_short, color_channel_control,
+    customize_popover, max_text_width, popover_header, row_height, scalar_channel_control, section, truncate_paren,
+    tween_presets, tween_slider,
 };
 use crate::dataset::ViewerDataset;
 use crate::state::{
@@ -178,8 +178,8 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState) {
     });
 
     section(ui, "4. Group visibility", |ui| {
-        let name_a = RichText::new(format!("{}:", ds.group_name(InterfaceSide::SideA))).color(side_a_color);
-        let name_b = RichText::new(format!("{}:", ds.group_name(InterfaceSide::SideB))).color(side_b_color);
+        let name_a = RichText::new(ds.group_name(InterfaceSide::SideA)).color(side_a_color);
+        let name_b = RichText::new(ds.group_name(InterfaceSide::SideB)).color(side_b_color);
         Grid::new("carto_group_visibility_grid")
             .num_columns(3)
             .spacing([8.0, 6.0])
@@ -208,12 +208,13 @@ fn layer_channel_row(
     add_contents: impl FnOnce(&mut Ui),
 ) {
     ui.horizontal(|ui| {
+        let h = row_height(ui);
         let spacing = ui.spacing().item_spacing.x;
-        ui.allocate_ui_with_layout(vec2(col1_w, 18.0), Layout::left_to_right(Align::Center), |ui| {
+        ui.allocate_ui_with_layout(vec2(col1_w, h), Layout::left_to_right(Align::Center), |ui| {
             ui.label(RichText::new(name).strong());
         });
         let mid_w = (ui.available_width() - col3_w - spacing).max(0.0);
-        ui.allocate_ui_with_layout(vec2(mid_w, 18.0), Layout::left_to_right(Align::Center), |ui| {
+        ui.allocate_ui_with_layout(vec2(mid_w, h), Layout::left_to_right(Align::Center), |ui| {
             ui.add(egui::Label::new(RichText::new(summary).weak()).truncate());
         });
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -224,7 +225,7 @@ fn layer_channel_row(
 
 fn group_visibility_row(ui: &mut Ui, label: RichText, alpha: &mut Tween) {
     ui.label(label);
-    bare_alpha_slider(ui, alpha);
+    bare_slider(ui, alpha, UNIT_RANGE);
     let mut visible = alpha.target > 0.01;
     if ui.checkbox(&mut visible, "").on_hover_text("Toggle group visibility").changed() {
         alpha.animate_to(if visible { 1.0 } else { 0.0 });

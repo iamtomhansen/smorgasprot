@@ -30,9 +30,22 @@ crate::param_group! {
         /// Extra empty margin around the chain's bounding box (Å).
         grid_margin_extra_a: f32 = 2.75, 0.5..=6.0, "Bounding grid extra margin", "Å";
         /// Laplacian smoothing passes after extraction.
-        smooth_passes: usize = 2, 0..=10, "Smoothing passes", "";
+        smooth_passes: usize = 1, 0..=10, "Smoothing passes", "";
         /// Vertices closer than this are merged (Å).
-        vertex_merge_distance_a: f32 = 0.25, 0.0..=1.0, "Vertex merge distance", "Å";
+        vertex_merge_distance_a: f32 = 0.15, 0.0..=1.0, "Vertex merge distance", "Å";
+    }
+}
+
+impl SurfaceParams {
+    /// Presentation-oriented defaults optimized for smooth interactive viewport rendering.
+    pub fn display() -> Self {
+        Self {
+            shell_inflate_a: 0.55,
+            smooth_union_k_a: 0.65,
+            grid_margin_extra_a: 2.75,
+            smooth_passes: 2,
+            vertex_merge_distance_a: 0.25,
+        }
     }
 }
 
@@ -48,16 +61,18 @@ pub const MAX_VDW_RADIUS_A: f32 = 1.85;
 ///
 /// Retained as a general-purpose sphere primitive and used to select the target resolution of
 /// [`build_chain_surface_mesh_with_preset`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GeodesicPreset {
+    /// Hyper-minimal resolution (6-vertex, 8-face unsubdivided octahedron / 2.75 Å surface voxel spacing).
+    Octahedron8,
     /// Coarse resolution (12-vertex icosahedron template / 2.2 Å surface voxel spacing).
     Icosahedron12,
     /// Standard fast resolution (18-vertex 1-subdivided octahedron template / 1.75 Å surface voxel spacing).
-    #[default]
     Octahedron18,
     /// Medium-fine resolution (42-vertex 1-subdivided icosahedron template / 1.45 Å surface voxel spacing).
     Icosahedron42,
-    /// Fine resolution (66-vertex 2-subdivided octahedron template / 1.20 Å surface voxel spacing).
+    /// Fine analytical resolution (66-vertex 2-subdivided octahedron template / 1.20 Å surface voxel spacing).
+    #[default]
     Octahedron66,
 }
 
@@ -71,6 +86,7 @@ pub enum GeodesicPreset {
 /// wound counter-clockwise when viewed from outside the sphere.
 pub fn unit_geodesic_sphere(preset: GeodesicPreset) -> (Vec<Vec3>, Vec<[u32; 3]>) {
     let (base_verts, base_tris, subdivisions): (Vec<Vec3>, Vec<[u32; 3]>, usize) = match preset {
+        GeodesicPreset::Octahedron8 => (octahedron_base().0, octahedron_base().1, 0),
         GeodesicPreset::Octahedron18 => (octahedron_base().0, octahedron_base().1, 1),
         GeodesicPreset::Octahedron66 => (octahedron_base().0, octahedron_base().1, 2),
         GeodesicPreset::Icosahedron12 => (icosahedron_base().0, icosahedron_base().1, 0),
@@ -197,6 +213,7 @@ fn smin_poly_3d(a: f32, b: f32, k: f32) -> f32 {
 #[inline]
 pub fn voxel_spacing_for_preset(preset: GeodesicPreset) -> f32 {
     match preset {
+        GeodesicPreset::Octahedron8 => 2.75,
         GeodesicPreset::Icosahedron12 => 2.20,
         GeodesicPreset::Octahedron18 => 1.75,
         GeodesicPreset::Icosahedron42 => 1.45,
@@ -747,6 +764,10 @@ mod tests {
 
     #[test]
     fn test_geodesic_presets_vertex_and_triangle_counts() {
+        let (v8, t8) = unit_geodesic_sphere(GeodesicPreset::Octahedron8);
+        assert_eq!(v8.len(), 6);
+        assert_eq!(t8.len(), 8);
+
         let (v12, t12) = unit_geodesic_sphere(GeodesicPreset::Icosahedron12);
         assert_eq!(v12.len(), 12);
         assert_eq!(t12.len(), 20);

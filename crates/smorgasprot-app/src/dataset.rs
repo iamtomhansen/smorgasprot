@@ -2,12 +2,18 @@
 
 use serde::Serialize;
 use smorgasprot_core::{
-    AnalysisParams, AtomNode, AtomNodeIdx, GlobalChainIdx, ChainName, ComplexStructure, Element, GlobalAtomIdx, GlobalResidueIdx,
-    InterfaceGeometry, InterfaceMap, InterfacePartition, InterfaceSide, ResidueTerritory, SurfaceMesh, TerritoryIdx,
-    flatten::FlatteningStats, interface_geometry::build_interface_geometry, surface::build_chain_surface_mesh,
+    AnalysisParams, AtomNode, AtomNodeIdx, ChainName, ComplexStructure, Element, GlobalAtomIdx, GlobalChainIdx,
+    GlobalResidueIdx, InterfaceGeometry, InterfaceMap, InterfacePartition, InterfaceSide, ResidueTerritory,
+    SurfaceMesh, TerritoryIdx,
+    flatten::FlatteningStats,
+    interface_geometry::{
+        GeometryParams, build_interface_geometry, build_interface_negative_mesh, compute_mesh_volume_a3,
+        extract_interface_envelope_mesh,
+    },
+    surface::{GeodesicPreset, SurfaceParams, build_chain_surface_mesh_with_preset},
 };
 
-/// Per-chain geometry for the Complex tab (alpha carbon trace + molecular surface).
+/// Per-chain presentation geometry for the Complex tab (alpha carbon trace + display molecular surface).
 #[derive(Serialize, Clone, Debug)]
 pub struct ChainVisualData {
     /// PDB-style chain ID (e.g. "A", "B")
@@ -18,8 +24,9 @@ pub struct ChainVisualData {
     pub atom_count: usize,
     /// Alpha carbon positions in plane-local space.
     pub ca_positions: Vec<[f32; 3]>,
-    /// Molecular surface mesh in plane-local space.
-    pub surface_mesh: SurfaceMesh,
+    /// Presentation-only molecular surface mesh in plane-local space.
+    #[serde(rename = "surface_mesh")]
+    pub draw_surface_mesh: SurfaceMesh,
 }
 
 /// User inspectable information about a given atom.
@@ -52,75 +59,105 @@ impl AtomMeta {
     }
 }
 
-/// Precomputed visual & geometric data for one macromolecular interface partition. Many interfaces
-/// can be precomputed for a single complex. They are stored in the [`ViewerDataset`].
+/// Precomputed analytical data and presentation meshes for one macromolecular interface partition.
 #[derive(Serialize, Clone, Debug)]
 pub struct InterfaceViewData {
     /// Interface partition demarcation rules & atom membership.
     pub partition: InterfacePartition,
-    /// 2D metric flattening statistics & diagnostics.
+    /// 2D metric flattening statistics & diagnostics (analytical).
     pub stats: FlatteningStats,
     /// 2D interface map (SVD plane, nodes, edges, Voronoi territories).
     pub map: InterfaceMap,
-    /// 3D boundary meshes (envelope, separator sheet, negative space).
-    pub geometry: InterfaceGeometry,
+    /// Presentation 3D boundary meshes (envelope, separator sheet, negative space).
+    #[serde(rename = "geometry")]
+    pub draw_geometry: InterfaceGeometry,
+    /// Analytical sub-solvent void volume (Å³), computed strictly from `AnalysisParams`.
+    #[serde(skip)]
+    pub analysis_void_volume_a3: f32,
     /// User-inspectable atom metadata for interfacial atoms (1:1 with `map.nodes`).
     pub atom_meta: Vec<AtomMeta>,
-    /// Interface side of each `geometry.envelope_mesh` vertex (render cache, not exported).
+    /// Interface side of each `draw_geometry.envelope_mesh` vertex (render cache, not exported).
     #[serde(skip)]
-    pub envelope_sides: Vec<InterfaceSide>,
+    pub draw_envelope_sides: Vec<InterfaceSide>,
 }
 
 impl InterfaceViewData {
-    /// Computes flattening, boundary geometry, and metadata for a partition.
-    pub fn compute(
+    fn envelope_sides_for(
+        partition: &InterfacePartition,
         complex: &ComplexStructure,
-        mut partition: InterfacePartition,
-        chain_meshes: &[SurfaceMesh],
-        params: &AnalysisParams,
-    ) -> Result<Self, String> {
-        partition.recompute_membership(complex);
-        let (map, stats) = smorgasprot_core::flatten::build_interface_map(complex, &partition, params)?;
-        let geometry = build_interface_geometry(complex, &partition, &map, chain_meshes, &params.geometry);
+        envelope: &SurfaceMesh,
+    ) -> Vec<InterfaceSide> {
         let atom_sides = partition.atom_sides(complex);
-        let envelope_sides = geometry
-            .envelope_mesh
+        envelope
             .nearest_atom
             .iter()
             .map(|g| atom_sides.get(g.0 as usize).copied().unwrap_or(InterfaceSide::None))
-            .collect();
+            .collect()
+    }
+
+    /// Computes analytical flattening, void volume, metadata, and initial display meshes for a partition.
+    pub fn compute(
+        complex: &ComplexStructure,
+        mut partition: InterfacePartition,
+        draw_chain_meshes: &[SurfaceMesh],
+        analysis_params: &AnalysisParams,
+    ) -> Result<Self, String> {
+        partition.recompute_membership(complex);
+        let (map, stats) = smorgasprot_core::flatten::build_interface_map(complex, &partition, analysis_params)?;
+        let draw_geometry =
+            build_interface_geometry(complex, &partition, &map, draw_chain_meshes, &analysis_params.geometry);
+        let analysis_void_volume_a3 = draw_geometry.void_volume_a3;
+        let draw_envelope_sides = Self::envelope_sides_for(&partition, complex, &draw_geometry.envelope_mesh);
         let atom_meta = map.nodes.iter().map(|n| atom_meta(complex, n)).collect();
         Ok(Self {
             partition,
             stats,
             map,
-            geometry,
+            draw_geometry,
+            analysis_void_volume_a3,
             atom_meta,
-            envelope_sides,
+            draw_envelope_sides,
         })
     }
 
-    /// Recomputes 3D boundary meshes using updated parameters or chain meshes.
-    pub fn recompute_geometry(&mut self, complex: &ComplexStructure, chain_meshes: &[SurfaceMesh], params: &AnalysisParams) {
-        self.geometry = build_interface_geometry(complex, &self.partition, &self.map, chain_meshes, &params.geometry);
-        let atom_sides = self.partition.atom_sides(complex);
-        self.envelope_sides = self
-            .geometry
-            .envelope_mesh
-            .nearest_atom
-            .iter()
-            .map(|g| atom_sides.get(g.0 as usize).copied().unwrap_or(InterfaceSide::None))
-            .collect();
+    /// Re-extracts only the presentation contact-envelope mesh from updated display chain surfaces.
+    /// Analytical metrics (`stats`, `map`, `analysis_void_volume_a3`) are never modified.
+    pub fn recompute_draw_envelope(&mut self, complex: &ComplexStructure, draw_chain_meshes: &[SurfaceMesh]) {
+        let envelope_mesh =
+            extract_interface_envelope_mesh(draw_chain_meshes, complex, &self.partition, &self.map.nodes);
+        self.draw_envelope_sides = Self::envelope_sides_for(&self.partition, complex, &envelope_mesh);
+        self.draw_geometry.envelope_mesh = envelope_mesh;
     }
 
-    /// Re-evaluates partition rules, flattens, and rebuilds geometry and metadata.
-    pub fn recompute_interface(&mut self, complex: &ComplexStructure, chain_meshes: &[SurfaceMesh], params: &AnalysisParams) -> Result<(), String> {
+    /// Recomputes presentation 3D boundary meshes from `draw_params` without altering `analysis_void_volume_a3`.
+    pub fn recompute_draw_geometry(
+        &mut self,
+        complex: &ComplexStructure,
+        draw_chain_meshes: &[SurfaceMesh],
+        draw_params: &GeometryParams,
+    ) {
+        let mut draw_geometry =
+            build_interface_geometry(complex, &self.partition, &self.map, draw_chain_meshes, draw_params);
+        draw_geometry.void_volume_a3 = self.analysis_void_volume_a3;
+        self.draw_envelope_sides = Self::envelope_sides_for(&self.partition, complex, &draw_geometry.envelope_mesh);
+        self.draw_geometry = draw_geometry;
+    }
+
+    /// Re-evaluates analytical partition rules, flattening, void volume, and metadata from `analysis_params`.
+    pub fn recompute_analysis(
+        &mut self,
+        complex: &ComplexStructure,
+        draw_chain_meshes: &[SurfaceMesh],
+        analysis_params: &AnalysisParams,
+    ) -> Result<(), String> {
         self.partition.recompute_membership(complex);
-        let (map, stats) = smorgasprot_core::flatten::build_interface_map(complex, &self.partition, params)?;
+        let (map, stats) = smorgasprot_core::flatten::build_interface_map(complex, &self.partition, analysis_params)?;
+        let analysis_negative = build_interface_negative_mesh(complex, &map.nodes, &analysis_params.geometry);
+        self.analysis_void_volume_a3 = compute_mesh_volume_a3(&analysis_negative);
         self.atom_meta = map.nodes.iter().map(|n| atom_meta(complex, n)).collect();
         self.map = map;
         self.stats = stats;
-        self.recompute_geometry(complex, chain_meshes, params);
+        self.recompute_draw_geometry(complex, draw_chain_meshes, &analysis_params.geometry);
         Ok(())
     }
 }
@@ -146,17 +183,31 @@ pub struct ViewerDataset {
     /// Source complex structure (retained in-memory for live recomputation; not exported).
     #[serde(skip)]
     pub complex: Option<ComplexStructure>,
+    /// Immutable analytical parameters used to compute scientific maps, stats, and void volumes.
+    #[serde(skip)]
+    analysis_params: AnalysisParams,
+    /// Last presentation tessellation preset baked into `chains[*].draw_surface_mesh`.
+    #[serde(skip)]
+    applied_draw_preset: GeodesicPreset,
+    /// Last presentation `SurfaceParams` baked into `chains[*].draw_surface_mesh`.
+    #[serde(skip)]
+    applied_draw_surface: SurfaceParams,
+    /// Pending debounced presentation surface remesh deadline (`egui` time in seconds).
+    #[serde(skip)]
+    draw_remesh_due: Option<f64>,
 }
 
 impl ViewerDataset {
-    /// Builds chain surfaces once and evaluates all given interface partitions.
+    /// Builds initial chain display surfaces and evaluates all given analytical interface partitions.
     pub fn new(
         id: impl Into<String>,
         title: impl Into<String>,
         complex: &ComplexStructure,
         partitions: Vec<InterfacePartition>,
-        params: &AnalysisParams,
+        analysis_params: &AnalysisParams,
     ) -> Result<Self, String> {
+        let initial_preset = GeodesicPreset::Octahedron18;
+        let initial_draw_surface = SurfaceParams::display();
         let chains: Vec<ChainVisualData> = complex
             .chains
             .iter()
@@ -166,14 +217,19 @@ impl ViewerDataset {
                 residue_count: (chain.residue_range.1 - chain.residue_range.0) as usize,
                 atom_count: (chain.atom_range.1 - chain.atom_range.0) as usize,
                 ca_positions: ca_trace(complex, chain.residue_range),
-                surface_mesh: build_chain_surface_mesh(complex, GlobalChainIdx(c_idx as u32), &params.surface),
+                draw_surface_mesh: build_chain_surface_mesh_with_preset(
+                    complex,
+                    GlobalChainIdx(c_idx as u32),
+                    initial_preset,
+                    &initial_draw_surface,
+                ),
             })
             .collect();
 
-        let chain_meshes: Vec<SurfaceMesh> = chains.iter().map(|c| c.surface_mesh.clone()).collect();
+        let draw_chain_meshes: Vec<SurfaceMesh> = chains.iter().map(|c| c.draw_surface_mesh.clone()).collect();
         let mut interfaces = Vec::with_capacity(partitions.len());
         for part in partitions {
-            interfaces.push(InterfaceViewData::compute(complex, part, &chain_meshes, params)?);
+            interfaces.push(InterfaceViewData::compute(complex, part, &draw_chain_meshes, analysis_params)?);
         }
         let active_interface = if interfaces.is_empty() { None } else { Some(0) };
 
@@ -185,20 +241,62 @@ impl ViewerDataset {
             active_interface,
             default_origin: complex_centroid(complex),
             complex: Some(complex.clone()),
+            analysis_params: analysis_params.clone(),
+            applied_draw_preset: initial_preset,
+            applied_draw_surface: initial_draw_surface,
+            draw_remesh_due: None,
         })
     }
 
-    /// Adds a new interface partition, precomputing its map and geometry and making it active.
-    pub fn add_interface(&mut self, partition: InterfacePartition, params: &AnalysisParams) -> Result<usize, String> {
+    fn draw_chain_meshes(&self) -> Vec<SurfaceMesh> {
+        self.chains.iter().map(|c| c.draw_surface_mesh.clone()).collect()
+    }
+
+    /// Read-only access to the analytical parameters that produced this dataset's scientific metrics.
+    pub fn analysis_params(&self) -> &AnalysisParams {
+        &self.analysis_params
+    }
+
+    /// Presentation tessellation preset currently reflected by `chains[*].draw_surface_mesh`.
+    pub fn applied_draw_preset(&self) -> GeodesicPreset {
+        self.applied_draw_preset
+    }
+
+    /// Presentation surface parameters currently reflected by `chains[*].draw_surface_mesh`.
+    pub fn applied_draw_surface(&self) -> &SurfaceParams {
+        &self.applied_draw_surface
+    }
+
+    /// Adds a new interface partition, precomputing its analytical map and presentation geometry.
+    pub fn add_interface(
+        &mut self,
+        partition: InterfacePartition,
+        analysis_params: &AnalysisParams,
+    ) -> Result<usize, String> {
         let Some(complex) = &self.complex else {
             return Err("No complex structure available for interface computation".into());
         };
-        let chain_meshes: Vec<SurfaceMesh> = self.chains.iter().map(|c| c.surface_mesh.clone()).collect();
-        let iface = InterfaceViewData::compute(complex, partition, &chain_meshes, params)?;
+        let draw_chain_meshes = self.draw_chain_meshes();
+        let iface = InterfaceViewData::compute(complex, partition, &draw_chain_meshes, analysis_params)?;
         self.interfaces.push(iface);
         let idx = self.interfaces.len() - 1;
         self.active_interface = Some(idx);
         Ok(idx)
+    }
+
+    /// Removes the interface at `idx` and keeps `active_interface` valid.
+    pub fn remove_interface(&mut self, idx: usize) {
+        if idx >= self.interfaces.len() {
+            return;
+        }
+        self.interfaces.remove(idx);
+        self.active_interface = match self.active_interface {
+            Some(active) if active == idx => {
+                (!self.interfaces.is_empty()).then(|| idx.min(self.interfaces.len() - 1))
+            }
+            Some(active) if active > idx => Some(active - 1),
+            other => other,
+        };
     }
 
     /// Removes all computed interface partitions, leaving the bare 3D complex.
@@ -207,25 +305,57 @@ impl ViewerDataset {
         self.active_interface = None;
     }
 
-    /// Recomputes the chain surface meshes and interface geometry using updated parameters.
-    pub fn recompute_surfaces(&mut self, params: &AnalysisParams) {
-        let Some(complex) = &self.complex else { return };
-        for (c_idx, chain) in self.chains.iter_mut().enumerate() {
-            chain.surface_mesh = build_chain_surface_mesh(complex, GlobalChainIdx(c_idx as u32), &params.surface);
-        }
-        let chain_meshes: Vec<SurfaceMesh> = self.chains.iter().map(|c| c.surface_mesh.clone()).collect();
-        for iface in &mut self.interfaces {
-            iface.recompute_geometry(complex, &chain_meshes, params);
+    /// Schedules a debounced presentation surface remesh after `delay_s` seconds of inactivity.
+    pub fn schedule_draw_surface_remesh(&mut self, now: f64, delay_s: f64) {
+        self.draw_remesh_due = Some(now + delay_s);
+    }
+
+    /// Runs any pending presentation surface remesh whose deadline has arrived, or returns remaining wait seconds.
+    pub fn poll_draw_surface_remesh(
+        &mut self,
+        now: f64,
+        draw_preset: GeodesicPreset,
+        draw_surface: &SurfaceParams,
+    ) -> Option<f64> {
+        let due = self.draw_remesh_due?;
+        if now >= due {
+            self.draw_remesh_due = None;
+            self.recompute_draw_surfaces(draw_preset, draw_surface);
+            None
+        } else {
+            Some(due - now)
         }
     }
 
-    /// Re-extracts and flattens the active interface, updating the map, derived meshes, and atom metadata.
-    pub fn recompute_interface(&mut self, params: &AnalysisParams) -> Result<(), String> {
+    /// Recomputes presentation chain surfaces and interface contact envelopes from `draw_preset` and `draw_surface`.
+    /// Analytical metrics, maps, void volumes, and `analysis_params` remain untouched.
+    pub fn recompute_draw_surfaces(&mut self, draw_preset: GeodesicPreset, draw_surface: &SurfaceParams) {
+        self.draw_remesh_due = None;
+        self.applied_draw_preset = draw_preset;
+        self.applied_draw_surface = draw_surface.clone();
+        let Some(complex) = &self.complex else { return };
+        for (c_idx, chain) in self.chains.iter_mut().enumerate() {
+            chain.draw_surface_mesh = build_chain_surface_mesh_with_preset(
+                complex,
+                GlobalChainIdx(c_idx as u32),
+                draw_preset,
+                draw_surface,
+            );
+        }
+        let draw_chain_meshes = self.draw_chain_meshes();
+        for iface in &mut self.interfaces {
+            iface.recompute_draw_envelope(complex, &draw_chain_meshes);
+        }
+    }
+
+    /// Re-runs analytical flattening and geometry for the active interface using `analysis_params`.
+    pub fn recompute_analysis_interface(&mut self, analysis_params: &AnalysisParams) -> Result<(), String> {
+        self.analysis_params = analysis_params.clone();
         let Some(complex) = &self.complex else { return Ok(()) };
         let Some(active_idx) = self.active_interface else { return Ok(()) };
-        let chain_meshes: Vec<SurfaceMesh> = self.chains.iter().map(|c| c.surface_mesh.clone()).collect();
+        let draw_chain_meshes = self.draw_chain_meshes();
         if let Some(iface) = self.interfaces.get_mut(active_idx) {
-            iface.recompute_interface(complex, &chain_meshes, params)?;
+            iface.recompute_analysis(complex, &draw_chain_meshes, analysis_params)?;
         }
         Ok(())
     }
@@ -250,8 +380,8 @@ impl ViewerDataset {
         self.active_interface().map(|i| &i.map)
     }
 
-    pub fn active_geometry(&self) -> Option<&InterfaceGeometry> {
-        self.active_interface().map(|i| &i.geometry)
+    pub fn active_draw_geometry(&self) -> Option<&InterfaceGeometry> {
+        self.active_interface().map(|i| &i.draw_geometry)
     }
 
     pub fn active_stats(&self) -> Option<&FlatteningStats> {

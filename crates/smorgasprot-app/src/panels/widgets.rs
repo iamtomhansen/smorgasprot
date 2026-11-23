@@ -4,9 +4,10 @@
 use crate::state::{Choice, Tween};
 use crate::style::ChromePalette;
 use egui::{Color32, ComboBox, RichText, Slider, Ui, vec2};
+use smorgasprot_core::params::{ParamDefault, ParamGroup, ParamMeta, ParamVisitor};
 
-/// Range for every opacity slider (fully transparent layers are hidden via checkboxes instead).
-const ALPHA_RANGE: std::ops::RangeInclusive<f32> = 0.0..=1.0;
+/// Range for normalized `[0, 1]` sliders (opacity, flattening, book opening, explode).
+pub const UNIT_RANGE: std::ops::RangeInclusive<f32> = 0.0..=1.0;
 /// Slider range for atom radius / ribbon width scale multipliers.
 pub const RADIUS_RANGE: std::ops::RangeInclusive<f32> = 0.0..=3.0;
 /// Slider range for stroke and contact edge widths (px).
@@ -22,28 +23,44 @@ pub fn section(ui: &mut Ui, title: &str, add_contents: impl FnOnce(&mut Ui)) {
     ui.add_space(6.0);
 }
 
-/// Labelled opacity slider in `[0, 1]` driving a [`Tween`].
-pub fn alpha_slider(ui: &mut Ui, label: impl Into<egui::WidgetText>, alpha: &mut Tween) {
+/// Labelled scalar slider driving a [`Tween`].
+pub fn slider(
+    ui: &mut Ui,
+    label: impl Into<egui::WidgetText>,
+    tween: &mut Tween,
+    range: std::ops::RangeInclusive<f32>,
+) {
     ui.horizontal(|ui| {
         ui.label(label);
-        bare_alpha_slider(ui, alpha);
+        bare_slider(ui, tween, range);
     });
 }
 
-/// Opacity slider in `[0, 1]` without an inline label (for grid layouts).
-pub fn bare_alpha_slider(ui: &mut Ui, alpha: &mut Tween) {
-    let mut value = alpha.value;
-    let resp = ui.add(Slider::new(&mut value, ALPHA_RANGE));
-    // Only cancel an in-flight Tween on direct human interaction (never on formatting/programmatic updates).
-    if resp.changed() && (resp.dragged() || resp.clicked() || resp.has_focus() || resp.lost_focus()) {
-        alpha.snap_to(value);
-    }
+/// Scalar slider driving a [`Tween`] without an inline label (for grid layouts).
+pub fn bare_slider(ui: &mut Ui, tween: &mut Tween, range: std::ops::RangeInclusive<f32>) {
+    tween_slider_widget(ui, tween, range, None);
 }
 
 /// `[0, 1]` slider driving a [`Tween`]; dragging jumps immediately, cancelling any preset animation.
 pub fn tween_slider(ui: &mut Ui, tween: &mut Tween, text: impl Into<egui::WidgetText>) {
+    tween_slider_widget(ui, tween, UNIT_RANGE, Some(text.into()));
+}
+
+fn tween_slider_widget(
+    ui: &mut Ui,
+    tween: &mut Tween,
+    range: std::ops::RangeInclusive<f32>,
+    text: Option<egui::WidgetText>,
+) {
     let mut value = tween.value;
-    if ui.add(Slider::new(&mut value, 0.0..=1.0).text(text)).changed() {
+    // Format displayed decimals without modifying/rounding the underlying value.
+    let mut widget = Slider::new(&mut value, range).custom_formatter(|v, _| format!("{v:.2}"));
+    if let Some(t) = text {
+        widget = widget.text(t);
+    }
+    let resp = ui.add(widget);
+    // Only cancel an in-flight Tween on direct human interaction (never on formatting/programmatic updates).
+    if resp.changed() && (resp.dragged() || resp.clicked() || resp.has_focus() || resp.lost_focus()) {
         tween.snap_to(value);
     }
 }
@@ -248,4 +265,154 @@ pub fn max_text_width(ui: &Ui, texts: &[&str], strong: bool) -> f32 {
                 .x
         })
         .fold(0.0_f32, f32::max)
+}
+
+/// Standard single-line widget row height scaled by the active body font and interact spacing.
+pub fn row_height(ui: &Ui) -> f32 {
+    ui.text_style_height(&egui::TextStyle::Body)
+        .max(ui.spacing().interact_size.y)
+}
+
+/// Renders every field of a [`ParamGroup`] as labelled controls with tooltips and per-field reset buttons.
+/// When `baseline` is `Some`, fields compare and reset against it instead of `ParamMeta::default`.
+/// Returns `true` if any value changed this frame.
+pub fn param_group_controls(
+    ui: &mut Ui,
+    group: &mut dyn ParamGroup,
+    baseline: Option<&mut dyn ParamGroup>,
+) -> bool {
+    let collector = baseline.map(|b| {
+        let mut c = DefaultCollector(Vec::new());
+        b.visit(&mut c);
+        c.0
+    });
+    let mut visitor = PopoverParamEditor {
+        ui,
+        defaults: collector.as_deref(),
+        cursor: 0,
+        changed: false,
+    };
+    group.visit(&mut visitor);
+    visitor.changed
+}
+
+struct DefaultCollector(Vec<ParamDefault>);
+
+impl ParamVisitor for DefaultCollector {
+    fn visit_f32(&mut self, _meta: &ParamMeta, value: &mut f32) {
+        self.0.push(ParamDefault::F32(*value));
+    }
+
+    fn visit_usize(&mut self, _meta: &ParamMeta, value: &mut usize) {
+        self.0.push(ParamDefault::Usize(*value));
+    }
+
+    fn visit_bool(&mut self, _meta: &ParamMeta, value: &mut bool) {
+        self.0.push(ParamDefault::Bool(*value));
+    }
+}
+
+struct PopoverParamEditor<'a> {
+    ui: &'a mut Ui,
+    defaults: Option<&'a [ParamDefault]>,
+    cursor: usize,
+    changed: bool,
+}
+
+impl PopoverParamEditor<'_> {
+    fn next_default(&mut self, meta: &ParamMeta) -> ParamDefault {
+        let d = self
+            .defaults
+            .and_then(|list| list.get(self.cursor).copied())
+            .unwrap_or(meta.default);
+        self.cursor += 1;
+        d
+    }
+
+    fn field_header(&mut self, meta: &ParamMeta, is_default: bool) -> bool {
+        let mut reset_clicked = false;
+        self.ui.horizontal(|ui| {
+            let lbl = ui.label(format!("{}:", meta.name));
+            let desc = meta.description.trim();
+            if !desc.is_empty() {
+                lbl.on_hover_text(desc);
+            }
+            if !is_default
+                && ui
+                    .small_button("Reset")
+                    .on_hover_text("Reset parameter to default")
+                    .clicked()
+            {
+                reset_clicked = true;
+            }
+        });
+        reset_clicked
+    }
+
+    fn finish_field(&mut self, resp: egui::Response) {
+        if resp.changed() {
+            self.changed = true;
+        }
+        self.ui.add_space(2.0);
+    }
+}
+
+impl ParamVisitor for PopoverParamEditor<'_> {
+    fn visit_f32(&mut self, meta: &ParamMeta, value: &mut f32) {
+        let default = self.next_default(meta);
+        let is_default = matches!(default, ParamDefault::F32(d) if *value == d);
+        if self.field_header(meta, is_default) {
+            if let ParamDefault::F32(d) = default {
+                *value = d;
+                self.changed = true;
+            }
+        }
+        let resp = match (meta.min, meta.max) {
+            (Some(lo), Some(hi)) => {
+                let mut w = Slider::new(value, lo as f32..=hi as f32)
+                    .custom_formatter(|v, _| format!("{v:.2}"));
+                if !meta.unit.is_empty() {
+                    w = w.text(meta.unit);
+                }
+                self.ui.add(w)
+            }
+            _ => self.ui.add(egui::DragValue::new(value).speed(0.01)),
+        };
+        self.finish_field(resp);
+    }
+
+    fn visit_usize(&mut self, meta: &ParamMeta, value: &mut usize) {
+        let default = self.next_default(meta);
+        let is_default = matches!(default, ParamDefault::Usize(d) if *value == d);
+        if self.field_header(meta, is_default) {
+            if let ParamDefault::Usize(d) = default {
+                *value = d;
+                self.changed = true;
+            }
+        }
+        let resp = match (meta.min, meta.max) {
+            (Some(lo), Some(hi)) => {
+                let mut w = Slider::new(value, (lo as usize)..=(hi as usize));
+                if !meta.unit.is_empty() {
+                    w = w.text(meta.unit);
+                }
+                self.ui.add(w)
+            }
+            _ => self.ui.add(egui::DragValue::new(value)),
+        };
+        self.finish_field(resp);
+    }
+
+    fn visit_bool(&mut self, meta: &ParamMeta, value: &mut bool) {
+        let default = self.next_default(meta);
+        let is_default = matches!(default, ParamDefault::Bool(d) if *value == d);
+        if self.field_header(meta, is_default) {
+            if let ParamDefault::Bool(d) = default {
+                *value = d;
+                self.changed = true;
+            }
+        }
+        let resp = self.ui.checkbox(value, "");
+        self.finish_field(resp);
+    }
 }

@@ -5,6 +5,7 @@ use crate::camera::CameraState;
 use crate::style::{AtomSizeMode, ChainColorLens, ColorLens, VisualChannel};
 use egui::Color32;
 use serde::{Deserialize, Serialize};
+use smorgasprot_core::surface::{GeodesicPreset, SurfaceParams};
 
 /// Which derived interface geometry is drawn in the Complex tab.
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq)]
@@ -49,6 +50,26 @@ impl Choice for SurfaceCulling {
     }
 }
 
+impl Choice for GeodesicPreset {
+    const ALL: &'static [Self] = &[
+        Self::Octahedron8,
+        Self::Icosahedron12,
+        Self::Octahedron18,
+        Self::Icosahedron42,
+        Self::Octahedron66,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Octahedron8 => "Octahedron 8 (2.75 Å — mobile / minimal)",
+            Self::Icosahedron12 => "Icosahedron 12 (2.20 Å — coarse)",
+            Self::Octahedron18 => "Octahedron 18 (1.75 Å — fast display)",
+            Self::Icosahedron42 => "Icosahedron 42 (1.45 Å — medium-fine)",
+            Self::Octahedron66 => "Octahedron 66 (1.20 Å — fine)",
+        }
+    }
+}
+
 /// Visual channels and representation settings for the 3D molecular surface mesh layer.
 #[derive(Clone, Debug)]
 pub struct SurfaceLayerStyle {
@@ -56,6 +77,10 @@ pub struct SurfaceLayerStyle {
     pub alpha: Tween,
     pub culling: SurfaceCulling,
     pub color: VisualChannel<ChainColorLens, Color32>,
+    /// Presentation-only tessellation preset (separate from analytical `Octahedron66`).
+    pub draw_preset: GeodesicPreset,
+    /// Presentation-only meshing parameters (never fed into analytical calculations).
+    pub draw_mesh: SurfaceParams,
 }
 
 impl Default for SurfaceLayerStyle {
@@ -65,6 +90,8 @@ impl Default for SurfaceLayerStyle {
             alpha: Tween::new(0.82),
             culling: SurfaceCulling::None,
             color: VisualChannel::new(ChainColorLens::InterfaceSide, Color32::from_rgb(86, 180, 233)),
+            draw_preset: GeodesicPreset::Octahedron18,
+            draw_mesh: SurfaceParams::display(),
         }
     }
 }
@@ -77,6 +104,15 @@ impl SurfaceLayerStyle {
     pub fn reset_channels(&mut self) {
         self.color.reset();
         self.culling = SurfaceCulling::None;
+    }
+
+    pub fn is_default_draw_mesh(&self) -> bool {
+        self.draw_preset == GeodesicPreset::Octahedron18 && self.draw_mesh == SurfaceParams::display()
+    }
+
+    pub fn reset_draw_mesh(&mut self) {
+        self.draw_preset = GeodesicPreset::Octahedron18;
+        self.draw_mesh = SurfaceParams::display();
     }
 }
 

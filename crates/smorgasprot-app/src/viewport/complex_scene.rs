@@ -97,7 +97,7 @@ fn add_chain_surfaces(list: &mut DrawList, view: &View, ds: &ViewerDataset, s: &
         let offset = explode_offset(side, s.explode.value, view.explode);
         let alpha = view.chain_alpha(side, s.surface.alpha.value, lens);
         let base = lenses::chain_surface_color(chain_idx, side, lens, s.surface.color.fixed, view.pal);
-        add_mesh(list, view, &ch.surface_mesh, offset, s.surface.culling, |_, shade| {
+        add_mesh(list, view, &ch.draw_surface_mesh, offset, s.surface.culling, |_, shade| {
             (palette::shaded(base, shade, alpha), Stroke::NONE)
         });
     }
@@ -106,7 +106,7 @@ fn add_chain_surfaces(list: &mut DrawList, view: &View, ds: &ViewerDataset, s: &
 /// The selected derived interface mesh; anchored at the interface, so it ignores explode.
 fn add_interface_geometry(list: &mut DrawList, view: &View, iface: &InterfaceViewData, s: &ComplexViewSettings) {
     let a = s.boundary.alpha.value;
-    let geo = &iface.geometry;
+    let geo = &iface.draw_geometry;
     let sides = &view.pal.sides;
     let wf_width = if s.boundary.show_wireframe {
         view.atom_draw.boundary_wireframe_width_px
@@ -126,7 +126,7 @@ fn add_interface_geometry(list: &mut DrawList, view: &View, iface: &InterfaceVie
         }
         InterfaceDisplayMode::ContactEnvelope => {
             add_mesh(list, view, &geo.envelope_mesh, Vec3::ZERO, SurfaceCulling::None, |v0, shade| {
-                let side = iface.envelope_sides.get(v0).copied().unwrap_or(InterfaceSide::None);
+                let side = iface.draw_envelope_sides.get(v0).copied().unwrap_or(InterfaceSide::None);
                 let fill = sides.envelope(side);
                 let edge = if wf_width > 0.0 {
                     Stroke::new(wf_width, palette::with_alpha(palette::edge_color(fill), 0.63))

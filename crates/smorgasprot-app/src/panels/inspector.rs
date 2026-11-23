@@ -138,5 +138,5 @@ fn diagnostics(ui: &mut Ui, ds: &ViewerDataset, sides: &InterfaceSidePalette) {
     ui.separator();
     ui.label(format!("Edge RMSE (Raw → Relaxed): {:.2} → {:.2} Å", s.edge_rmse_before_a, s.edge_rmse_after_a));
     ui.label(format!("2D Overlaps (Raw → Relaxed): {} → {}", s.overlaps_before, s.overlaps_after));
-    ui.colored_label(sides.void, format!("Sub-Solvent Void Volume: {:.1} Å³", iface.geometry.void_volume_a3));
+    ui.colored_label(sides.void, format!("Sub-Solvent Void Volume: {:.1} Å³", iface.analysis_void_volume_a3));
 }
