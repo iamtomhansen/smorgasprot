@@ -7,11 +7,15 @@ mod tween;
 pub mod view_params;
 
 pub use crate::style::{
-    AtomSizeMode, BFactorMode, ChannelPreset, ColorLens, EdgeColorLens, EdgeWidthLens, LabelBuilder, LabelValueChannel,
-    NodeStrokeColorLens, ResidueNameStyle, ScalarMetric, TerritoryColorLens, TerritoryStrokeLens, VisualChannel,
+    AtomSizeMode, BFactorMode, ChainColorLens, ChannelPreset, ColorLens, EdgeColorLens, EdgeWidthLens, LabelBuilder,
+    LabelValueChannel, NodeStrokeColorLens, ResidueNameStyle, ScalarMetric, TerritoryColorLens, TerritoryStrokeLens,
+    VisualChannel,
 };
 pub use cartography::{AtomLayerStyle, CartographyViewSettings, EdgeLayerStyle, TerritoryLayerStyle};
-pub use complex::{ComplexViewSettings, InterfaceDisplayMode};
+pub use complex::{
+    BoundaryLayerStyle, CartoonLayerStyle, ComplexViewSettings, InterfaceDisplayMode, SphereLayerStyle,
+    SurfaceCulling, SurfaceLayerStyle,
+};
 pub use tween::Tween;
 pub use view_params::{
     AtomDrawParams, ExplodeParams, GridParams, LensParams, MorphParams, NavigationParams, OpacityParams, StatusParams,

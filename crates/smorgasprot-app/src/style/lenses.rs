@@ -3,15 +3,48 @@
 
 use crate::dataset::AtomMeta;
 use crate::state::{
-    BFactorMode, ColorLens, EdgeColorLens, LabelBuilder, LabelValueChannel, LensParams, NodeStrokeColorLens,
-    ResidueNameStyle, ScalarMetric, TerritoryColorLens,
+    BFactorMode, ChainColorLens, ColorLens, EdgeColorLens, LabelBuilder, LabelValueChannel, LensParams,
+    NodeStrokeColorLens, ResidueNameStyle, ScalarMetric, TerritoryColorLens,
 };
+use crate::style::palette::darken;
 use crate::style::{ContactPalette, Palette};
 use egui::Color32;
 use smorgasprot_core::{
     AminoAcid, AtomNode, EdgeKind, InterfaceEdge, InterfaceSide, ResidueTerritory, print_three_letter_code,
     residue_full_name,
 };
+
+/// Base fill color for a 3D chain molecular surface under the active [`ChainColorLens`].
+pub fn chain_surface_color(
+    chain_idx: usize,
+    side: InterfaceSide,
+    lens: ChainColorLens,
+    fixed_color: Color32,
+    palette: &Palette,
+) -> Color32 {
+    match lens {
+        ChainColorLens::Fixed => fixed_color,
+        ChainColorLens::Off => Color32::TRANSPARENT,
+        ChainColorLens::InterfaceSide => palette.sides.side(side),
+        ChainColorLens::ChainIndex => palette.categorical(chain_idx),
+    }
+}
+
+/// Stroke color for a 3D chain Cα cartoon ribbon under the active [`ChainColorLens`].
+pub fn chain_cartoon_color(
+    chain_idx: usize,
+    side: InterfaceSide,
+    lens: ChainColorLens,
+    fixed_color: Color32,
+    palette: &Palette,
+) -> Color32 {
+    match lens {
+        ChainColorLens::Fixed => fixed_color,
+        ChainColorLens::Off => Color32::TRANSPARENT,
+        ChainColorLens::InterfaceSide => palette.sides.side_dark(side),
+        ChainColorLens::ChainIndex => darken(palette.categorical(chain_idx), 0.20),
+    }
+}
 
 /// Samples the appropriate continuous [`ColorMap`] on `palette` for a normalized `[0, 1]` [`ScalarMetric`].
 fn sample_metric_color(metric: ScalarMetric, t: f32, palette: &Palette) -> Color32 {

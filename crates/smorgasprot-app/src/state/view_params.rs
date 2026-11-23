@@ -44,12 +44,14 @@ param_group! {
 }
 
 param_group! {
-    /// Geometry parameters for 3D-to-2D flattening and open-book butterfly hinging.
-    pub struct MorphParams("morph", "Interface Morph & Butterfly") {
+    /// Geometry and visibility parameters for 3D-to-2D flattening and open-sandwich hinging.
+    pub struct MorphParams("morph", "Interface Morph & Sandwich") {
         /// Offset along ±n keeping the two flat sheets from z-fighting (Å).
         sheet_offset_a: f32 = 0.08, 0.0..=2.0, "Dual-sheet z-offset", "Å";
         /// Half-length of the drawn open-book hinge line (Å).
         hinge_half_len_a: f32 = 28.0, 0.0..=100.0, "Hinge line half-length", "Å";
+        /// Group B opacity below which opening the sandwich raises it so both sides are visible.
+        open_sandwich_min_b_alpha: f32 = 0.85, 0.0..=1.0, "Open-sandwich min Group B alpha", "";
     }
 }
 
@@ -76,12 +78,20 @@ param_group! {
 }
 
 param_group! {
-    /// Screen-space sizing of atom discs and backbone traces.
-    pub struct AtomDrawParams("atom_draw", "Atom & Ribbon Sizing") {
+    /// Screen-space sizing of atom discs, 3D spheres, backbone ribbons, and mesh wireframes.
+    pub struct AtomDrawParams("atom_draw", "Atom, Ribbon & Mesh Sizing") {
         /// Smallest drawn atom radius (px).
         min_atom_radius_px: f32 = 3.5, 0.5..=20.0, "Min atom radius", "px";
         /// Atom base radius as a fraction of zoom (px per Å).
         atom_radius_per_zoom: f32 = 0.28, 0.05..=1.0, "Atom radius zoom scale", "";
+        /// 3D complex Cα cartoon ribbon thickness as a fraction of zoom (px per Å).
+        complex_cartoon_width_per_zoom: f32 = 0.28, 0.05..=1.5, "3D cartoon width zoom scale", "";
+        /// Minimum 3D complex Cα cartoon ribbon thickness (px).
+        min_complex_cartoon_width_px: f32 = 3.0, 0.5..=15.0, "Min 3D cartoon width", "px";
+        /// 3D complex atom sphere radius as a fraction of (vdW radius × zoom).
+        complex_sphere_radius_per_zoom: f32 = 0.35, 0.05..=1.5, "3D sphere radius zoom scale", "";
+        /// Wireframe edge stroke width on 3D interface boundary meshes (px).
+        boundary_wireframe_width_px: f32 = 0.55, 0.0..=4.0, "3D boundary wireframe width", "px";
     }
 }
 

@@ -184,6 +184,6 @@ fn run_gui(datasets: Vec<ViewerDataset>) -> Result<(), String> {
         multisampling: 4,
         ..Default::default()
     };
-    eframe::run_native("Smorgasprot", options, Box::new(|_cc| Ok(Box::new(SmorgasprotApp::new(datasets)))))
+    eframe::run_native("Smorgasprot", options, Box::new(|cc| Ok(Box::new(SmorgasprotApp::new(cc, datasets)))))
         .map_err(|e| format!("Failed to run the desktop app: {e}"))
 }

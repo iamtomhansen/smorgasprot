@@ -147,6 +147,29 @@ impl Choice for NodeStrokeColorLens {
     }
 }
 
+/// Data projection assigned to whole-chain 3D representations (molecular surfaces and Cα cartoon ribbons).
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum ChainColorLens {
+    Fixed,
+    Off,
+    #[default]
+    InterfaceSide,
+    ChainIndex,
+}
+
+impl Choice for ChainColorLens {
+    const ALL: &'static [Self] = &[Self::Fixed, Self::Off, Self::InterfaceSide, Self::ChainIndex];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Fixed => "Fixed Color",
+            Self::Off => "Off (Hidden)",
+            Self::InterfaceSide => "Interface Group (Side A / Side B / Unassigned)",
+            Self::ChainIndex => "By Polypeptide Chain (Categorical Palette)",
+        }
+    }
+}
+
 /// Scalar data projection assigned to atom node radius or node stroke width.
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum AtomSizeMode {

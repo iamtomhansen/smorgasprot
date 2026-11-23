@@ -290,3 +290,31 @@ pub fn territory_stroke_width_px(
     };
     if selected { base + 0.8 } else { base }
 }
+
+/// Screen stroke width (pixels) of a 3D Cα cartoon ribbon in the Complex workspace.
+pub fn complex_cartoon_width_px(zoom: f32, width_scale: f32, draw: &AtomDrawParams) -> f32 {
+    (zoom * draw.complex_cartoon_width_per_zoom * width_scale).max(draw.min_complex_cartoon_width_px)
+}
+
+/// Screen radius (pixels) of a 3D interfacial heavy-atom sphere in the Complex workspace.
+pub fn complex_sphere_radius_px(
+    node: &AtomNode,
+    vdw_radius_a: f32,
+    mode: AtomSizeMode,
+    fixed_scale: f32,
+    bfactor_mode: BFactorMode,
+    zoom: f32,
+    draw: &AtomDrawParams,
+    lenses: &LensParams,
+) -> f32 {
+    if mode == AtomSizeMode::Off {
+        return 0.0;
+    }
+    let base = vdw_radius_a * zoom * draw.complex_sphere_radius_per_zoom;
+    let scale = match mode {
+        AtomSizeMode::Fixed => fixed_scale,
+        AtomSizeMode::Off => 0.0,
+        _ => 0.65 + 0.85 * node_scalar_t(node, mode, bfactor_mode, lenses),
+    };
+    (base * scale).max(draw.min_atom_radius_px)
+}

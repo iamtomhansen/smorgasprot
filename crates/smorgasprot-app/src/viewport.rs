@@ -46,15 +46,7 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState) {
     match state.active_tab {
         WorkspaceTab::Complex => {
             state.selection.hovered_atom = None;
-            complex_scene::paint(
-                &painter,
-                rect,
-                ds,
-                &state.complex,
-                &state.view_params.explode,
-                &state.palette.sides,
-                &state.palette.chrome,
-            );
+            complex_scene::paint(&painter, rect, ds, state);
         }
         WorkspaceTab::Cartography => {
             let nodes = cartography_scene::project_nodes(ds, rect, &state.cartography);

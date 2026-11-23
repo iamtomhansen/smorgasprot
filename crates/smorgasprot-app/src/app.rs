@@ -30,7 +30,8 @@ pub struct SmorgasprotApp {
 }
 
 impl SmorgasprotApp {
-    pub fn new(datasets: Vec<ViewerDataset>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, datasets: Vec<ViewerDataset>) -> Self {
+        crate::style::configure_fonts(&cc.egui_ctx);
         Self { datasets, active: 0, state: UiState::default(), status: None }
     }
 

@@ -1,5 +1,4 @@
-//! Side, top, and bottom panels surrounding the viewport.
-//! Panels edit `UiState` directly and request app-level effects via `Action`.
+//! Principle UI panels: side, top, and bottom surrounding the viewport.
 
 mod cartography_controls;
 mod complex_controls;

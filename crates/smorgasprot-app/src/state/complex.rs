@@ -1,7 +1,9 @@
-//! State and display options for the 3D Complex workspace tab.
+//! State, layer styles, and display options for the 3D Complex workspace tab.
 
 use super::{Choice, ExplodeParams, Tween};
 use crate::camera::CameraState;
+use crate::style::{AtomSizeMode, ChainColorLens, ColorLens, VisualChannel};
+use egui::Color32;
 use serde::{Deserialize, Serialize};
 
 /// Which derived interface geometry is drawn in the Complex tab.
@@ -26,19 +28,146 @@ impl Choice for InterfaceDisplayMode {
     }
 }
 
-/// Camera, representation toggles, and tweened opacities for the Complex workspace tab.
+/// Face-culling mode for 3D molecular surface meshes.
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum SurfaceCulling {
+    #[default]
+    None,
+    Backfaces,
+    Frontfaces,
+}
+
+impl Choice for SurfaceCulling {
+    const ALL: &'static [Self] = &[Self::None, Self::Backfaces, Self::Frontfaces];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::None => "None (Double-Sided)",
+            Self::Backfaces => "Backfaces (Solid Shell)",
+            Self::Frontfaces => "Frontfaces (X-Ray Cutaway)",
+        }
+    }
+}
+
+/// Visual channels and representation settings for the 3D molecular surface mesh layer.
+#[derive(Clone, Debug)]
+pub struct SurfaceLayerStyle {
+    pub visible: bool,
+    pub alpha: Tween,
+    pub culling: SurfaceCulling,
+    pub color: VisualChannel<ChainColorLens, Color32>,
+}
+
+impl Default for SurfaceLayerStyle {
+    fn default() -> Self {
+        Self {
+            visible: true,
+            alpha: Tween::new(0.82),
+            culling: SurfaceCulling::None,
+            color: VisualChannel::new(ChainColorLens::InterfaceSide, Color32::from_rgb(86, 180, 233)),
+        }
+    }
+}
+
+impl SurfaceLayerStyle {
+    pub fn is_default_channels(&self) -> bool {
+        self.color.is_default() && self.culling == SurfaceCulling::None
+    }
+
+    pub fn reset_channels(&mut self) {
+        self.color.reset();
+        self.culling = SurfaceCulling::None;
+    }
+}
+
+/// Visual channels and representation settings for the 3D Cα cartoon ribbon trace layer.
+#[derive(Clone, Debug)]
+pub struct CartoonLayerStyle {
+    pub visible: bool,
+    pub alpha: Tween,
+    pub color: VisualChannel<ChainColorLens, Color32>,
+    pub width_scale: f32,
+}
+
+impl Default for CartoonLayerStyle {
+    fn default() -> Self {
+        Self {
+            visible: true,
+            alpha: Tween::new(0.70),
+            color: VisualChannel::new(ChainColorLens::InterfaceSide, Color32::from_rgb(86, 180, 233)),
+            width_scale: 1.0,
+        }
+    }
+}
+
+impl CartoonLayerStyle {
+    pub fn is_default_channels(&self) -> bool {
+        self.color.is_default() && (self.width_scale - 1.0).abs() < 1e-4
+    }
+
+    pub fn reset_channels(&mut self) {
+        self.color.reset();
+        self.width_scale = 1.0;
+    }
+}
+
+/// Representation settings for the derived 3D interface boundary mesh layer.
+#[derive(Clone, Debug)]
+pub struct BoundaryLayerStyle {
+    pub mode: InterfaceDisplayMode,
+    pub alpha: Tween,
+    pub show_wireframe: bool,
+}
+
+impl Default for BoundaryLayerStyle {
+    fn default() -> Self {
+        Self {
+            mode: InterfaceDisplayMode::SmoothedSdf,
+            alpha: Tween::new(0.85),
+            show_wireframe: true,
+        }
+    }
+}
+
+/// Visual channels and representation settings for the 3D interfacial heavy-atom sphere layer.
+#[derive(Clone, Debug)]
+pub struct SphereLayerStyle {
+    pub visible: bool,
+    pub alpha: Tween,
+    pub fill: VisualChannel<ColorLens, Color32>,
+    pub radius: VisualChannel<AtomSizeMode, f32>,
+}
+
+impl Default for SphereLayerStyle {
+    fn default() -> Self {
+        Self {
+            visible: false,
+            alpha: Tween::new(0.90),
+            fill: VisualChannel::new(ColorLens::InterfaceSide, Color32::from_rgb(86, 180, 233)),
+            radius: VisualChannel::new(AtomSizeMode::Fixed, 1.0),
+        }
+    }
+}
+
+impl SphereLayerStyle {
+    pub fn is_default_channels(&self) -> bool {
+        self.fill.is_default() && self.radius.is_default()
+    }
+
+    pub fn reset_channels(&mut self) {
+        self.fill.reset();
+        self.radius.reset();
+    }
+}
+
+/// Camera, layer styles, and explode separation for the 3D Complex workspace tab.
 #[derive(Clone, Debug)]
 pub struct ComplexViewSettings {
     pub camera: CameraState,
-    pub show_surface: bool,
-    pub surface_alpha: Tween,
-    pub cull_backfaces: bool,
-    pub show_cartoon: bool,
-    pub cartoon_alpha: Tween,
-    pub interface_mode: InterfaceDisplayMode,
-    pub interface_alpha: Tween,
-    pub show_spheres: bool,
-    pub spheres_alpha: Tween,
+    pub surface: SurfaceLayerStyle,
+    pub cartoon: CartoonLayerStyle,
+    pub boundary: BoundaryLayerStyle,
+    pub spheres: SphereLayerStyle,
     /// Explode separation along ±n, `0` (closed) to `1` (fully apart).
     pub explode: Tween,
 }
@@ -47,15 +176,10 @@ impl Default for ComplexViewSettings {
     fn default() -> Self {
         Self {
             camera: CameraState::default(),
-            show_surface: true,
-            surface_alpha: Tween::new(0.82),
-            cull_backfaces: false,
-            show_cartoon: true,
-            cartoon_alpha: Tween::new(0.70),
-            interface_mode: InterfaceDisplayMode::SmoothedSdf,
-            interface_alpha: Tween::new(0.85),
-            show_spheres: false,
-            spheres_alpha: Tween::new(0.90),
+            surface: SurfaceLayerStyle::default(),
+            cartoon: CartoonLayerStyle::default(),
+            boundary: BoundaryLayerStyle::default(),
+            spheres: SphereLayerStyle::default(),
             explode: Tween::new(0.0),
         }
     }
@@ -70,18 +194,18 @@ impl ComplexViewSettings {
     /// Advances all tweens in the Complex tab; returns `true` while any tween is moving.
     pub fn step_animations(&mut self, dt: f32, rate: f32) -> bool {
         self.explode.step(dt, rate)
-            | self.surface_alpha.step(dt, rate)
-            | self.cartoon_alpha.step(dt, rate)
-            | self.interface_alpha.step(dt, rate)
-            | self.spheres_alpha.step(dt, rate)
+            | self.surface.alpha.step(dt, rate)
+            | self.cartoon.alpha.step(dt, rate)
+            | self.boundary.alpha.step(dt, rate)
+            | self.spheres.alpha.step(dt, rate)
     }
 
     /// Immediately snaps all Complex tab tweens to their targets.
     pub fn finish_animations(&mut self) {
         self.explode.finish();
-        self.surface_alpha.finish();
-        self.cartoon_alpha.finish();
-        self.interface_alpha.finish();
-        self.spheres_alpha.finish();
+        self.surface.alpha.finish();
+        self.cartoon.alpha.finish();
+        self.boundary.alpha.finish();
+        self.spheres.alpha.finish();
     }
 }
