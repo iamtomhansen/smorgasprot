@@ -141,13 +141,18 @@ impl Palette {
 
     /// Parses a self-healing [`Palette`] from a RON string; missing fields fall back to [`Self::default()`].
     pub fn from_ron_str(text: &str) -> Result<Self, String> {
-        ron::from_str(text).map_err(|e| format!("Failed to parse RON palette: {e}"))
+        let ext = ron::extensions::Extensions::UNWRAP_NEWTYPES | ron::extensions::Extensions::IMPLICIT_SOME;
+        ron::Options::default()
+            .with_default_extension(ext)
+            .from_str(text)
+            .map_err(|e| format!("Failed to parse RON palette: {e}"))
     }
 
     /// Serializes this palette into a formatted RON string.
     pub fn to_ron_string(&self) -> Result<String, String> {
-        ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default())
-            .map_err(|e| format!("Failed to serialize RON palette: {e}"))
+        let ext = ron::extensions::Extensions::UNWRAP_NEWTYPES | ron::extensions::Extensions::IMPLICIT_SOME;
+        let pretty = ron::ser::PrettyConfig::default().extensions(ext);
+        ron::ser::to_string_pretty(self, pretty).map_err(|e| format!("Failed to serialize RON palette: {e}"))
     }
 
     /// Writes this palette to `<dir>/<file_stem>.ron`.

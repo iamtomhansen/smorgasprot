@@ -63,6 +63,21 @@ pub fn choice_combo<T: Choice>(ui: &mut Ui, id_salt: &str, value: &mut T) {
         });
 }
 
+/// Visual-channel combo box that inserts a visual divider after `Fixed` and `Off` (index 1).
+pub fn channel_combo<T: Choice>(ui: &mut Ui, id_salt: &str, value: &mut T) {
+    ComboBox::from_id_salt(id_salt)
+        .selected_text(value.label())
+        .width(ui.available_width())
+        .show_ui(ui, |ui| {
+            for (idx, &option) in T::ALL.iter().enumerate() {
+                ui.selectable_value(value, option, option.label());
+                if idx == 1 && T::ALL.len() > 2 {
+                    ui.separator();
+                }
+            }
+        });
+}
+
 /// Color swatch followed by a label (legends).
 pub fn legend_swatch(ui: &mut Ui, color: Color32, label: &str) {
     ui.horizontal(|ui| {

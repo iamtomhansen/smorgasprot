@@ -255,6 +255,32 @@ impl AminoAcid {
         }
     }
 
+    /// Full chemical name of the canonical amino acid (`"Alanine"`, `"Glutamate"`, ...).
+    pub const fn full_name(self) -> &'static str {
+        match self {
+            Self::Ala => "Alanine",
+            Self::Arg => "Arginine",
+            Self::Asn => "Asparagine",
+            Self::Asp => "Aspartate",
+            Self::Cys => "Cysteine",
+            Self::Gln => "Glutamine",
+            Self::Glu => "Glutamate",
+            Self::Gly => "Glycine",
+            Self::His => "Histidine",
+            Self::Ile => "Isoleucine",
+            Self::Leu => "Leucine",
+            Self::Lys => "Lysine",
+            Self::Met => "Methionine",
+            Self::Phe => "Phenylalanine",
+            Self::Pro => "Proline",
+            Self::Ser => "Serine",
+            Self::Thr => "Threonine",
+            Self::Trp => "Tryptophan",
+            Self::Tyr => "Tyrosine",
+            Self::Val => "Valine",
+        }
+    }
+
     /// 1-letter IUPAC code (`'A'`, `'E'`, ...).
     pub const fn one_letter(self) -> char {
         match self {
@@ -444,6 +470,65 @@ impl ResidueKind {
     /// Returns true if this component is water or a crystallization buffer artifact.
     pub const fn is_solvent_or_buffer(self) -> bool {
         matches!(self, Self::SolventOrBuffer)
+    }
+}
+
+/// Resolves a 3-letter PDB/mmCIF residue or component code into a full descriptive name.
+pub fn residue_full_name(res_name: &str) -> String {
+    let code = res_name.trim().to_ascii_uppercase();
+    if let Some(aa) = AminoAcid::from_three_letter(&code) {
+        return aa.full_name().to_string();
+    }
+    match code.as_str() {
+        // Modified amino acids
+        "MSE" => "Selenomethionine".into(),
+        "SEP" => "Phosphoserine".into(),
+        "TPO" => "Phosphothreonine".into(),
+        "PTR" => "Phosphotyrosine".into(),
+        "CSO" => "S-Hydroxycysteine".into(),
+        "CME" => "S-(2-Hydroxyethyl)-L-cysteine".into(),
+        "HYP" => "4-Hydroxyproline".into(),
+        "MLY" => "N-Dimethyl-lysine".into(),
+        "PCA" => "Pyroglutamic acid".into(),
+        // Common ligands, cofactors, and antibiotics
+        "KEF" => "Cefuroxime".into(),
+        "HEM" | "HEC" => "Heme".into(),
+        "NAG" => "N-Acetyl-D-glucosamine".into(),
+        "BMA" | "MAN" => "Mannose".into(),
+        "FUC" => "Fucose".into(),
+        "GAL" => "Galactose".into(),
+        "GLC" => "Glucose".into(),
+        "ATP" => "Adenosine triphosphate".into(),
+        "ADP" => "Adenosine diphosphate".into(),
+        "AMP" => "Adenosine monophosphate".into(),
+        "GTP" => "Guanosine triphosphate".into(),
+        "GDP" => "Guanosine diphosphate".into(),
+        "NAD" => "Nicotinamide adenine dinucleotide".into(),
+        "NAP" => "NADP+".into(),
+        "FAD" => "Flavin adenine dinucleotide".into(),
+        "FMN" => "Flavin mononucleotide".into(),
+        "COA" => "Coenzyme A".into(),
+        "SAM" => "S-Adenosylmethionine".into(),
+        "SAH" => "S-Adenosylhomocysteine".into(),
+        "PLP" => "Pyridoxal 5'-phosphate".into(),
+        "TPP" => "Thiamine diphosphate".into(),
+        "BTN" => "Biotin".into(),
+        "RET" => "Retinal".into(),
+        "CLR" => "Cholesterol".into(),
+        "PLM" => "Palmitic acid".into(),
+        // Metals and ions
+        "ZN" => "Zinc ion".into(),
+        "MG" => "Magnesium ion".into(),
+        "CA" => "Calcium ion".into(),
+        "FE" | "FE2" => "Iron ion".into(),
+        "CU" => "Copper ion".into(),
+        "CO" => "Cobalt ion".into(),
+        "MN" => "Manganese ion".into(),
+        "NI" => "Nickel ion".into(),
+        "NA" => "Sodium ion".into(),
+        "K" => "Potassium ion".into(),
+        "CD" => "Cadmium ion".into(),
+        _ => code,
     }
 }
 

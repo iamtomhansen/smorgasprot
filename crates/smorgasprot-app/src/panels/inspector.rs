@@ -50,7 +50,15 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &UiState) {
     section(ui, "Legend", |ui| {
         let a = ds.group_name(InterfaceSide::SideA);
         let b = ds.group_name(InterfaceSide::SideB);
-        for (color, label) in lenses::legend(s.lens, s.bfactor_mode, a, b, &state.view_params.lenses, pal) {
+        for (color, label) in lenses::legend(
+            s.effective_lens(),
+            s.fixed_node_fill,
+            s.bfactor_mode,
+            a,
+            b,
+            &state.view_params.lenses,
+            pal,
+        ) {
             legend_swatch(ui, color, &label);
         }
     });

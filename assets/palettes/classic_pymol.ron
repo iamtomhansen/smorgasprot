@@ -25,7 +25,7 @@
         hbond: (230, 185, 0, 255),
         contact: (150, 150, 160, 255),
     ),
-    chemistry: (
+    aa_chemistry: (
         aliphatic: (160, 160, 160, 255),
         aromatic: (230, 160, 30, 255),
         positive: (50, 100, 240, 255),

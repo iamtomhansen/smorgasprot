@@ -4,9 +4,12 @@
 use super::plane_space::PlaneFrame;
 use crate::camera::CameraState;
 use crate::dataset::{InterfaceViewData, ViewerDataset};
-use crate::state::{AtomDrawParams, InterfaceViewSettings, LensParams, Selection, UiState};
+use crate::state::{
+    AtomDrawParams, AtomSizeMode, ColorLens, EdgeColorLens, EdgeWidthLens, InterfaceViewSettings, LensParams,
+    NodeStrokeColorLens, Selection, TerritoryColorLens, UiState,
+};
 use crate::style::{Palette, lenses, palette, sizing};
-use egui::{Align2, FontId, Painter, Pos2, Rect, Shape, Stroke};
+use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, vec2};
 use smorgasprot_core::{AtomNodeIdx, InterfaceSide};
 
 /// Sides at or below this opacity are not drawn.
@@ -147,6 +150,8 @@ fn paint_backbone(cx: &Ctx) {
 /// Residue territory polygons with labels; side B first so side A reads on top.
 fn paint_territories(cx: &Ctx, selection: &Selection) {
     let font = FontId::proportional((cx.camera.zoom * 0.22).clamp(9.0, 14.0));
+    let color_lens = cx.s.effective_territory_color_lens();
+    let (stroke_lens, fixed_stroke_w) = cx.s.effective_territory_stroke_lens();
 
     for side in [InterfaceSide::SideB, InterfaceSide::SideA] {
         let alpha = cx.s.side_alpha(side);
@@ -159,69 +164,212 @@ fn paint_territories(cx: &Ctx, selection: &Selection) {
                 terr.contour_uv.iter().zip(&terr.contour_3d).map(|(&uv, &p)| cx.morph(p, uv, side)).collect();
 
             let selected = selection.selected_residue == Some(terr.global_residue);
-            let (fill_a, width): (f32, f32) = if selected { (0.40, 2.0) } else { (0.14, 1.2) };
-            let fill = palette::with_alpha(cx.pal.sides.side(side), alpha * fill_a);
-            let stroke = Stroke::new(width, palette::with_alpha(cx.pal.sides.side_dark(side), alpha * 0.7));
-            // Voronoi cells clipped to a convex hull stay convex, so a convex fill is valid.
-            cx.painter.add(Shape::convex_polygon(pts, fill, stroke));
+            let fill_a: f32 = if selected { 0.40 } else { 0.14 };
+            let base_color = lenses::territory_fill_color(
+                terr,
+                &cx.iface.map.nodes,
+                &cx.iface.atom_meta,
+                color_lens,
+                cx.s.fixed_territory_fill,
+                cx.s.bfactor_mode,
+                cx.lenses,
+                cx.pal,
+            );
+            let width = sizing::territory_stroke_width_px(
+                terr,
+                &cx.iface.map.nodes,
+                stroke_lens,
+                fixed_stroke_w,
+                cx.s.bfactor_mode,
+                selected,
+                cx.lenses,
+            );
+            let fill = if color_lens == TerritoryColorLens::Off {
+                Color32::TRANSPARENT
+            } else {
+                palette::with_alpha(base_color, alpha * fill_a)
+            };
+            let border_base = if color_lens == TerritoryColorLens::Off {
+                cx.pal.sides.side(terr.role)
+            } else {
+                base_color
+            };
+            let stroke = if width <= 0.0 {
+                Stroke::NONE
+            } else {
+                Stroke::new(width, palette::with_alpha(palette::edge_color(border_base), alpha * 0.75))
+            };
+            if fill != Color32::TRANSPARENT || width > 0.0 {
+                // Voronoi cells clipped to a convex hull stay convex, so a convex fill is valid.
+                cx.painter.add(Shape::convex_polygon(pts, fill, stroke));
+            }
 
-            let label_pos = cx.morph(terr.label_center_3d, terr.label_center_uv, side);
-            let ink = palette::with_alpha(cx.pal.chrome.ink, alpha * 0.85);
-            cx.painter.text(label_pos, Align2::CENTER_CENTER, &terr.label_top, font.clone(), ink);
+            if let Some(label_text) = lenses::format_territory_label(
+                terr,
+                &cx.iface.map.nodes,
+                &cx.iface.atom_meta,
+                &cx.s.territory_labels,
+            ) {
+                let label_pos = cx.morph(terr.label_center_3d, terr.label_center_uv, side);
+                let ink = palette::with_alpha(cx.pal.chrome.ink, alpha * 0.85);
+                cx.painter.text(label_pos, Align2::CENTER_CENTER, label_text, font.clone(), ink);
+            }
         }
     }
 }
 
 /// First-shell springs within each side.
 fn paint_intra_edges(cx: &Ctx, nodes: &[Pos2]) {
+    let color_lens = cx.s.effective_edge_color_lens();
+    let width_lens = cx.s.effective_edge_width_lens();
+    if color_lens == EdgeColorLens::Off || width_lens == EdgeWidthLens::Off {
+        return;
+    }
     for e in cx.iface.map.edges.iter().filter(|e| !e.is_cross_interface) {
         let side = cx.ds.node(e.a).map_or(InterfaceSide::None, |n| n.role);
         let alpha = cx.s.side_alpha(side);
         if alpha <= MIN_INTERACTIVE_ALPHA {
             continue;
         }
-        let stroke = Stroke::new(1.0_f32, palette::with_alpha(cx.pal.contacts.contact, alpha * 0.45));
+        let color = lenses::edge_stroke_color(
+            e,
+            &cx.iface.map.nodes,
+            color_lens,
+            cx.s.fixed_edge_color,
+            cx.s.bfactor_mode,
+            cx.lenses,
+            cx.pal,
+        );
+        let width = sizing::edge_width_px(
+            e,
+            &cx.iface.map.nodes,
+            width_lens,
+            cx.s.fixed_edge_width_px,
+            cx.s.bfactor_mode,
+            cx.lenses,
+        );
+        if width <= 0.0 {
+            continue;
+        }
+        let stroke = Stroke::new(width * 0.85, palette::with_alpha(color, alpha * 0.45));
         cx.painter.line_segment([nodes[e.a.0 as usize], nodes[e.b.0 as usize]], stroke);
     }
 }
 
-/// Cross-interface contacts colored by interaction kind.
+/// Cross-interface contacts colored and sized by the active edge visual channels.
 fn paint_cross_arcs(cx: &Ctx, nodes: &[Pos2]) {
+    let color_lens = cx.s.effective_edge_color_lens();
+    let width_lens = cx.s.effective_edge_width_lens();
+    if color_lens == EdgeColorLens::Off || width_lens == EdgeWidthLens::Off {
+        return;
+    }
     let alpha = cx.s.side_a_alpha.value.min(cx.s.side_b_alpha.value);
     if alpha <= MIN_INTERACTIVE_ALPHA {
         return;
     }
     for e in cx.iface.map.edges.iter().filter(|e| e.is_cross_interface) {
-        let stroke = Stroke::new(
-            lenses::contact_width(e.kind),
-            palette::with_alpha(lenses::contact_color(e.kind, &cx.pal.contacts), alpha * 0.86),
+        let color = lenses::edge_stroke_color(
+            e,
+            &cx.iface.map.nodes,
+            color_lens,
+            cx.s.fixed_edge_color,
+            cx.s.bfactor_mode,
+            cx.lenses,
+            cx.pal,
         );
+        let width = sizing::edge_width_px(
+            e,
+            &cx.iface.map.nodes,
+            width_lens,
+            cx.s.fixed_edge_width_px,
+            cx.s.bfactor_mode,
+            cx.lenses,
+        );
+        if width <= 0.0 {
+            continue;
+        }
+        let stroke = Stroke::new(width, palette::with_alpha(color, alpha * 0.86));
         cx.painter.line_segment([nodes[e.a.0 as usize], nodes[e.b.0 as usize]], stroke);
     }
 }
 
-/// Atom discs colored by the active lens and sized by the active sizing mode.
+/// Atom discs colored and sized by the active node fill, radius, stroke color, and stroke width channels.
 fn paint_atoms(cx: &Ctx, selection: &Selection, nodes: &[Pos2]) {
+    let fill_lens = cx.s.effective_lens();
+    let size_mode = cx.s.effective_size_mode();
+    let stroke_color_lens = cx.s.effective_stroke_color_lens();
+    let (stroke_width_lens, fixed_stroke_w) = cx.s.effective_stroke_width_lens();
+    let atom_font = FontId::proportional((cx.camera.zoom * 0.18).clamp(8.5, 12.5));
+
     for ((node, meta), &pos) in cx.iface.map.nodes.iter().zip(&cx.iface.atom_meta).zip(nodes) {
         let alpha = cx.s.side_alpha(node.role);
         if alpha <= MIN_DRAW_ALPHA {
             continue;
         }
-        let radius = sizing::atom_radius_px(node, cx.s.size_mode, cx.camera.zoom, cx.atom_draw);
-        let fill = palette::with_alpha(
-            lenses::atom_fill_color(node, meta, cx.s.lens, cx.s.bfactor_mode, cx.lenses, cx.pal),
-            alpha,
+        let radius = sizing::atom_radius_px(
+            node,
+            size_mode,
+            cx.s.fixed_node_radius_scale,
+            cx.s.bfactor_mode,
+            cx.camera.zoom,
+            cx.atom_draw,
+            cx.lenses,
         );
-
         let hovered = selection.hovered_atom == Some(node.global_atom);
-        let outline = if hovered {
-            Stroke::new(2.5_f32, egui::Color32::WHITE)
-        } else {
-            Stroke::new(1.0_f32, cx.pal.chrome.ink)
-        };
-        cx.painter.circle(pos, radius, fill, outline);
-        if hovered {
-            cx.painter.circle_stroke(pos, radius + 3.0, Stroke::new(1.5_f32, cx.pal.chrome.hover_ring()));
+
+        if size_mode != AtomSizeMode::Off && radius > 0.0 {
+            let fill = if fill_lens == ColorLens::Off {
+                Color32::TRANSPARENT
+            } else {
+                palette::with_alpha(
+                    lenses::atom_fill_color(
+                        node,
+                        meta,
+                        fill_lens,
+                        cx.s.fixed_node_fill,
+                        cx.s.bfactor_mode,
+                        cx.lenses,
+                        cx.pal,
+                    ),
+                    alpha,
+                )
+            };
+
+            let stroke_color = lenses::atom_stroke_color(
+                node,
+                meta,
+                stroke_color_lens,
+                cx.s.fixed_node_stroke_color,
+                cx.s.bfactor_mode,
+                hovered,
+                cx.lenses,
+                cx.pal,
+            );
+            let stroke_width = sizing::atom_stroke_width_px(
+                node,
+                stroke_width_lens,
+                fixed_stroke_w,
+                cx.s.bfactor_mode,
+                hovered,
+                cx.lenses,
+            );
+            let outline = if stroke_color_lens == NodeStrokeColorLens::Off || stroke_width <= 0.0 {
+                Stroke::NONE
+            } else {
+                Stroke::new(stroke_width, palette::with_alpha(stroke_color, alpha))
+            };
+            if fill != Color32::TRANSPARENT || outline != Stroke::NONE {
+                cx.painter.circle(pos, radius, fill, outline);
+            }
+            if hovered {
+                cx.painter.circle_stroke(pos, radius + 3.0, Stroke::new(1.5_f32, cx.pal.chrome.hover_ring()));
+            }
+        }
+
+        if let Some(label_text) = lenses::format_atom_label(node, meta, &cx.s.atom_labels) {
+            let label_pos = pos + vec2(0.0, -(radius + 2.0));
+            let ink = palette::with_alpha(cx.pal.chrome.ink, alpha * 0.92);
+            cx.painter.text(label_pos, Align2::CENTER_BOTTOM, label_text, atom_font.clone(), ink);
         }
     }
 }

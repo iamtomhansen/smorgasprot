@@ -5,7 +5,10 @@ mod options;
 mod tween;
 pub mod view_params;
 
-pub use options::{AtomSizeMode, BFactorMode, Choice, ColorLens, InterfaceDisplayMode, WorkspaceTab};
+pub use options::{
+    AtomSizeMode, BFactorMode, Choice, ColorLens, EdgeColorLens, EdgeWidthLens, InterfaceDisplayMode, LabelBuilder,
+    LabelValueChannel, NodeStrokeColorLens, ResidueNameStyle, TerritoryColorLens, TerritoryStrokeLens, WorkspaceTab,
+};
 pub use tween::Tween;
 pub use view_params::{
     AtomDrawParams, ExplodeParams, GridParams, LensParams, MorphParams, NavigationParams, OpacityParams, StatusParams,
@@ -13,7 +16,8 @@ pub use view_params::{
 };
 
 use crate::camera::CameraState;
-use crate::style::Palette;
+use crate::style::{ChromePalette, Palette};
+use egui::Color32;
 use smorgasprot_core::{GlobalAtomIdx, GlobalChainIdx, GlobalResidueIdx, InterfaceSide};
 
 /// Visibility toggles for collapsible side/bottom panels and floating windows.
@@ -160,7 +164,7 @@ impl ComplexViewSettings {
     }
 }
 
-/// Camera, morph, lens, and tweened layer settings for the Interface workspace tab.
+/// Camera, morph, visual-channel lenses, and tweened layer settings for the Interface workspace tab.
 #[derive(Clone, Debug)]
 pub struct InterfaceViewSettings {
     pub camera: CameraState,
@@ -170,9 +174,42 @@ pub struct InterfaceViewSettings {
     pub book: Tween,
     /// Spring-relaxed `(u, v)` instead of the raw tangent-plane projection.
     pub use_relaxed_uv: bool,
+
+    // Visual channel lenses
     pub lens: ColorLens,
-    pub bfactor_mode: BFactorMode,
     pub size_mode: AtomSizeMode,
+    pub stroke_color_lens: NodeStrokeColorLens,
+    pub stroke_width_lens: AtomSizeMode,
+    pub edge_color_lens: EdgeColorLens,
+    pub edge_width_lens: EdgeWidthLens,
+    pub territory_color_lens: TerritoryColorLens,
+    pub territory_stroke_lens: TerritoryStrokeLens,
+
+    // Per-channel customization toggles (unchecked falls back to default channel behavior)
+    pub lens_enabled: bool,
+    pub size_mode_enabled: bool,
+    pub stroke_color_enabled: bool,
+    pub stroke_width_enabled: bool,
+    pub edge_color_enabled: bool,
+    pub edge_width_enabled: bool,
+    pub territory_color_enabled: bool,
+    pub territory_stroke_enabled: bool,
+
+    // User-configurable constant values when a channel is set to `Fixed`
+    pub fixed_node_fill: Color32,
+    pub fixed_node_radius_scale: f32,
+    pub fixed_node_stroke_color: Color32,
+    pub fixed_node_stroke_width_px: f32,
+    pub fixed_edge_color: Color32,
+    pub fixed_edge_width_px: f32,
+    pub fixed_territory_fill: Color32,
+    pub fixed_territory_stroke_width_px: f32,
+
+    // Composable label builders for atom nodes and residue territories
+    pub atom_labels: LabelBuilder,
+    pub territory_labels: LabelBuilder,
+
+    pub bfactor_mode: BFactorMode,
     pub side_a_alpha: Tween,
     pub side_b_alpha: Tween,
     pub show_territories: bool,
@@ -183,14 +220,39 @@ pub struct InterfaceViewSettings {
 
 impl Default for InterfaceViewSettings {
     fn default() -> Self {
+        let chrome = ChromePalette::default();
         Self {
             camera: CameraState::default(),
             flatten: Tween::new(1.0),
             book: Tween::new(0.0),
             use_relaxed_uv: true,
             lens: ColorLens::Interactions,
-            bfactor_mode: BFactorMode::Crystallographic,
             size_mode: AtomSizeMode::SqrtBuriedSasa,
+            stroke_color_lens: NodeStrokeColorLens::DefaultInk,
+            stroke_width_lens: AtomSizeMode::Fixed,
+            edge_color_lens: EdgeColorLens::InteractionKind,
+            edge_width_lens: EdgeWidthLens::InteractionKind,
+            territory_color_lens: TerritoryColorLens::InterfaceSide,
+            territory_stroke_lens: TerritoryStrokeLens::Fixed,
+            lens_enabled: true,
+            size_mode_enabled: true,
+            stroke_color_enabled: false,
+            stroke_width_enabled: false,
+            edge_color_enabled: true,
+            edge_width_enabled: true,
+            territory_color_enabled: true,
+            territory_stroke_enabled: false,
+            fixed_node_fill: Color32::from_rgb(86, 180, 233),
+            fixed_node_radius_scale: 1.15,
+            fixed_node_stroke_color: chrome.ink,
+            fixed_node_stroke_width_px: 1.0,
+            fixed_edge_color: Color32::from_rgb(135, 206, 250),
+            fixed_edge_width_px: 1.5,
+            fixed_territory_fill: Color32::from_rgb(86, 180, 233),
+            fixed_territory_stroke_width_px: 1.2,
+            atom_labels: LabelBuilder::default_atom(),
+            territory_labels: LabelBuilder::default_territory(),
+            bfactor_mode: BFactorMode::Crystallographic,
             side_a_alpha: Tween::new(1.0),
             side_b_alpha: Tween::new(0.35),
             show_territories: true,
@@ -202,6 +264,53 @@ impl Default for InterfaceViewSettings {
 }
 
 impl InterfaceViewSettings {
+    /// Active node fill lens (falls back to `ColorLens::default()` when channel customization is unchecked).
+    pub fn effective_lens(&self) -> ColorLens {
+        if self.lens_enabled { self.lens } else { ColorLens::default() }
+    }
+
+    /// Active node size lens (falls back to `AtomSizeMode::default()` when unchecked).
+    pub fn effective_size_mode(&self) -> AtomSizeMode {
+        if self.size_mode_enabled { self.size_mode } else { AtomSizeMode::default() }
+    }
+
+    /// Active node border color lens (falls back to `NodeStrokeColorLens::default()` when unchecked).
+    pub fn effective_stroke_color_lens(&self) -> NodeStrokeColorLens {
+        if self.stroke_color_enabled { self.stroke_color_lens } else { NodeStrokeColorLens::default() }
+    }
+
+    /// Active node border width lens (falls back to `AtomSizeMode::Fixed` at `1.0 px` when unchecked).
+    pub fn effective_stroke_width_lens(&self) -> (AtomSizeMode, f32) {
+        if self.stroke_width_enabled {
+            (self.stroke_width_lens, self.fixed_node_stroke_width_px)
+        } else {
+            (AtomSizeMode::Fixed, 1.0)
+        }
+    }
+
+    /// Active contact edge color lens (falls back to `EdgeColorLens::default()` when unchecked).
+    pub fn effective_edge_color_lens(&self) -> EdgeColorLens {
+        if self.edge_color_enabled { self.edge_color_lens } else { EdgeColorLens::default() }
+    }
+
+    /// Active contact edge width lens (falls back to `EdgeWidthLens::default()` when unchecked).
+    pub fn effective_edge_width_lens(&self) -> EdgeWidthLens {
+        if self.edge_width_enabled { self.edge_width_lens } else { EdgeWidthLens::default() }
+    }
+
+    /// Active territory fill color lens (falls back to `TerritoryColorLens::default()` when unchecked).
+    pub fn effective_territory_color_lens(&self) -> TerritoryColorLens {
+        if self.territory_color_enabled { self.territory_color_lens } else { TerritoryColorLens::default() }
+    }
+
+    /// Active territory border stroke width lens (falls back to `TerritoryStrokeLens::Fixed` at `1.2 px` when unchecked).
+    pub fn effective_territory_stroke_lens(&self) -> (TerritoryStrokeLens, f32) {
+        if self.territory_stroke_enabled {
+            (self.territory_stroke_lens, self.fixed_territory_stroke_width_px)
+        } else {
+            (TerritoryStrokeLens::Fixed, 1.2)
+        }
+    }
     /// Current displayed opacity for one side of the interface (`0` for unassigned).
     pub fn side_alpha(&self, side: InterfaceSide) -> f32 {
         match side {
