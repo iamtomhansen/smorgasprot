@@ -10,7 +10,7 @@ use crate::style::palette::darken;
 use crate::style::{ContactPalette, Palette};
 use egui::Color32;
 use smorgasprot_core::{
-    AminoAcid, AtomNode, EdgeKind, InterfaceEdge, InterfaceSide, ResidueTerritory, print_three_letter_code,
+    AminoAcid, AtomNode, BondKind, EdgeKind, InterfaceEdge, InterfaceSide, ResidueTerritory, print_three_letter_code,
     residue_full_name,
 };
 
@@ -82,7 +82,7 @@ pub fn atom_fill_color(
                 c.salt_bridge
             } else if has_cross_interaction(node, EdgeKind::HBond) {
                 c.hbond
-            } else if node.role == InterfaceSide::SideA {
+            } else if node.side == InterfaceSide::SideA {
                 palette.sides.side_a
             } else {
                 palette.sides.side_light(InterfaceSide::SideB)
@@ -90,7 +90,7 @@ pub fn atom_fill_color(
         }
         ColorLens::AaChemistry => aa_chemistry_color(&meta.res_name, node.aliphatic_score, params, palette),
         ColorLens::ModernCpk => palette.elements.color(meta.element),
-        ColorLens::InterfaceSide => palette.sides.side(node.role),
+        ColorLens::InterfaceSide => palette.sides.side(node.side),
         ColorLens::Bfactor | ColorLens::BuriedSasa | ColorLens::AliphaticScore | ColorLens::ClashSeverity => {
             unreachable!()
         }
@@ -131,7 +131,7 @@ pub fn atom_stroke_color(
         NodeStrokeColorLens::ModernCpk => {
             atom_fill_color(node, meta, ColorLens::ModernCpk, fixed_color, bfactor_mode, params, palette)
         }
-        NodeStrokeColorLens::InterfaceSide => palette.sides.side_dark(node.role),
+        NodeStrokeColorLens::InterfaceSide => palette.sides.side_dark(node.side),
         NodeStrokeColorLens::Bfactor => {
             atom_fill_color(node, meta, ColorLens::Bfactor, fixed_color, bfactor_mode, params, palette)
         }
@@ -187,7 +187,7 @@ pub fn territory_fill_color(
     match lens {
         TerritoryColorLens::Fixed => fixed_color,
         TerritoryColorLens::Off => Color32::TRANSPARENT,
-        TerritoryColorLens::InterfaceSide => palette.sides.side(terr.role),
+        TerritoryColorLens::InterfaceSide => palette.sides.side(terr.side),
         TerritoryColorLens::Chemistry => {
             let res_name = terr
                 .patch_atoms
@@ -201,7 +201,7 @@ pub fn territory_fill_color(
             if terr.has_unsatisfied_polar {
                 palette.chrome.warning
             } else {
-                palette.sides.side(terr.role)
+                palette.sides.side(terr.side)
             }
         }
         TerritoryColorLens::BuriedSasa | TerritoryColorLens::AvgMobility => unreachable!(),
@@ -412,7 +412,9 @@ pub fn contact_width(kind: EdgeKind) -> f32 {
         EdgeKind::Clash => 2.2,
         EdgeKind::SaltBridge => 2.0,
         EdgeKind::HBond => 1.8,
-        EdgeKind::VanDerWaalsContact | EdgeKind::SameResidue => 1.0,
+        EdgeKind::Covalent(BondKind::Disulfide) => 1.6,
+        EdgeKind::Covalent(BondKind::Backbone | BondKind::Sidechain | BondKind::Other) => 1.0,
+        EdgeKind::VanDerWaalsContact => 1.0,
     }
 }
 
@@ -422,8 +424,11 @@ pub fn contact_label(kind: EdgeKind) -> &'static str {
         EdgeKind::Clash => "Clash",
         EdgeKind::SaltBridge => "Salt bridge",
         EdgeKind::HBond => "H-bond",
+        EdgeKind::Covalent(BondKind::Backbone) => "Backbone bond",
+        EdgeKind::Covalent(BondKind::Sidechain) => "Sidechain bond",
+        EdgeKind::Covalent(BondKind::Disulfide) => "Disulfide",
+        EdgeKind::Covalent(BondKind::Other) => "Other covalent bond",
         EdgeKind::VanDerWaalsContact => "vdW contact",
-        EdgeKind::SameResidue => "Same residue",
     }
 }
 

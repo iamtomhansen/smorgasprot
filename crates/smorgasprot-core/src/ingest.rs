@@ -1,11 +1,13 @@
 //! Direct `.pdb` and `.cif` structure ingestion via `pdbtbx`.
 
 use crate::amino_acids::{ElementExt, ResidueKind};
+use crate::bonds::{BondParams, detect_bonds};
 use crate::dssp::{SecStructMode, assign_secondary_structure};
 use crate::model::{
-    AtomRecord, GlobalChainIdx, ChainName, ChainRecord, ComplexStructure, Element, GlobalAtomIdx, GlobalResidueIdx,
-    ResidueRecord, SecStruct,
+    AtomRecord, Bond, BondKind, GlobalChainIdx, ChainName, ChainRecord, ComplexStructure, Element, GlobalAtomIdx,
+    GlobalResidueIdx, ResidueRecord, SecStruct,
 };
+use std::collections::HashMap;
 use std::path::Path;
 
 /// Loads all chains from a `.pdb` or `.cif` structure into an unpartitioned [`ComplexStructure`].
@@ -24,6 +26,11 @@ pub fn load_complex(path: impl AsRef<Path>) -> Result<ComplexStructure, String> 
     let (pdb, _errors) =
         pdbtbx::open(path_str).map_err(|errs| format!("Failed to open {path_str}: {errs:?}"))?;
 
+    // TODO: `pdb.models()` can yield multiple MODELs (e.g. an NMR ensemble, or a multi-state
+    // computational prediction) — we only ever load the first and silently discard the rest.
+    // Fine today (every current example is single-model), but will need real handling (either
+    // an ensemble-aware `ComplexStructure`, or at least a user-facing choice of which model) once
+    // a multi-model file actually shows up.
     let model = pdb
         .models()
         .next()
@@ -39,6 +46,7 @@ pub fn load_complex(path: impl AsRef<Path>) -> Result<ComplexStructure, String> 
     let mut residues = Vec::new();
     let mut atoms = Vec::new();
 
+    // Parse each chain in the structure file.
     for chain in model.chains() {
         let cid = chain.id().to_string();
         let chain_idx = GlobalChainIdx(chains.len() as u32);
@@ -141,12 +149,46 @@ pub fn load_complex(path: impl AsRef<Path>) -> Result<ComplexStructure, String> 
         chains,
         residues,
         atoms,
+        bonds: Vec::new(),
     };
 
+    // Assign secondary structure immediately upon loading.
     assign_secondary_structure(
         &mut complex,
         Some(path_ref),
         SecStructMode::FromFileOrComputeDssp,
     );
+    // Two independent bond-detection protocols, unioned: geometry is the general-purpose method
+    // (works for any file), explicit records are authoritative when a file happens to provide them.
+    let geometric = detect_bonds(&complex, &BondParams::default());
+    let explicit = explicit_disulfide_bonds(&complex, &pdb);
+    complex.bonds = union_bonds(geometric, explicit);
     Ok(complex)
+}
+
+/// Disulfides `pdbtbx` already parsed from legacy `.pdb` `SSBOND` records (`Bond::Disulfide`).
+fn explicit_disulfide_bonds(complex: &ComplexStructure, pdb: &pdbtbx::PDB) -> Vec<Bond> {
+    let serial_to_idx: HashMap<usize, GlobalAtomIdx> =
+        complex.atoms.iter().map(|a| (a.atom_serial, a.idx)).collect();
+    pdb.bonds()
+        .filter(|(_, _, kind)| *kind == pdbtbx::Bond::Disulfide)
+        .filter_map(|(atom_a, atom_b, _)| {
+            let a = *serial_to_idx.get(&atom_a.serial_number())?;
+            let b = *serial_to_idx.get(&atom_b.serial_number())?;
+            Some(Bond { a, b, kind: BondKind::Disulfide })
+        })
+        .collect()
+}
+
+/// Unions two bond lists, deduplicating by atom pair (`geometric`'s entry wins on conflict).
+fn union_bonds(geometric: Vec<Bond>, explicit: Vec<Bond>) -> Vec<Bond> {
+    let mut seen: std::collections::HashSet<(u32, u32)> =
+        geometric.iter().map(|b| (b.a.0.min(b.b.0), b.a.0.max(b.b.0))).collect();
+    let mut bonds = geometric;
+    for bond in explicit {
+        if seen.insert((bond.a.0.min(bond.b.0), bond.a.0.max(bond.b.0))) {
+            bonds.push(bond);
+        }
+    }
+    bonds
 }

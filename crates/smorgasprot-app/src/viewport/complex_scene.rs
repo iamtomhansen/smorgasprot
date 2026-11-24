@@ -308,7 +308,7 @@ fn add_spheres(
             .and_then(|c| c.atoms.get(node.global_atom.0 as usize))
             .and_then(|a| ds.chains.get(a.chain_idx.0 as usize))
             .map_or([0.0; 3], |ch| ch.draw_explode_offset);
-        let offset = chain_total_offset(view, node.role, chain_explode, s);
+        let offset = chain_total_offset(view, node.side, chain_explode, s);
         let (center, depth) = view.project(node.pos_3d, offset);
         let radius = sizing::complex_sphere_radius_px(
             node,

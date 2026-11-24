@@ -283,7 +283,7 @@ pub fn build_interface_negative_mesh(
         min_pt = min_pt.min(pos);
         max_pt = max_pt.max(pos);
 
-        match node.role {
+        match node.side {
             InterfaceSide::SideA => side_a_atoms.push((pos, r, node.global_atom)),
             InterfaceSide::SideB => side_b_atoms.push((pos, r, node.global_atom)),
             InterfaceSide::None => {}
@@ -656,7 +656,7 @@ mod tests {
                 idx: AtomNodeIdx(0),
                 global_atom: GlobalAtomIdx(0),
                 territory: TerritoryIdx(0),
-                role: InterfaceSide::SideA,
+                side: InterfaceSide::SideA,
                 b_factor: 25.0,
                 free_sasa_a2: 10.0,
                 complex_sasa_a2: 0.0,
@@ -672,7 +672,7 @@ mod tests {
                 idx: AtomNodeIdx(1),
                 global_atom: GlobalAtomIdx(1),
                 territory: TerritoryIdx(1),
-                role: InterfaceSide::SideB,
+                side: InterfaceSide::SideB,
                 b_factor: 30.0,
                 free_sasa_a2: 10.0,
                 complex_sasa_a2: 0.0,

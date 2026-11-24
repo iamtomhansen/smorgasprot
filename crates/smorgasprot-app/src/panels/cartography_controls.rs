@@ -193,6 +193,9 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState) {
         ui.checkbox(&mut s.edges.show_intra, "1st-shell intra-chain contacts");
         ui.checkbox(&mut s.edges.show_cross, "Cross-interface contacts");
         ui.checkbox(&mut s.show_backbone, "3D Cα backbone ribbons");
+        // A pure presentation choice — doesn't touch `InterfacePartition`'s actual chain-to-side assignment.
+        let on_top_name = ds.group_name(if s.side_a_on_top { InterfaceSide::SideA } else { InterfaceSide::SideB });
+        ui.checkbox(&mut s.side_a_on_top, format!("{on_top_name} draws on top"));
     });
 }
 

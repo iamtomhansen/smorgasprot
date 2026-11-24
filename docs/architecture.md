@@ -10,11 +10,12 @@ smorgasprot/
 ├── viewer.html, js/          Legacy JS viewer (frozen; superseded by export/template.html)
 └── crates/
     ├── smorgasprot-core/src/
-    │   ├── model.rs              Index newtypes, ComplexStructure, ChainRecord, ResidueRecord, AtomRecord, SurfaceMesh
+    │   ├── model.rs              Index newtypes, ComplexStructure, ChainRecord, ResidueRecord, AtomRecord, SurfaceMesh, Bond/BondKind
     │   ├── params.rs             AnalysisParams + param_group! macro (every tunable, with docs and ranges)
     │   ├── ingest.rs             PDB/mmCIF from a file path → ComplexStructure (bytes/gzip ingestion is future work, needed once wasm drag-and-drop lands)
     │   ├── amino_acids.rs        Residue/element classification, vdW radii
     │   ├── dssp.rs               Secondary structure (file records, else DSSP)
+    │   ├── bonds.rs              Covalent bond detection (geometric + explicit SSBOND records)
     │   ├── spatial.rs            Uniform voxel hash grid
     │   ├── sasa.rs               Shrake-Rupley ΔSASA, interface inclusion
     │   ├── physics.rs            Clashes, H-bonds, salt bridges, aliphatic packing, interface graph

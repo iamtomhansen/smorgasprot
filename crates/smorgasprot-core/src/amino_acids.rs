@@ -29,6 +29,9 @@ pub trait ElementExt {
 
     /// Returns the Bondi (1964) / Mantina (2009) van der Waals radius in Angstroms via `pdbtbx::Element::atomic_radius()`.
     fn vdw_radius_a(self) -> f32;
+
+    /// Returns the single-bond covalent radius (A) for this element (`pdbtbx::Element::atomic_radius().covalent_single`).
+    fn covalent_radius_a(self) -> f32;
 }
 
 impl ElementExt for Element {
@@ -79,6 +82,11 @@ impl ElementExt for Element {
     #[inline]
     fn vdw_radius_a(self) -> f32 {
         self.atomic_radius().van_der_waals.unwrap_or(1.75) as f32
+    }
+
+    #[inline]
+    fn covalent_radius_a(self) -> f32 {
+        self.atomic_radius().covalent_single as f32
     }
 }
 

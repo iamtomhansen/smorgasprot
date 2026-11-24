@@ -1,7 +1,7 @@
-//! Domain model for macromolecular interfaces and cartographic maps.
+//! Domain model for macromolecular interfaces and cartographic interface maps.
 
 use super::definition::InterfaceSide;
-use crate::model::{ChainName, GlobalAtomIdx, GlobalResidueIdx, SurfaceMesh};
+use crate::model::{BondKind, ChainName, GlobalAtomIdx, GlobalResidueIdx, SurfaceMesh};
 use serde::{Deserialize, Serialize};
 
 /// Dense index into `InterfaceMap::nodes`.
@@ -51,7 +51,7 @@ pub struct InterfaceGeometry {
 pub struct ResidueTerritory {
     pub idx: TerritoryIdx,
     pub global_residue: GlobalResidueIdx,
-    pub role: InterfaceSide,
+    pub side: InterfaceSide,
     pub chain_id: ChainName,
     pub label_top: String,
     pub label_bottom: String,
@@ -75,7 +75,7 @@ pub struct AtomNode {
     pub idx: AtomNodeIdx,
     pub global_atom: GlobalAtomIdx,
     pub territory: TerritoryIdx,
-    pub role: InterfaceSide,
+    pub side: InterfaceSide,
     /// Crystallographic isotropic B-factor (temperature factor, in A^2) or AlphaFold pLDDT (0-100).
     pub b_factor: f32,
     pub free_sasa_a2: f32,
@@ -92,11 +92,12 @@ pub struct AtomNode {
 /// Unified classification of an edge or contact between two interfacial atoms (intra-side or cross-interface).
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum EdgeKind {
-    /// Intra-residue covalent / first-shell geometry spring.
-    SameResidue,
+    /// A real covalent bond, as found by `bonds::detect_bonds` and stored in `ComplexStructure::bonds`.
+    /// See [`BondKind`] sub-classifications (backbone, sidechain, disulfide, other).
+    Covalent(BondKind),
     /// General first-shell spatial neighbor / apolar van der Waals contact (<= 4.5 A).
     VanDerWaalsContact,
-    /// Steric van der Waals clash (overlap_a > 0.05 A).
+    /// Steric van der Waals radius clash.
     Clash,
     /// Hydrogen bond (2.35..=3.50 A between polar N/O heavy atoms).
     HBond,

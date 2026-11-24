@@ -30,7 +30,7 @@ use crate::interface::model::{
     AtomInteraction, AtomNode, AtomNodeIdx, EdgeKind, InterfaceEdge, ResidueTerritory, TerritoryIdx,
 };
 use crate::model::{
-    AtomRecord, ComplexStructure, Element, GlobalResidueIdx, ResidueRecord, SecStruct,
+    AtomRecord, BondKind, ComplexStructure, Element, GlobalResidueIdx, ResidueRecord, SecStruct,
 };
 use crate::sasa::{SasaParams, compute_complex_sasa, is_interfacial_atom};
 use crate::spatial::SpatialGrid;
@@ -39,7 +39,7 @@ use std::collections::HashMap;
 
 crate::param_group! {
     /// Distance and angle criteria for contacts, clashes, H-bonds, and salt bridges.
-    pub struct ContactParams("contacts", "Contacts & Interactions") {
+    pub struct ContactParams("contacts", "Contacts & interactions") {
         /// First-shell neighbor cutoff for springs and contacts (Å).
         first_shell_cutoff_a: f32 = 4.5, 3.0..=8.0, "First-shell neighbor cutoff", "Å";
         /// Allowed van der Waals overlap before a pair counts as a clash (Å).
@@ -71,9 +71,19 @@ crate::param_group! {
 ///
 /// `base_a` and `base_b` are the optional 3D coordinates of the covalently bonded antecedent ("base")
 /// heavy atoms attached to `atom_a` and `atom_b`, used to enforce the Baker & Hubbard (1984) angular
-/// criterion on hydrogen bonds.
+/// criterion on hydrogen bonds. `bonded` is the actual `BondKind` `complex.bonds`
+/// (`bonds::detect_bonds`) found for this pair, if any — checked before non-covalent
+/// classification, so e.g. a disulfide (~2.05 Å S-S) is never mistaken for a steric clash. This
+/// reuses `BondKind` directly rather than re-deriving an equivalent classification here.
+///
+/// `one_bond_removed` is whether the pair shares a common bonded neighbor (1-3, e.g. backbone
+/// N...C across Cα) without being bonded to each other directly — Probe/MolProbity (Word et al.
+/// 1999, cited above) excludes both 1-2 *and* 1-3 pairs from clash/polar scoring, since they're
+/// geometrically constrained by bond lengths and angles, not independent non-bonded contacts.
+/// Skipping this would flag ordinary bonded-angle geometry as a severe steric clash.
 ///
 /// Returns `Some((EdgeKind, overlap_a))` if the atoms lie within `p.first_shell_cutoff_a` (default `4.5 A`).
+#[allow(clippy::too_many_arguments)]
 pub fn classify_pair_edge(
     atom_a: &AtomRecord,
     res_a: &ResidueRecord,
@@ -82,69 +92,66 @@ pub fn classify_pair_edge(
     res_b: &ResidueRecord,
     base_b: Option<Vec3>,
     dist_a: f32,
+    bonded: Option<BondKind>,
+    one_bond_removed: bool,
     p: &ContactParams,
 ) -> Option<(EdgeKind, f32)> {
     if dist_a > p.first_shell_cutoff_a {
         return None;
     }
 
-    if atom_a.residue_idx == atom_b.residue_idx {
-        return Some((EdgeKind::SameResidue, 0.0));
+    if let Some(kind) = bonded {
+        return Some((EdgeKind::Covalent(kind), 0.0));
     }
 
-    if is_adjacent_backbone_pair(res_a, res_b) {
-        return Some((EdgeKind::VanDerWaalsContact, 0.0));
-    }
+    if !one_bond_removed {
+        if let Some(overlap_a) = check_steric_clash(atom_a, atom_b, dist_a, p) {
+            return Some((EdgeKind::Clash, overlap_a));
+        }
 
-    if let Some(overlap_a) = check_steric_clash(atom_a, atom_b, dist_a, p) {
-        return Some((EdgeKind::Clash, overlap_a));
-    }
+        if is_salt_bridge(atom_a, res_a, atom_b, res_b, dist_a, p) {
+            return Some((EdgeKind::SaltBridge, 0.0));
+        }
 
-    if is_salt_bridge(atom_a, res_a, atom_b, res_b, dist_a, p) {
-        return Some((EdgeKind::SaltBridge, 0.0));
-    }
-
-    if is_hydrogen_bond_baker_hubbard(atom_a, base_a, atom_b, base_b, dist_a, p) {
-        return Some((EdgeKind::HBond, 0.0));
+        if is_hydrogen_bond_baker_hubbard(atom_a, base_a, atom_b, base_b, dist_a, p) {
+            return Some((EdgeKind::HBond, 0.0));
+        }
     }
 
     Some((EdgeKind::VanDerWaalsContact, 0.0))
 }
 
 /// Precomputes the 3D position of each atom's closest covalently bonded antecedent ("base")
-/// heavy atom within the same residue (`1.10 A <= d <= 1.68 A`).
+/// heavy atom within the same residue, derived from `complex.bonds` (filtered to same-residue
+/// pairs directly — `BondKind::Backbone` alone isn't enough, since it also covers the
+/// inter-residue peptide link).
 ///
 /// Examples:
 /// - For `Ser OG`, the covalent base is `CB`.
 /// - For `Glu OE1/OE2`, the covalent base is `CD`.
 /// - For backbone `O`, the covalent base is `C`; for backbone `N`, the covalent base is `CA`.
 pub fn precompute_covalent_base_positions(complex: &ComplexStructure) -> Vec<Option<Vec3>> {
-    let mut bases = vec![None; complex.atoms.len()];
+    let mut bases: Vec<Option<(Vec3, f32)>> = vec![None; complex.atoms.len()];
+    let pos = |idx: u32| Vec3::from(complex.atoms[idx as usize].pos_3d);
 
-    for res in &complex.residues {
-        let start = res.atom_range.0 as usize;
-        let end = res.atom_range.1 as usize;
-        for i in start..end {
-            let pi = Vec3::from(complex.atoms[i].pos_3d);
-            let mut best_base = None;
-            let mut best_d2 = f32::INFINITY;
-
-            for j in start..end {
-                if i == j {
-                    continue;
-                }
-                let pj = Vec3::from(complex.atoms[j].pos_3d);
-                let d2 = pi.distance_squared(pj);
-                if (1.10 * 1.10..=1.72 * 1.72).contains(&d2) && d2 < best_d2 {
-                    best_d2 = d2;
-                    best_base = Some(pj);
-                }
-            }
-            bases[i] = best_base;
+    let mut consider = |i: u32, j: u32| {
+        let (pi, pj) = (pos(i), pos(j));
+        let d2 = pi.distance_squared(pj);
+        let slot = &mut bases[i as usize];
+        if slot.is_none_or(|(_, best_d2)| d2 < best_d2) {
+            *slot = Some((pj, d2));
         }
+    };
+    for bond in &complex.bonds {
+        let same_residue = complex.atoms[bond.a.0 as usize].residue_idx == complex.atoms[bond.b.0 as usize].residue_idx;
+        if !same_residue {
+            continue;
+        }
+        consider(bond.a.0, bond.b.0);
+        consider(bond.b.0, bond.a.0);
     }
 
-    bases
+    bases.into_iter().map(|b| b.map(|(p, _)| p)).collect()
 }
 
 /// Returns true if `res_a` and `res_b` are adjacent covalently linked polypeptide residues (`|Δseq| <= 1`) on the same chain.
@@ -436,7 +443,7 @@ pub fn extract_3d_interface_graph(
             territories.push(ResidueTerritory {
                 idx: t_idx,
                 global_residue: atom.residue_idx,
-                role: side,
+                side,
                 chain_id: res.chain_id.clone(),
                 label_top,
                 label_bottom,
@@ -460,7 +467,7 @@ pub fn extract_3d_interface_graph(
             idx: p_idx,
             global_atom: atom.idx,
             territory: terr_idx,
-            role: side,
+            side,
             b_factor: atom.b_factor,
             free_sasa_a2: sasa.free_sasa_a2,
             complex_sasa_a2: sasa.complex_sasa_a2,
@@ -480,6 +487,19 @@ pub fn extract_3d_interface_graph(
 
     // Classify all 3D first-shell pairs and populate vectorized node.interactions
     let covalent_bases = precompute_covalent_base_positions(complex);
+    let bonded_pairs: HashMap<(u32, u32), BondKind> =
+        complex.bonds.iter().map(|b| ((b.a.0.min(b.b.0), b.a.0.max(b.b.0)), b.kind)).collect();
+    // Per-atom bonded neighbors, for the 1-3 exclusion test below.
+    let mut neighbors: HashMap<u32, Vec<u32>> = HashMap::new();
+    for bond in &complex.bonds {
+        neighbors.entry(bond.a.0).or_default().push(bond.b.0);
+        neighbors.entry(bond.b.0).or_default().push(bond.a.0);
+    }
+    let shares_bonded_neighbor = |a: u32, b: u32| {
+        neighbors
+            .get(&a)
+            .is_some_and(|ns_a| neighbors.get(&b).is_some_and(|ns_b| ns_a.iter().any(|n| ns_b.contains(n))))
+    };
     let mut edges = Vec::new();
 
     for i in 0..nodes.len() {
@@ -500,14 +520,16 @@ pub fn extract_3d_interface_graph(
             let atom_j = &complex.atoms[g_j];
             let res_j = &complex.residues[atom_j.residue_idx.0 as usize];
             let base_j = covalent_bases[g_j];
+            let bonded = bonded_pairs.get(&((g_i as u32).min(g_j as u32), (g_i as u32).max(g_j as u32))).copied();
+            let one_bond_removed = bonded.is_none() && shares_bonded_neighbor(g_i as u32, g_j as u32);
 
             let Some((kind, overlap_a)) =
-                classify_pair_edge(atom_i, res_i, base_i, atom_j, res_j, base_j, dist, p)
+                classify_pair_edge(atom_i, res_i, base_i, atom_j, res_j, base_j, dist, bonded, one_bond_removed, p)
             else {
                 continue;
             };
 
-            let is_cross = nodes[i].role != nodes[j].role;
+            let is_cross = nodes[i].side != nodes[j].side;
             let p_i = AtomNodeIdx(i as u32);
             let p_j = AtomNodeIdx(j as u32);
 
@@ -522,6 +544,7 @@ pub fn extract_3d_interface_graph(
                 overlap_a,
             });
 
+            // Every edge is stored twice, once in each node's interactions list, for fast access.
             nodes[i].interactions.push(AtomInteraction {
                 partner: p_j,
                 is_cross_interface: is_cross,

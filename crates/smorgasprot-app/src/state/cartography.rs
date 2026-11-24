@@ -121,6 +121,9 @@ pub struct CartographyViewSettings {
     pub side_a_alpha: Tween,
     pub side_b_alpha: Tween,
     pub show_backbone: bool,
+    /// Which side's territories/labels paint on top of the other — a pure presentation choice,
+    /// independent of `InterfacePartition`'s actual chain-to-side assignment.
+    pub side_a_on_top: bool,
 }
 
 impl Default for CartographyViewSettings {
@@ -137,6 +140,7 @@ impl Default for CartographyViewSettings {
             side_a_alpha: Tween::new(1.0),
             side_b_alpha: Tween::new(0.35),
             show_backbone: true,
+            side_a_on_top: true,
         }
     }
 }
@@ -184,6 +188,16 @@ impl CartographyViewSettings {
         self.atoms.reset();
         self.edges.reset();
         self.territories.reset();
+    }
+
+    /// Back-to-front paint order for side-layered geometry (territories, labels): the first
+    /// element is painted first (bottom), so the second one reads on top.
+    pub fn side_paint_order(&self) -> [InterfaceSide; 2] {
+        if self.side_a_on_top {
+            [InterfaceSide::SideB, InterfaceSide::SideA]
+        } else {
+            [InterfaceSide::SideA, InterfaceSide::SideB]
+        }
     }
 
     /// Current displayed opacity for one side of the interface (`0` for unassigned).

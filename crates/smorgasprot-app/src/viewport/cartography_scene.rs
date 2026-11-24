@@ -1,5 +1,6 @@
-//! Cartography ("Sandwich") tab scene: atoms morphing between true 3D and the flat 2D map, with territories and contacts.
-//! Painted in fixed layers (territories < springs < arcs < atoms < labels) rather than depth-sorted.
+//! Cartography ("Sandwich") tab scene: atoms morphing between true 3D and the flat 2D map, with territories 
+//! indicating amino acid residues (and/or small molecules) and edges indicating contacts. Painted
+//! in fixed layers (territories < springs < arcs < atoms < labels) rather than depth-sorted.
 
 use super::plane_space::PlaneFrame;
 use crate::camera::CameraState;
@@ -20,6 +21,8 @@ const MIN_INTERACTIVE_ALPHA: f32 = 0.05;
 const PICK_RADIUS_PX: f32 = 14.0;
 /// Half-length (Å) of the drawn open-book hinge line.
 const HINGE_HALF_LEN_A: f32 = 28.0;
+/// The faint backbone trace dims by this factor on top of the flatten-progress fade (`paint_backbone`).
+const BACKBONE_ALPHA_SCALE: f32 = 0.45;
 
 /// Shared per-frame inputs for every layer.
 struct Ctx<'a> {
@@ -53,7 +56,7 @@ pub fn project_nodes(ds: &ViewerDataset, rect: Rect, s: &CartographyViewSettings
         .iter()
         .map(|n| {
             let uv = if s.use_relaxed_uv { n.pos_uv } else { n.pos_uv_raw };
-            let local = frame.morph(n.pos_3d, uv, n.role, s.flatten.value, s.book.value);
+            let local = frame.morph(n.pos_3d, uv, n.side, s.flatten.value, s.book.value);
             s.camera.project(local, rect).0
         })
         .collect()
@@ -65,7 +68,7 @@ pub fn pick_atom(ds: &ViewerDataset, s: &CartographyViewSettings, nodes: &[Pos2]
     nodes
         .iter()
         .zip(&iface.map.nodes)
-        .filter(|(_, n)| s.side_alpha(n.role) > MIN_INTERACTIVE_ALPHA)
+        .filter(|(_, n)| s.side_alpha(n.side) > MIN_INTERACTIVE_ALPHA)
         .map(|(p, n)| (p.distance_sq(pointer), n.idx))
         .filter(|(d2, _)| *d2 < PICK_RADIUS_PX * PICK_RADIUS_PX)
         .min_by(|a, b| a.0.total_cmp(&b.0))
@@ -141,7 +144,7 @@ fn paint_backbone(cx: &Ctx) {
         if alpha <= MIN_DRAW_ALPHA {
             continue;
         }
-        let stroke = Stroke::new(width, palette::with_alpha(cx.pal.sides.side_dark(side), fade * alpha * 0.45));
+        let stroke = Stroke::new(width, palette::with_alpha(cx.pal.sides.side_dark(side), fade * alpha * BACKBONE_ALPHA_SCALE));
         // Use each Cα's own tangent-plane (u, v) so the trace follows the butterfly hinge.
         let pts: Vec<Pos2> = ch
             .ca_positions
@@ -157,18 +160,18 @@ fn paint_backbone(cx: &Ctx) {
     }
 }
 
-/// Residue territory polygons; side B first so side A reads on top.
+/// Residue territory polygons; painted back-to-front per `CartographyViewSettings::side_paint_order`.
 fn paint_territories(cx: &Ctx, selection: &Selection) {
     let color_lens = cx.s.territories.fill.lens;
     let stroke_lens = cx.s.territories.stroke_width.lens;
     let fixed_stroke_w = cx.s.territories.stroke_width.fixed;
 
-    for side in [InterfaceSide::SideB, InterfaceSide::SideA] {
+    for side in cx.s.side_paint_order() {
         let alpha = cx.s.side_alpha(side);
         if alpha <= MIN_DRAW_ALPHA {
             continue;
         }
-        for terr in cx.iface.map.territories.iter().filter(|t| t.role == side && !t.contour_uv.is_empty()) {
+        for terr in cx.iface.map.territories.iter().filter(|t| t.side == side && !t.contour_uv.is_empty()) {
             // Contours exist only for relaxed (u, v), so they ignore the raw-UV toggle.
             let pts: Vec<Pos2> =
                 terr.contour_uv.iter().zip(&terr.contour_3d).map(|(&uv, &p)| cx.morph(p, uv, side)).collect();
@@ -200,7 +203,7 @@ fn paint_territories(cx: &Ctx, selection: &Selection) {
                 palette::with_alpha(base_color, alpha * fill_a)
             };
             let border_base = if color_lens == TerritoryColorLens::Off {
-                cx.pal.sides.side(terr.role)
+                cx.pal.sides.side(terr.side)
             } else {
                 base_color
             };
@@ -225,7 +228,7 @@ fn paint_intra_edges(cx: &Ctx, nodes: &[Pos2]) {
         return;
     }
     for e in cx.iface.map.edges.iter().filter(|e| !e.is_cross_interface) {
-        let side = cx.ds.node(e.a).map_or(InterfaceSide::None, |n| n.role);
+        let side = cx.ds.node(e.a).map_or(InterfaceSide::None, |n| n.side);
         let alpha = cx.s.side_alpha(side);
         if alpha <= MIN_INTERACTIVE_ALPHA {
             continue;
@@ -301,7 +304,7 @@ fn paint_atoms(cx: &Ctx, selection: &Selection, nodes: &[Pos2]) {
     let fixed_stroke_w = cx.s.atoms.stroke_width.fixed;
 
     for ((node, meta), &pos) in cx.iface.map.nodes.iter().zip(&cx.iface.atom_meta).zip(nodes) {
-        let alpha = cx.s.side_alpha(node.role);
+        let alpha = cx.s.side_alpha(node.side);
         if alpha <= MIN_DRAW_ALPHA {
             continue;
         }
@@ -371,12 +374,12 @@ fn paint_atoms(cx: &Ctx, selection: &Selection, nodes: &[Pos2]) {
 fn paint_labels(cx: &Ctx, nodes: &[Pos2]) {
     if cx.s.territories.visible && cx.s.territories.labels.enabled {
         let terr_font = FontId::proportional((cx.camera.zoom * 0.22).clamp(9.0, 14.0));
-        for side in [InterfaceSide::SideB, InterfaceSide::SideA] {
+        for side in cx.s.side_paint_order() {
             let alpha = cx.s.side_alpha(side);
             if alpha <= MIN_DRAW_ALPHA {
                 continue;
             }
-            for terr in cx.iface.map.territories.iter().filter(|t| t.role == side && !t.contour_uv.is_empty()) {
+            for terr in cx.iface.map.territories.iter().filter(|t| t.side == side && !t.contour_uv.is_empty()) {
                 if let Some(label_text) = lenses::format_territory_label(
                     terr,
                     &cx.iface.map.nodes,
@@ -395,7 +398,7 @@ fn paint_labels(cx: &Ctx, nodes: &[Pos2]) {
         let size_mode = cx.s.atoms.radius.lens;
         let atom_font = FontId::proportional((cx.camera.zoom * 0.18).clamp(8.5, 12.5));
         for ((node, meta), &pos) in cx.iface.map.nodes.iter().zip(&cx.iface.atom_meta).zip(nodes) {
-            let alpha = cx.s.side_alpha(node.role);
+            let alpha = cx.s.side_alpha(node.side);
             if alpha <= MIN_DRAW_ALPHA {
                 continue;
             }

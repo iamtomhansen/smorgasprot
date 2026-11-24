@@ -44,6 +44,49 @@ Given the user's current chain assignment into **Group A** ($\mathcal{S}_A$) and
    An atom $i \in \mathcal{S}_A \cup \mathcal{S}_B$ enters the `InterfaceMap` if:
    $$\Delta\text{SASA}_i > 0.15\text{ \AA}^2 \quad \text{or} \quad \min_{j \in \text{opposite}} \|\mathbf{p}_i - \mathbf{p}_j\|_2 \le 4.5\text{ \AA}$$
 
+### Covalent Bond Detection & Edge Classification (`bonds.rs`, `physics.rs`)
+Before classifying a first-shell atom pair as a clash, salt bridge, hydrogen bond, or generic
+van der Waals contact, the engine first checks whether the pair is actually covalently bonded —
+this matters because some real covalent bonds (disulfides especially) sit well inside the
+distance range the other classifiers would otherwise flag as a severe steric clash.
+
+1. **Distance-Based Bond Perception:**
+   Computed once per structure (`bonds::detect_bonds`), independent of any single pair's
+   interface membership. For every atom pair within a bounded search radius (via `SpatialGrid`),
+   a covalent bond is detected if:
+   $$\|\mathbf{p}_i - \mathbf{p}_j\|_2 \le r_i^{\text{cov}} + r_j^{\text{cov}} + \delta_0 + \min\!\big(k_B\sqrt{\tfrac{1}{2}(B_i + B_j)},\, \delta_B^{\max}\big)$$
+   where $r^{\text{cov}}$ is each element's single-bond covalent radius, sourced via
+   `pdbtbx::Element::atomic_radius().covalent_single` (see `pdbtbx`'s own documentation for which
+   paper it's drawn from — we only wrap the value, so we don't re-cite its source here),
+   $\delta_0 = 0.45\text{ \AA}$ is the base
+   tolerance, and the second term widens it conservatively for higher-uncertainty atoms: since
+   $B = 8\pi^2\langle u^2\rangle$ (Debye-Waller factor) relates to *mean-square* displacement, the
+   extra allowance scales with $\sqrt{B}$ (not $B$ itself), with $k_B = 0.015\text{ \AA}/\sqrt{B}$
+   and capped at $\delta_B^{\max} = 0.25\text{ \AA}$ — the cap specifically preserves the margin
+   that keeps a severe steric clash from ever being misread as a bond (a clash would need over
+   1 Å of van der Waals overlap between two carbons to reach bond range at default settings; see
+   `bonds::detect_bonds`'s doc comment for the full derivation). All three constants
+   (`BondParams`) are load-time-only for now — no live Preferences wiring exists yet. This is the
+   conventional distance-based bond-perception heuristic used by most molecular toolkits (e.g.
+   OpenBabel) when no explicit connectivity is given, and works uniformly across standard residues, peptide
+   bonds, disulfides, and any hetero group or ligand with no per-residue bonding templates.
+2. **Explicit Record Supplement:**
+   Legacy `.pdb` files carrying `SSBOND` records contribute their declared disulfides directly
+   (via `pdbtbx`), unioned with the geometric result — `pdbtbx` doesn't parse `CONECT` and its
+   mmCIF reader doesn't populate bonds at all, so geometry remains the general-purpose method,
+   not just a fallback.
+3. **Classification (`BondKind`):**
+   A detected bond is labeled `Backbone` (N/CA/C/O/OXT to N/CA/C/O/OXT, whether intra-residue or
+   the inter-residue peptide link — geometrically confirmed, so a chain break with merely
+   sequence-adjacent residue numbers is correctly excluded), `Sidechain` (any other intra-residue
+   bond), `Disulfide` (both atoms sulfur), or `Other` (anything else geometry finds, e.g. glycan
+   linkages or ligand attachment). `classify_pair_edge` checks bond status before any non-covalent
+   classifier — via `EdgeKind::Covalent(BondKind)`, the same classification, not a second one — so
+   a real disulfide (~2.05 Å S–S) is never misread as a van der Waals clash. It also excludes 1-3
+   pairs (sharing a bonded neighbor, e.g. backbone N...C across Cα) from clash/salt-bridge/H-bond
+   scoring, matching Probe/MolProbity's (Word et al. 1999, §2 above) own exclusion rule — without
+   it, ordinary bonded-angle geometry gets misread as severe steric clashes.
+
 ---
 
 ## 3. Shared Interface Tangent Frame ($\Pi$) & Coupled 2D Relaxation (`Interface` Tab)

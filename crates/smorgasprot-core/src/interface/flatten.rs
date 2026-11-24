@@ -132,12 +132,12 @@ pub fn build_interface_map(
 
     let side_a_atoms = nodes
         .iter()
-        .filter(|n| n.role == InterfaceSide::SideA)
+        .filter(|n| n.side == InterfaceSide::SideA)
         .count();
     let side_b_atoms = nodes.len() - side_a_atoms;
     let side_a_territories = territories
         .iter()
-        .filter(|t| t.role == InterfaceSide::SideA)
+        .filter(|t| t.side == InterfaceSide::SideA)
         .count();
     let side_b_territories = territories.len() - side_a_territories;
 
@@ -180,7 +180,7 @@ fn compute_shared_tangent_plane(nodes: &[AtomNode]) -> ProjectionPlane {
         let w = n.buried_sasa_a2 + 1.0;
         weighted_sum += w * p;
         total_w += w;
-        match n.role {
+        match n.side {
             InterfaceSide::SideA => {
                 side_a_sum += p;
                 side_a_count += 1;
@@ -339,9 +339,10 @@ fn relax_interface_uv(
             let dist = delta.length().max(1e-4);
 
             if !edge.is_cross_interface {
-                // TODO: Handle covalently bonded antecedent heavy atoms (e.g. disulfide, glycan links).
+                // Covalent bonds are physically stiff and short-range, so they all share the same
+                // (stiffest) spring constant as same-residue geometry.
                 let k = match edge.kind {
-                    EdgeKind::SameResidue => p.k_spring_same_res,
+                    EdgeKind::Covalent(_) => p.k_spring_same_res,
                     EdgeKind::HBond | EdgeKind::SaltBridge => p.k_spring_intra_polar,
                     EdgeKind::Clash | EdgeKind::VanDerWaalsContact => p.k_spring_first_shell,
                 };
@@ -349,9 +350,12 @@ fn relax_interface_uv(
                 forces[i] += f;
                 forces[j] -= f;
             } else if dist > p.cross_reg_deadzone_a {
+                // No dedicated stiff cross-link constant exists yet; a cross-interface disulfide
+                // or other covalent link is bucketed with the existing apolar regularization for
+                // now (a simplification, not a studied choice — worth a dedicated constant later).
                 let k_reg = match edge.kind {
                     EdgeKind::HBond | EdgeKind::SaltBridge | EdgeKind::Clash => p.k_reg_cross_polar,
-                    EdgeKind::VanDerWaalsContact | EdgeKind::SameResidue => p.k_reg_cross_apolar,
+                    EdgeKind::VanDerWaalsContact | EdgeKind::Covalent(_) => p.k_reg_cross_apolar,
                 };
                 let f = k_reg * (dist - p.cross_reg_target_a) * (delta / dist);
                 forces[i] += f;
@@ -362,7 +366,7 @@ fn relax_interface_uv(
         // 2. Same-side hard-core non-overlap repulsion
         for i in 0..n {
             for j in (i + 1)..n {
-                if nodes[i].role != nodes[j].role {
+                if nodes[i].side != nodes[j].side {
                     continue;
                 }
                 let d_min = if nodes[i].territory == nodes[j].territory {
@@ -460,10 +464,10 @@ pub fn compute_intra_edge_rmse_at_t(
         let na = &nodes[e.a.0 as usize];
         let nb = &nodes[e.b.0 as usize];
         let pa = Vec3::from(interpolate_atom_position(
-            na.pos_3d, na.pos_uv, na.role, plane, flatten_t, 0.0,
+            na.pos_3d, na.pos_uv, na.side, plane, flatten_t, 0.0,
         ));
         let pb = Vec3::from(interpolate_atom_position(
-            nb.pos_3d, nb.pos_uv, nb.role, plane, flatten_t, 0.0,
+            nb.pos_3d, nb.pos_uv, nb.side, plane, flatten_t, 0.0,
         ));
         let err = pa.distance(pb) - e.dist_3d_a;
         sum_sq += err * err;
@@ -483,7 +487,7 @@ fn count_same_side_overlaps(nodes: &[AtomNode], min_dist: f32) -> usize {
     for i in 0..nodes.len() {
         let pi = Vec2::from(nodes[i].pos_uv);
         for j in (i + 1)..nodes.len() {
-            if nodes[i].role != nodes[j].role || nodes[i].territory == nodes[j].territory {
+            if nodes[i].side != nodes[j].side || nodes[i].territory == nodes[j].territory {
                 continue;
             }
             let pj = Vec2::from(nodes[j].pos_uv);

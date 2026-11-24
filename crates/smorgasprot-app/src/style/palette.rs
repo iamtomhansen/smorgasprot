@@ -4,7 +4,7 @@
 use crate::camera::ViewAxis;
 use egui::Color32;
 use serde::{Deserialize, Serialize};
-use smorgasprot_core::{EdgeKind, Element, InterfaceSide};
+use smorgasprot_core::{BondKind, EdgeKind, Element, InterfaceSide};
 use std::path::{Path, PathBuf};
 
 /// Default directory scanned for `.ron` palette files.
@@ -302,8 +302,12 @@ pub struct ContactPalette {
     pub salt_bridge: Color32,
     /// Hydrogen bonds (directional polar interactions) between atoms.
     pub hbond: Color32,
-    /// Non-directional van der Waals contacts and same-residue edges.
+    /// Non-directional van der Waals contacts, sidechain, and other covalent edges.
     pub contact: Color32,
+    /// Polypeptide backbone bonds (within a residue or the inter-residue peptide link).
+    pub backbone: Color32,
+    /// Cross-residue sulfur-sulfur disulfide bridges.
+    pub disulfide: Color32,
 }
 
 impl Default for ContactPalette {
@@ -313,6 +317,9 @@ impl Default for ContactPalette {
             salt_bridge: Color32::from_rgb(168, 85, 247),
             hbond: Color32::from_rgb(37, 99, 235),
             contact: Color32::from_rgb(148, 163, 184),
+            backbone: Color32::from_rgb(100, 116, 139),
+            // Traditional sulfur-yellow, consistent with most molecular viewers' element coloring.
+            disulfide: Color32::from_rgb(234, 179, 8),
         }
     }
 }
@@ -324,7 +331,9 @@ impl ContactPalette {
             EdgeKind::Clash => self.clash,
             EdgeKind::SaltBridge => self.salt_bridge,
             EdgeKind::HBond => self.hbond,
-            EdgeKind::VanDerWaalsContact | EdgeKind::SameResidue => self.contact,
+            EdgeKind::Covalent(BondKind::Backbone) => self.backbone,
+            EdgeKind::Covalent(BondKind::Disulfide) => self.disulfide,
+            EdgeKind::VanDerWaalsContact | EdgeKind::Covalent(BondKind::Sidechain | BondKind::Other) => self.contact,
         }
     }
 
@@ -334,6 +343,7 @@ impl ContactPalette {
             (self.clash, "VdW Clash".into()),
             (self.hbond, "H-Bond".into()),
             (self.salt_bridge, "Salt Bridge".into()),
+            (self.disulfide, "Disulfide".into()),
             (sides.side_a, group_a.into()),
             (sides.side_light(InterfaceSide::SideB), group_b.into()),
         ]

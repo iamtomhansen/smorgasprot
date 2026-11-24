@@ -116,6 +116,30 @@ pub struct ComplexStructure {
     pub chains: Vec<ChainRecord>,
     pub residues: Vec<ResidueRecord>,
     pub atoms: Vec<AtomRecord>,
+    /// Covalent bond graph, detected once at ingest time (see `bonds::detect_bonds`).
+    pub bonds: Vec<Bond>,
+}
+
+/// Classification of a covalent bond between two heavy atoms.
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum BondKind {
+    /// N/CA/C/O(/OXT)-to-N/CA/C/O(/OXT): the invariant polypeptide backbone, whether within one
+    /// residue or the inter-residue peptide link (C(i)-N(i+1), same chain).
+    Backbone,
+    /// Any other intra-residue bond (CB-CG, CB-OG1, etc.).
+    Sidechain,
+    /// Sulfur-sulfur disulfide bridge (typically two cysteines, same or different chains).
+    Disulfide,
+    /// Any other covalently bonded pair (glycan linkages, ligand attachment, modified-residues, etc.).
+    Other,
+}
+
+/// A single covalent bond between two heavy atoms.
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Bond {
+    pub a: GlobalAtomIdx,
+    pub b: GlobalAtomIdx,
+    pub kind: BondKind,
 }
 
 impl ComplexStructure {

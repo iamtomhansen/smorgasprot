@@ -16,7 +16,7 @@ use smorgasprot_core::{
     },
 };
 
-/// Per-chain presentation geometry for the Complex tab (alpha carbon trace + display molecular surface).
+/// Per-chain presentation geometry (alpha carbon trace + display molecular surface).
 #[derive(Serialize, Clone, Debug)]
 pub struct ChainVisualData {
     /// PDB-style chain ID (e.g. "A", "B")
@@ -27,7 +27,7 @@ pub struct ChainVisualData {
     pub atom_count: usize,
     /// Alpha carbon positions in plane-local space.
     pub ca_positions: Vec<[f32; 3]>,
-    /// Presentation-only molecular surface mesh in plane-local space.
+    /// Presentation-only molecular surface mesh (i.e. not used in core analysis) in plane-local space.
     #[serde(rename = "surface_mesh")]
     pub draw_surface_mesh: SurfaceMesh,
     /// Precomputed world-space subunit explode displacement (Å at full complex explode).
@@ -88,6 +88,7 @@ pub struct InterfaceViewData {
 }
 
 impl InterfaceViewData {
+    /// Returns the interface side of each vertex in the envelope mesh, or `InterfaceSide::None`.
     fn envelope_sides_for(
         partition: &InterfacePartition,
         complex: &ComplexStructure,
@@ -126,8 +127,8 @@ impl InterfaceViewData {
         })
     }
 
-    /// Re-extracts only the presentation contact-envelope mesh from updated display chain surfaces.
-    /// Analytical metrics (`stats`, `map`, `analysis_void_volume_a3`) are never modified.
+    /// Re-extracts the interface's contact-envelope mesh from updated display chain surfaces.
+    /// Display only; doesn't recompute analytical metrics or maps.
     pub fn recompute_draw_envelope(&mut self, complex: &ComplexStructure, draw_chain_meshes: &[SurfaceMesh]) {
         let envelope_mesh =
             extract_interface_envelope_mesh(draw_chain_meshes, complex, &self.partition, &self.map.nodes);
@@ -192,17 +193,14 @@ pub struct ViewerDataset {
     /// Immutable analytical parameters used to compute scientific maps, stats, and void volumes.
     #[serde(skip)]
     analysis_params: AnalysisParams,
-    /// Requested presentation tessellation preset (panel-editable); decided at construction by
-    /// `render_policy::defaults_for`, debounced into `chains[*].draw_surface_mesh` by
-    /// `recompute_draw_surfaces`/`poll_draw_surface_remesh`.
+    /// Unit tessellation preset; decided at construction by `render_policy::defaults_for`, de-
+    /// bounced into `chains[*].draw_surface_mesh` by `recompute_draw_surfaces`/`poll_draw_surface_remesh`.
     #[serde(skip)]
     pub draw_preset: GeodesicPreset,
-    /// Requested presentation meshing parameters (panel-editable), same debounce as above.
+    /// Presentation meshing parameters, same debounce as above.
     #[serde(skip)]
     pub draw_mesh: SurfaceParams,
-    /// Face-culling mode for this dataset's 3D molecular surface (panel-editable); decided at
-    /// construction by `render_policy::defaults_for`. Pure pipeline state, takes effect
-    /// immediately next frame — no rebake/debounce needed, unlike the two fields above.
+    /// Face-culling  mode; decided at construction by `render_policy::defaults_for`.
     #[serde(skip)]
     pub culling: SurfaceCulling,
     /// Last presentation tessellation preset baked into `chains[*].draw_surface_mesh`.
@@ -286,6 +284,7 @@ impl ViewerDataset {
         sum / (self.chains.len() as f32)
     }
 
+    /// Returns the presentation surface mesh for each chain, in the same order as `chains`.
     fn draw_chain_meshes(&self) -> Vec<SurfaceMesh> {
         self.chains.iter().map(|c| c.draw_surface_mesh.clone()).collect()
     }
@@ -310,20 +309,18 @@ impl ViewerDataset {
         &self.applied_draw_surface
     }
 
-    /// Whether `culling` still matches this dataset's size-based recommendation (recomputed
-    /// fresh, not a stored snapshot — `render_policy::defaults_for` is cheap and pure).
+    /// Whether `culling` still matches this dataset's size-based recommendation (recomputed).
     pub fn is_default_culling(&self) -> bool {
         self.culling == crate::render_policy::defaults_for(self.atom_count()).culling
     }
 
-    /// Resets `culling` to this dataset's size-based recommendation. Pure pipeline state — no
-    /// remesh/debounce needed, unlike `reset_draw_mesh`.
+    /// Resets `culling` to this dataset's size-based recommendation (recomputed).
     pub fn reset_culling(&mut self) {
         self.culling = crate::render_policy::defaults_for(self.atom_count()).culling;
     }
 
     /// Whether `draw_preset`/`draw_mesh` still match this dataset's size-based recommendation
-    /// and the presentation meshing defaults.
+    /// (recomputed) and the presentation meshing defaults.
     pub fn is_default_draw_mesh(&self) -> bool {
         self.draw_preset == crate::render_policy::defaults_for(self.atom_count()).draw_preset
             && self.draw_mesh == SurfaceParams::display()
@@ -425,42 +422,52 @@ impl ViewerDataset {
         Ok(())
     }
 
+    /// Returns the active interface's presentation-level data, if it exists.
     pub fn active_interface(&self) -> Option<&InterfaceViewData> {
         self.active_interface.and_then(|idx| self.interfaces.get(idx))
     }
 
+    /// Returns a mutable reference to the active interface's presentation-level data, if it exists.
     pub fn active_interface_mut(&mut self) -> Option<&mut InterfaceViewData> {
         self.active_interface.and_then(|idx| self.interfaces.get_mut(idx))
     }
 
+    /// Returns the active interface's analytical partition, if it exists.
     pub fn active_partition(&self) -> Option<&InterfacePartition> {
         self.active_interface().map(|i| &i.partition)
     }
 
+    /// Returns a mutable reference to the active interface's analytical partition, if it exists.
     pub fn active_partition_mut(&mut self) -> Option<&mut InterfacePartition> {
         self.active_interface_mut().map(|i| &mut i.partition)
     }
 
+    /// Returns the active interface's analytical map, if it exists.
     pub fn active_map(&self) -> Option<&InterfaceMap> {
         self.active_interface().map(|i| &i.map)
     }
 
+    /// Returns the analytical interface geometry, if it exists.
     pub fn active_draw_geometry(&self) -> Option<&InterfaceGeometry> {
         self.active_interface().map(|i| &i.draw_geometry)
     }
 
+    /// Returns the analytical statistics related to flatteing the active interface, if they exist.
     pub fn active_stats(&self) -> Option<&FlatteningStats> {
         self.active_interface().map(|i| &i.stats)
     }
 
+    /// Returns the node on the interface map corresponding to the global `idx`, if it exists.
     pub fn node(&self, idx: AtomNodeIdx) -> Option<&AtomNode> {
         self.active_interface().and_then(|i| i.map.nodes.get(idx.0 as usize))
     }
 
+    /// Returns the annotated metadata for the atom corresponding to the global `idx`, if it exists.
     pub fn meta(&self, idx: AtomNodeIdx) -> Option<&AtomMeta> {
         self.active_interface().and_then(|i| i.atom_meta.get(idx.0 as usize))
     }
 
+    /// Returns the residue territory of the map corresponding to the global `idx`, if it exists.
     pub fn territory(&self, idx: TerritoryIdx) -> Option<&ResidueTerritory> {
         self.active_interface().and_then(|i| i.map.territories.get(idx.0 as usize))
     }
@@ -489,6 +496,7 @@ impl ViewerDataset {
             .map_or(InterfaceSide::None, |p| p.chain_side(chain_id.as_str()))
     }
 
+    /// Returns the number of cross-interface contacts in the active interface, or 0 if none is active.
     pub fn cross_contact_count(&self) -> usize {
         self.active_map()
             .map_or(0, |m| m.edges.iter().filter(|e| e.is_cross_interface).count())

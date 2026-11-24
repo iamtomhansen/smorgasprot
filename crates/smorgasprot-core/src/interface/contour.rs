@@ -80,7 +80,7 @@ pub fn compute_territory_contours(
     let axis_v = Vec3::from(plane.axis_v);
 
     for t_idx in 0..n_terr {
-        let role = territories[t_idx].role;
+        let role = territories[t_idx].side;
         // Collect (pos_uv, pad_radius, delta_3d) for each atom in this territory, where
         // delta_3d = pos_3d - (origin + u * axis_u + v * axis_v) captures both the atom's
         // 3D normal elevation (z-height) and its lateral relaxation displacement.
@@ -110,7 +110,7 @@ pub fn compute_territory_contours(
         // Collect nearby same-side atoms belonging to OTHER residue territories for weighted Voronoi clipping
         let other_atoms: Vec<(Vec2, f32)> = nodes
             .iter()
-            .filter(|n| n.role == role && n.territory.0 as usize != t_idx)
+            .filter(|n| n.side == role && n.territory.0 as usize != t_idx)
             .map(|n| (Vec2::from(n.pos_uv), atom_padding_radius_a(n.buried_sasa_a2, params)))
             .filter(|&(p, _)| p.distance_squared(centroid) <= 169.0)
             .collect();

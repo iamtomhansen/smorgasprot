@@ -67,7 +67,7 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &UiState) {
 fn residue_card(ui: &mut Ui, ds: &ViewerDataset, terr: &ResidueTerritory, sides: &InterfaceSidePalette, chrome: &ChromePalette) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(&terr.label_top).strong().size(15.0));
-        ui.label(RichText::new(format!("({})", ds.group_name(terr.role))).color(sides.side_light(terr.role)));
+        ui.label(RichText::new(format!("({})", ds.group_name(terr.side))).color(sides.side_light(terr.side)));
     });
     ui.label(format!("Chain {} • {} • {} interfacial atoms", terr.chain_id, terr.label_bottom, terr.patch_atoms.len()));
     ui.label(format!("Buried ΔSASA: {:.1} Å²", terr.buried_sasa_a2));

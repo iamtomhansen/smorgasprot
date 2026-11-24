@@ -2,6 +2,7 @@
 //! and presentation logic (2D projection, flattening, contouring).
 
 pub mod amino_acids;
+pub mod bonds;
 pub mod dssp;
 pub mod ingest;
 pub mod interface;
