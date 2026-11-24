@@ -195,14 +195,14 @@ pub struct ViewerDataset {
     /// Immutable analytical parameters used to compute scientific maps, stats, and void volumes.
     #[serde(skip)]
     analysis_params: AnalysisParams,
-    /// Unit tessellation preset; decided at construction by `render_policy::defaults_for`, de-
-    /// bounced into `chains[*].draw_surface_mesh` by `recompute_draw_surfaces`/`poll_draw_surface_remesh`.
+    /// Unit tessellation preset; decided at construction by `display_defaults_for`, debounced
+    /// into `chains[*].draw_surface_mesh` by `recompute_draw_surfaces`/`poll_draw_surface_remesh`.
     #[serde(skip)]
     pub draw_preset: GeodesicPreset,
     /// Presentation meshing parameters, same debounce as above.
     #[serde(skip)]
     pub draw_mesh: SurfaceParams,
-    /// Face-culling  mode; decided at construction by `render_policy::defaults_for`.
+    /// Face-culling mode; decided at construction by `display_defaults_for`.
     #[serde(skip)]
     pub culling: SurfaceCulling,
     /// Last presentation tessellation preset baked into `chains[*].draw_surface_mesh`.
@@ -222,6 +222,22 @@ pub struct ViewerDataset {
     draw_mesh_gen: u64,
 }
 
+/// Above this many heavy atoms, new loads start at the coarsest preset and backface culling.
+const LARGE_COMPLEX_ATOM_THRESHOLD: usize = 15_000;
+
+struct DisplayDefaults {
+    draw_preset: GeodesicPreset,
+    culling: SurfaceCulling,
+}
+
+fn display_defaults_for(atom_count: usize) -> DisplayDefaults {
+    if atom_count > LARGE_COMPLEX_ATOM_THRESHOLD {
+        DisplayDefaults { draw_preset: GeodesicPreset::Octahedron8, culling: SurfaceCulling::Backfaces }
+    } else {
+        DisplayDefaults { draw_preset: GeodesicPreset::Octahedron18, culling: SurfaceCulling::None }
+    }
+}
+
 impl ViewerDataset {
     /// Builds initial chain display surfaces and evaluates all given analytical interface partitions.
     pub fn new(
@@ -231,7 +247,7 @@ impl ViewerDataset {
         partitions: Vec<InterfacePartition>,
         analysis_params: &AnalysisParams,
     ) -> Result<Self, String> {
-        let defaults = crate::render_policy::defaults_for(complex.atoms.len());
+        let defaults = display_defaults_for(complex.atoms.len());
         let initial_preset = defaults.draw_preset;
         let initial_draw_surface = SurfaceParams::display();
         let explode_offsets = compute_chain_explode_offsets(complex);
@@ -309,7 +325,7 @@ impl ViewerDataset {
         &self.analysis_params
     }
 
-    /// Heavy-atom count, for `render_policy::defaults_for`.
+    /// Heavy-atom count, for `display_defaults_for`.
     pub fn atom_count(&self) -> usize {
         self.complex.as_ref().map_or(0, |c| c.atoms.len())
     }
@@ -326,18 +342,18 @@ impl ViewerDataset {
 
     /// Whether `culling` still matches this dataset's size-based recommendation (recomputed).
     pub fn is_default_culling(&self) -> bool {
-        self.culling == crate::render_policy::defaults_for(self.atom_count()).culling
+        self.culling == display_defaults_for(self.atom_count()).culling
     }
 
     /// Resets `culling` to this dataset's size-based recommendation (recomputed).
     pub fn reset_culling(&mut self) {
-        self.culling = crate::render_policy::defaults_for(self.atom_count()).culling;
+        self.culling = display_defaults_for(self.atom_count()).culling;
     }
 
     /// Whether `draw_preset`/`draw_mesh` still match this dataset's size-based recommendation
     /// (recomputed) and the presentation meshing defaults.
     pub fn is_default_draw_mesh(&self) -> bool {
-        self.draw_preset == crate::render_policy::defaults_for(self.atom_count()).draw_preset
+        self.draw_preset == display_defaults_for(self.atom_count()).draw_preset
             && self.draw_mesh == SurfaceParams::display()
     }
 
@@ -345,7 +361,7 @@ impl ViewerDataset {
     /// actually changed anything (to decide whether to schedule a remesh) should check
     /// `is_default_draw_mesh` first, as `complex_controls.rs` does.
     pub fn reset_draw_mesh(&mut self) {
-        self.draw_preset = crate::render_policy::defaults_for(self.atom_count()).draw_preset;
+        self.draw_preset = display_defaults_for(self.atom_count()).draw_preset;
         self.draw_mesh = SurfaceParams::display();
     }
 

@@ -5,10 +5,14 @@ use crate::state::{RenderingSettings, ViewParams};
 use serde::{Deserialize, Serialize};
 use smorgasprot_core::params::AnalysisParams;
 use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::SystemTime;
 
+#[cfg(not(target_arch = "wasm32"))]
 const LOCAL_CONFIG_NAME: &str = "smorgasprot.ron";
+#[cfg(not(target_arch = "wasm32"))]
 const APP_DIR_NAME: &str = "smorgasprot";
+#[cfg(not(target_arch = "wasm32"))]
 const USER_CONFIG_NAME: &str = "config.ron";
 
 /// App-wide persisted configuration across rendering, UI defaults, and analysis parameters.
@@ -37,55 +41,81 @@ pub enum ConfigPollEvent {
 
 impl AppConfig {
     /// Loads config from `explicit`, `./smorgasprot.ron` if present, or `$XDG_CONFIG_HOME` / `~/.config`.
+    /// Browser builds have no local filesystem and start with defaults.
     pub fn load(explicit: Option<&Path>) -> StartupConfig {
-        let path = resolve_config_path(explicit);
-        let Some(ref p) = path else {
-            return StartupConfig { config: Self::default(), path: None, warning: None };
-        };
-        match read_config_file(p) {
-            Ok(Some(config)) => StartupConfig { config, path, warning: None },
-            Ok(None) => StartupConfig { config: Self::default(), path, warning: None },
-            Err(err) => StartupConfig {
-                config: Self::default(),
-                path,
-                warning: Some(err),
-            },
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = explicit;
+            StartupConfig { config: Self::default(), path: None, warning: None }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let path = resolve_config_path(explicit);
+            let Some(ref p) = path else {
+                return StartupConfig { config: Self::default(), path: None, warning: None };
+            };
+            match read_config_file(p) {
+                Ok(Some(config)) => StartupConfig { config, path, warning: None },
+                Ok(None) => StartupConfig { config: Self::default(), path, warning: None },
+                Err(err) => StartupConfig {
+                    config: Self::default(),
+                    path,
+                    warning: Some(err),
+                },
+            }
         }
     }
 
     /// Reads and parses a config file synchronously, returning `Err` if missing or invalid.
     pub fn reload_from(path: &Path) -> Result<Self, String> {
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read config {}: {e}", path.display()))?;
-        ron::from_str(&text).map_err(|e| format!("Invalid RON in {}: {e}", path.display()))
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = path;
+            Err("Config file reload is not available in browser builds.".to_owned())
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let text = std::fs::read_to_string(path)
+                .map_err(|e| format!("Failed to read config {}: {e}", path.display()))?;
+            ron::from_str(&text).map_err(|e| format!("Invalid RON in {}: {e}", path.display()))
+        }
     }
 
     /// Atomically writes this config as pretty RON to `path`, creating parent directories as needed.
     pub fn save_to(&self, path: &Path) -> Result<(), String> {
-        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create config directory {}: {e}", parent.display()))?;
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = path;
+            Err("Config file saving is not available in browser builds.".to_owned())
         }
-        let ron_text = ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default())
-            .map_err(|e| format!("Failed to serialize config: {e}"))?;
-        let tmp_name = format!(
-            ".{}.tmp.{}",
-            path.file_name().and_then(|s| s.to_str()).unwrap_or("config.ron"),
-            std::process::id()
-        );
-        let tmp_path = path.with_file_name(tmp_name);
-        if let Err(e) = std::fs::write(&tmp_path, ron_text) {
-            let _ = std::fs::remove_file(&tmp_path);
-            return Err(format!("Failed to write {}: {e}", path.display()));
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("Failed to create config directory {}: {e}", parent.display()))?;
+            }
+            let ron_text = ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default())
+                .map_err(|e| format!("Failed to serialize config: {e}"))?;
+            let tmp_name = format!(
+                ".{}.tmp.{}",
+                path.file_name().and_then(|s| s.to_str()).unwrap_or("config.ron"),
+                std::process::id()
+            );
+            let tmp_path = path.with_file_name(tmp_name);
+            if let Err(e) = std::fs::write(&tmp_path, ron_text) {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err(format!("Failed to write {}: {e}", path.display()));
+            }
+            std::fs::rename(&tmp_path, path).map_err(|e| {
+                let _ = std::fs::remove_file(&tmp_path);
+                format!("Failed to replace {}: {e}", path.display())
+            })
         }
-        std::fs::rename(&tmp_path, path).map_err(|e| {
-            let _ = std::fs::remove_file(&tmp_path);
-            format!("Failed to replace {}: {e}", path.display())
-        })
     }
 }
 
 /// Resolves the active config path: `--config`, else existing `./smorgasprot.ron`, else XDG/HOME config.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
     if let Some(p) = explicit {
         return Some(p.to_path_buf());
@@ -103,6 +133,7 @@ pub fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
 }
 
 /// Reads a config file, returning `Ok(None)` if missing, or `Err` if invalid.
+#[cfg(not(target_arch = "wasm32"))]
 fn read_config_file(path: &Path) -> Result<Option<AppConfig>, String> {
     match std::fs::read_to_string(path) {
         Ok(text) => ron::from_str(&text)
@@ -114,6 +145,7 @@ fn read_config_file(path: &Path) -> Result<Option<AppConfig>, String> {
 }
 
 /// Checks the file modification time of `path`, returning `None` if missing or inaccessible.
+#[cfg(not(target_arch = "wasm32"))]
 fn file_mtime(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).ok()?.modified().ok()
 }
@@ -122,16 +154,26 @@ fn file_mtime(path: &Path) -> Option<SystemTime> {
 #[derive(Debug)]
 pub struct ConfigWatcher {
     path: Option<PathBuf>,
+    #[cfg(not(target_arch = "wasm32"))]
     last_check: f64,
+    #[cfg(not(target_arch = "wasm32"))]
     last_mtime: Option<SystemTime>,
+    #[cfg(not(target_arch = "wasm32"))]
     errored_mtime: Option<SystemTime>,
 }
 
 impl ConfigWatcher {
     /// Creates a watcher initialized with the current modification time of `path`.
     pub fn new(path: Option<PathBuf>) -> Self {
-        let last_mtime = path.as_deref().and_then(file_mtime);
-        Self { path, last_check: f64::NEG_INFINITY, last_mtime, errored_mtime: None }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Self { path }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let last_mtime = path.as_deref().and_then(file_mtime);
+            Self { path, last_check: f64::NEG_INFINITY, last_mtime, errored_mtime: None }
+        }
     }
 
     /// Path being watched/saved, if resolved.
@@ -141,43 +183,62 @@ impl ConfigWatcher {
 
     /// Updates recorded mtime after an in-app save or manual reload so we do not re-trigger on ourselves.
     pub fn record_synced(&mut self) {
-        self.last_mtime = self.path.as_deref().and_then(file_mtime);
-        self.errored_mtime = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.last_mtime = self.path.as_deref().and_then(file_mtime);
+            self.errored_mtime = None;
+        }
     }
 
     /// Polls config mtime when `interval_s > 0` and enough time has elapsed since the last check.
     pub fn poll(&mut self, now: f64, interval_s: f32) -> Option<ConfigPollEvent> {
-        if interval_s <= 0.0 {
-            return None;
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (now, interval_s);
+            None
         }
-        let path = self.path.as_deref()?;
-        if now - self.last_check < interval_s as f64 {
-            return None;
-        }
-        self.last_check = now;
-        let mtime = file_mtime(path)?;
-        if Some(mtime) == self.last_mtime || Some(mtime) == self.errored_mtime {
-            return None;
-        }
-        match AppConfig::reload_from(path) {
-            Ok(cfg) => {
-                self.last_mtime = Some(mtime);
-                self.errored_mtime = None;
-                Some(ConfigPollEvent::Reloaded(cfg))
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if interval_s <= 0.0 {
+                return None;
             }
-            Err(err) => {
-                self.errored_mtime = Some(mtime);
-                Some(ConfigPollEvent::Warning(err))
+            let path = self.path.as_deref()?;
+            if now - self.last_check < interval_s as f64 {
+                return None;
+            }
+            self.last_check = now;
+            let mtime = file_mtime(path)?;
+            if Some(mtime) == self.last_mtime || Some(mtime) == self.errored_mtime {
+                return None;
+            }
+            match AppConfig::reload_from(path) {
+                Ok(cfg) => {
+                    self.last_mtime = Some(mtime);
+                    self.errored_mtime = None;
+                    Some(ConfigPollEvent::Reloaded(cfg))
+                }
+                Err(err) => {
+                    self.errored_mtime = Some(mtime);
+                    Some(ConfigPollEvent::Warning(err))
+                }
             }
         }
     }
 
     /// Remaining seconds until the next scheduled poll, or `None` if watching is disabled.
     pub fn next_poll_delay_s(&self, now: f64, interval_s: f32) -> Option<f64> {
-        if interval_s <= 0.0 || self.path.is_none() {
-            return None;
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (now, interval_s);
+            None
         }
-        let elapsed = (now - self.last_check).max(0.0);
-        Some((interval_s as f64 - elapsed).max(0.05))
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if interval_s <= 0.0 || self.path.is_none() {
+                return None;
+            }
+            let elapsed = (now - self.last_check).max(0.0);
+            Some((interval_s as f64 - elapsed).max(0.05))
+        }
     }
 }

@@ -10,14 +10,20 @@ smorgasprot-core.workspace = true
 glam.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-# "glow" (OpenGL) stays enabled via eframe's default features as a fallback/escape
-# hatch during the wgpu migration; `main.rs` selects `Renderer::Wgpu` at runtime.
-eframe = { version = "0.31", features = ["persistence", "wgpu"] }
-# Pinned to the exact versions eframe's "wgpu" feature pulls in, so `gpu_surface.rs`'s
-# types are the same crate instances as `cc.wgpu_render_state`'s.
+# "glow" (OpenGL) stays enabled on native as a fallback/escape hatch; on wasm32, eframe picks
+# WebPainterGlow whenever "glow" is active, so omit "glow" there and enable wgpu's "webgl"
+# feature so WebPainterWgpu falls back from WebGPU to WebGL2 automatically.
 egui-wgpu = "0.31.1"
 wgpu = "24.0"
 bytemuck = { version = "1.25", features = ["derive"] }
-rfd = "0.18"
 egui = { version = "0.31", features = ["serde"] }
 ron = "0.8"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+eframe = { version = "0.31", features = ["persistence", "wgpu"] }
+rfd = "0.18"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+eframe = { version = "0.31", default-features = false, features = ["default_fonts", "persistence", "wgpu", "web_screen_reader"] }
+wgpu = { version = "24.0", features = ["webgl"] }
+wasm-bindgen-futures = "0.4"

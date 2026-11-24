@@ -72,7 +72,7 @@ impl Choice for GeodesicPreset {
 
 /// Visual channels and representation settings for the 3D molecular surface mesh layer.
 /// Tessellation preset, meshing params, and face culling live on `ViewerDataset` itself
-/// (per-dataset, decided at load time by `render_policy::defaults_for`), not here — this is
+/// (per-dataset, decided at load time in `ViewerDataset::new`), not here — this is
 /// purely the shared, sticky-across-tabs aesthetic preferences.
 #[derive(Clone, Debug)]
 pub struct SurfaceLayerStyle {

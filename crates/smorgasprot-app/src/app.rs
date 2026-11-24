@@ -89,7 +89,12 @@ impl SmorgasprotApp {
     }
 
     /// Applies one panel-requested command; `now` is egui time in seconds.
-    fn apply(&mut self, action: Action, ctx: &Context, now: f64) {
+    fn apply(
+        &mut self,
+        action: Action,
+        #[cfg_attr(target_arch = "wasm32", allow(unused_variables))] ctx: &Context,
+        now: f64,
+    ) {
         match action {
             Action::SelectDataset(idx) if idx < self.datasets.len() => {
                 self.active = idx;
@@ -155,9 +160,8 @@ impl SmorgasprotApp {
                 self.state.selection.clear();
 
                 // A large structure starts at a coarser preset + backface culling, decided and
-                // baked onto the dataset itself at construction (`render_policy::defaults_for`,
-                // called from `ViewerDataset::new`) — this just reads that fact to phrase the
-                // status message, it isn't deciding anything.
+                // baked onto the dataset itself at construction in `ViewerDataset::new` — this
+                // just reads that fact to phrase the status message, it isn't deciding anything.
                 let detail_note = match self.datasets.first() {
                     Some(ds) if ds.culling == SurfaceCulling::Backfaces => " (reduced display detail due to size)",
                     _ => "",
