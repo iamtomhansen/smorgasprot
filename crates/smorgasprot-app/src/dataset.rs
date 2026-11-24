@@ -169,6 +169,8 @@ impl InterfaceViewData {
     }
 }
 
+static NEXT_DATASET_INSTANCE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 /// The user-facing names and data for a [`ComplexStructure`]. All loaded data is identified and
 /// labelled here.
 #[derive(Serialize, Clone, Debug)]
@@ -212,6 +214,12 @@ pub struct ViewerDataset {
     /// Pending debounced presentation surface remesh deadline (`egui` time in seconds).
     #[serde(skip)]
     draw_remesh_due: Option<f64>,
+    /// Unique per-instance key for GPU buffer caching (survives file reloads with the same `id`).
+    #[serde(skip)]
+    draw_instance_id: u64,
+    /// Monotonic generation bumped whenever presentation chain surfaces are remeshed.
+    #[serde(skip)]
+    draw_mesh_gen: u64,
 }
 
 impl ViewerDataset {
@@ -268,7 +276,14 @@ impl ViewerDataset {
             applied_draw_preset: initial_preset,
             applied_draw_surface: initial_draw_surface,
             draw_remesh_due: None,
+            draw_instance_id: NEXT_DATASET_INSTANCE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            draw_mesh_gen: 1,
         })
+    }
+
+    /// Unique `(instance_id, mesh_generation)` pair for GPU surface buffer invalidation.
+    pub fn draw_cache_key(&self) -> (u64, u64) {
+        (self.draw_instance_id, self.draw_mesh_gen)
     }
 
     /// Average full-explode subunit displacement across all chains (Å).
@@ -395,6 +410,7 @@ impl ViewerDataset {
         self.draw_remesh_due = None;
         self.applied_draw_preset = self.draw_preset;
         self.applied_draw_surface = self.draw_mesh.clone();
+        self.draw_mesh_gen = self.draw_mesh_gen.wrapping_add(1);
         let Some(complex) = &self.complex else { return };
         for (c_idx, chain) in self.chains.iter_mut().enumerate() {
             chain.draw_surface_mesh = build_chain_surface_mesh_with_preset(

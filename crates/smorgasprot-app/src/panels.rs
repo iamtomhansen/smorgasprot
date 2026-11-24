@@ -3,6 +3,7 @@
 mod cartography_controls;
 mod complex_controls;
 mod inspector;
+pub mod preferences;
 pub mod status_bar;
 pub mod top_bar;
 mod widgets;

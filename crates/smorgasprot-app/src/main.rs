@@ -1,11 +1,14 @@
 //! Native entry point: parses CLI flags, loads datasets, then exports HTML, serves, or opens the GUI.
 //! Run `cargo run -- --help` for usage.
 
+use smorgasprot_app::config::{AppConfig, StartupConfig};
 use smorgasprot_app::export::{generate_viewer_html, server};
 use smorgasprot_app::loader::{self, DatasetSpec};
+use smorgasprot_app::state::RenderBackend;
 use smorgasprot_app::{SmorgasprotApp, dataset::ViewerDataset};
 use smorgasprot_core::{AnalysisParams, ComplexStructure};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 const USAGE: &str = "\
@@ -17,6 +20,7 @@ Options:
   -i, --cif, --pdb FILE        Structure file to load
   -a, -b, --group-a, --binder  Chain for interface group A (default: A)
   -t, --group-b, --target      Chain for interface group B (default: C)
+  -c, --config FILE            App config file (.ron)
   -o, --out FILE.html          HTML output path (default: viewer.html)
       --export-html [FILE]     Write the HTML report and exit (no GUI)
       --headless               Same as --export-html
@@ -28,6 +32,7 @@ struct Args {
     input: Option<String>,
     chain_a: Option<String>,
     chain_b: Option<String>,
+    config_path: Option<PathBuf>,
     out_path: String,
     export_only: bool,
     serve: bool,
@@ -40,6 +45,7 @@ impl Args {
             input: None,
             chain_a: None,
             chain_b: None,
+            config_path: None,
             out_path: "viewer.html".to_owned(),
             export_only: false,
             serve: false,
@@ -52,6 +58,7 @@ impl Args {
                 "-i" | "--cif" | "--pdb" => args.input = Some(value(&arg)?),
                 "-a" | "-b" | "--group-a" | "--binder" => args.chain_a = Some(value(&arg)?),
                 "-t" | "--group-b" | "--target" => args.chain_b = Some(value(&arg)?),
+                "-c" | "--config" => args.config_path = Some(PathBuf::from(value(&arg)?)),
                 "-o" | "--out" => args.out_path = value(&arg)?,
                 "--export-html" => {
                     args.export_only = true;
@@ -100,13 +107,18 @@ fn main() -> ExitCode {
         }
     };
 
+    let loaded_cfg = AppConfig::load(args.config_path.as_deref());
+    if let Some(ref warn) = loaded_cfg.warning {
+        eprintln!("Warning: {warn}");
+    }
+
     let specs = args.specs();
     if specs.is_empty() && (args.export_only || args.serve) {
         eprintln!("No structure given and no bundled examples found.\n\n{USAGE}");
         return ExitCode::FAILURE;
     }
 
-    let (datasets, complexes) = match load_all(&specs) {
+    let (datasets, complexes) = match load_all(&specs, &loaded_cfg.config.analysis) {
         Ok(loaded) => loaded,
         Err(e) => {
             eprintln!("Error: {e}");
@@ -117,7 +129,7 @@ fn main() -> ExitCode {
     let result = if args.export_only || args.serve {
         export(&args, &datasets, complexes)
     } else {
-        run_gui(datasets)
+        run_gui(datasets, loaded_cfg)
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -129,12 +141,15 @@ fn main() -> ExitCode {
 }
 
 /// Loads every spec, printing a short interface summary for each.
-fn load_all(specs: &[DatasetSpec]) -> Result<(Vec<ViewerDataset>, HashMap<String, ComplexStructure>), String> {
+fn load_all(
+    specs: &[DatasetSpec],
+    analysis: &AnalysisParams,
+) -> Result<(Vec<ViewerDataset>, HashMap<String, ComplexStructure>), String> {
     let mut datasets = Vec::with_capacity(specs.len());
     let mut complexes = HashMap::new();
     for spec in specs {
         println!("Loading {} ...", spec.title);
-        let loaded = loader::load(spec, &AnalysisParams::default())?;
+        let loaded = loader::load(spec, analysis)?;
         let s = loaded.dataset.active_stats();
         let (a_at, a_ter, b_at, b_ter) = s.map_or((0, 0, 0, 0), |s| (s.side_a_atoms, s.side_a_territories, s.side_b_atoms, s.side_b_territories));
         println!(
@@ -173,20 +188,26 @@ fn export(args: &Args, datasets: &[ViewerDataset], complexes: HashMap<String, Co
 }
 
 /// Opens the egui desktop window.
-fn run_gui(datasets: Vec<ViewerDataset>) -> Result<(), String> {
+fn run_gui(datasets: Vec<ViewerDataset>, loaded_cfg: StartupConfig) -> Result<(), String> {
     println!("\nLaunching SmörgåsProt desktop application (egui)...");
+    let renderer = match loaded_cfg.config.rendering.backend {
+        RenderBackend::Auto | RenderBackend::Wgpu => eframe::Renderer::Wgpu,
+        RenderBackend::Glow => eframe::Renderer::Glow,
+    };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 900.0])
             .with_min_inner_size([960.0, 600.0])
             .with_title("SmörgåsProt"),
         // Custom scene meshes are not feathered by egui, so MSAA smooths their edges.
-        multisampling: 4,
-        // `wgpu` picks the best native backend per platform (Vulkan/Metal/DX12, falling
-        // back to GL). `glow` remains available for older systems/as an escape hatch.
-        renderer: eframe::Renderer::Wgpu,
+        multisampling: loaded_cfg.config.rendering.multisampling,
+        renderer,
         ..Default::default()
     };
-    eframe::run_native("SmörgåsProt", options, Box::new(|cc| Ok(Box::new(SmorgasprotApp::new(cc, datasets)))))
-        .map_err(|e| format!("Failed to run the desktop app: {e}"))
+    eframe::run_native(
+        "SmörgåsProt",
+        options,
+        Box::new(|cc| Ok(Box::new(SmorgasprotApp::new(cc, datasets, loaded_cfg)))),
+    )
+    .map_err(|e| format!("Failed to run the desktop app: {e}"))
 }

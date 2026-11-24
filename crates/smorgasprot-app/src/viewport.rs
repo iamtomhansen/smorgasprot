@@ -5,14 +5,13 @@ mod cartography_scene;
 mod complex_scene;
 mod draw_list;
 mod gizmo;
-pub mod gpu_surface;
 mod grid;
 mod plane_space;
 
 use crate::dataset::ViewerDataset;
+use crate::render::GpuSurfaceRenderer;
 use crate::state::{UiState, WorkspaceTab};
 use egui::{CursorIcon, PointerButton, Sense, Ui};
-use gpu_surface::GpuSurfaceRenderer;
 
 /// Allocates the remaining space in `ui` and renders the active tab's scene.
 /// `gpu_surfaces` is `None` on the CPU-only fallback path (see `GpuSurfaceRenderer::new`).

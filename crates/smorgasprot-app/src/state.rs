@@ -18,8 +18,8 @@ pub use complex::{
 };
 pub use tween::Tween;
 pub use view_params::{
-    AtomDrawParams, ExplodeParams, GridParams, LensParams, MorphParams, NavigationParams, OpacityParams, StatusParams,
-    ViewParams,
+    AtomDrawParams, ConfigParams, ExplodeParams, GridParams, LensParams, MorphParams, NavigationParams,
+    OpacityParams, RenderBackend, RenderingSettings, StatusParams, ViewParams,
 };
 
 use crate::camera::CameraState;

@@ -2,10 +2,10 @@
 //! All primitives go through one [`DrawList`] so they depth-sort against each other.
 
 use super::draw_list::DrawList;
-use super::gpu_surface::{GpuChainDraw, GpuSurfaceRenderer};
 use super::plane_space::{PlaneFrame, explode_offset};
 use crate::camera::CameraState;
 use crate::dataset::{InterfaceViewData, ViewerDataset};
+use crate::render::{GpuChainDraw, GpuSurfaceRenderer};
 use crate::state::{
     AtomDrawParams, AtomSizeMode, BFactorMode, ChainColorLens, ColorLens, ComplexViewSettings, ExplodeParams,
     InterfaceDisplayMode, LensParams, OpacityParams, SurfaceCulling, UiState,
@@ -44,11 +44,10 @@ pub fn paint(painter: &Painter, rect: Rect, ds: &ViewerDataset, state: &UiState,
     let min_alpha = opacity.min_draw_alpha;
 
     if s.surface.visible && s.surface.alpha.value > min_alpha && s.surface.color.lens != ChainColorLens::Off {
-        // The GPU path has no wireframe-edge geometry, so it only takes over when edges
-        // aren't requested; wireframe (with or without faces) keeps using the CPU path.
-        let gpu_drawn = s.surface.show_faces
-            && !s.surface.show_wireframe
-            && gpu_surfaces.and_then(|gpu| paint_gpu_chain_surfaces(painter, &view, ds, s, gpu)).is_some();
+        let gpu_drawn = (!s.surface.show_faces && !s.surface.show_wireframe)
+            || gpu_surfaces
+                .and_then(|gpu| paint_gpu_chain_surfaces(painter, &view, ds, s, gpu))
+                .is_some();
         if !gpu_drawn {
             add_chain_surfaces(&mut list, &view, ds, s);
         }
@@ -175,37 +174,49 @@ fn add_chain_surfaces(list: &mut DrawList, view: &View, ds: &ViewerDataset, s: &
     }
 }
 
-/// GPU equivalent of `add_chain_surfaces` (faces only, no wireframe): renders every visible
-/// chain surface into an offscreen depth-tested texture and composites it into `painter`.
-/// Returns `None` if nothing was drawable or wgpu refused the frame, in which case the caller
-/// falls back to the CPU path instead of leaving a gap.
+/// GPU equivalent of `add_chain_surfaces`: renders visible chain surfaces (faces and/or
+/// anti-aliased wireframe) into an offscreen depth-tested texture and composites it into
+/// `painter`. Returns `None` only if wgpu could not render the frame, triggering the CPU fallback.
 fn paint_gpu_chain_surfaces(painter: &Painter, view: &View, ds: &ViewerDataset, s: &ComplexViewSettings, gpu: &mut GpuSurfaceRenderer) -> Option<()> {
     let lens = s.surface.color.lens;
+    let min_alpha = view.opacity.min_draw_alpha;
+    let wf_width = if s.surface.show_wireframe {
+        view.atom_draw.boundary_wireframe_width_px
+    } else {
+        0.0
+    };
     let mut draws = Vec::with_capacity(ds.chains.len());
     for (chain_idx, ch) in ds.chains.iter().enumerate() {
         let side = ds.chain_side(&ch.chain_id);
         let alpha = view.chain_alpha(side, s.surface.alpha.value, lens);
-        if alpha <= 0.0 || ch.draw_surface_mesh.triangles.is_empty() {
+        if alpha <= min_alpha || ch.draw_surface_mesh.triangles.is_empty() {
             continue;
         }
+        let color = lenses::chain_surface_color(chain_idx, side, lens, s.surface.color.fixed, view.pal);
         draws.push(GpuChainDraw {
             chain_idx,
             mesh: &ch.draw_surface_mesh,
-            preset: ds.applied_draw_preset(),
-            surface_params: ds.applied_draw_surface(),
             offset: chain_total_offset(view, side, ch.draw_explode_offset, s),
-            color: lenses::chain_surface_color(chain_idx, side, lens, s.surface.color.fixed, view.pal),
+            color,
+            edge_color: palette::edge_color(color),
             alpha,
+            show_faces: s.surface.show_faces,
+            wireframe_width_px: wf_width,
             culling: ds.culling,
         });
     }
+    if draws.is_empty() {
+        return Some(());
+    }
+    let (instance_id, draw_gen) = ds.draw_cache_key();
     let texture_id = gpu.render(
         view.rect,
         painter.pixels_per_point(),
         view.camera,
         GPU_HALF_DEPTH_BOUND_A,
         view.frame.to_local_matrix(),
-        &ds.id,
+        instance_id,
+        draw_gen,
         &draws,
     )?;
     let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));

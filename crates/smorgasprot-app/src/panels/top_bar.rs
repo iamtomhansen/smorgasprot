@@ -22,6 +22,11 @@ pub fn show(ui: &mut Ui, datasets: &[ViewerDataset], active: usize, state: &mut 
                 actions.push(Action::ExportHtml);
                 ui.close_menu();
             }
+            ui.separator();
+            if ui.button("⚙ Preferences…").clicked() {
+                state.panels.preferences = !state.panels.preferences;
+                ui.close_menu();
+            }
             // Browsers own the tab lifecycle, so Quit is native-only.
             #[cfg(not(target_arch = "wasm32"))]
             {

@@ -12,4 +12,8 @@ pub enum Action {
     ExportHtml,
     /// Dismiss the current status-bar message.
     DismissStatus,
+    /// Persist app-wide preferences to the resolved config file.
+    SaveConfig,
+    /// Reload app-wide preferences from disk.
+    ReloadConfig,
 }

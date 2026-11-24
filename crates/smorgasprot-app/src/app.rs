@@ -2,16 +2,18 @@
 //! Each frame: advance animations, draw panels, then apply queued `Action`s.
 
 use crate::action::Action;
+use crate::config::{AppConfig, ConfigPollEvent, ConfigWatcher, StartupConfig};
 use crate::dataset::ViewerDataset;
 use crate::files::{self, FileKind};
 use crate::jobs::{JobOutput, JobQueue};
 use crate::loader;
 use crate::panels;
-use crate::state::{SurfaceCulling, UiState};
+use crate::render::GpuSurfaceRenderer;
+use crate::state::{RenderBackend, RenderingSettings, SurfaceCulling, UiState};
 use crate::status::StatusMessage;
-use crate::viewport::{self, gpu_surface::GpuSurfaceRenderer};
+use crate::viewport;
 use egui::{CentralPanel, Context, SidePanel, TopBottomPanel};
-use smorgasprot_core::AnalysisParams;
+use std::path::Path;
 
 /// Default width of the left controls panel (px).
 const LEFT_PANEL_WIDTH: f32 = 320.0;
@@ -30,6 +32,9 @@ pub struct SmorgasprotApp {
     datasets: Vec<ViewerDataset>,
     active: usize,
     state: UiState,
+    config: AppConfig,
+    startup_rendering: RenderingSettings,
+    config_watcher: ConfigWatcher,
     status: Option<StatusMessage>,
     jobs: JobQueue,
     /// `None` on the glow escape hatch or a wgpu init failure; `complex_scene` falls back to
@@ -38,13 +43,34 @@ pub struct SmorgasprotApp {
 }
 
 impl SmorgasprotApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, datasets: Vec<ViewerDataset>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, datasets: Vec<ViewerDataset>, loaded_cfg: StartupConfig) -> Self {
         crate::style::configure_fonts(&cc.egui_ctx);
         let gpu_surfaces = cc.wgpu_render_state.as_ref().map(GpuSurfaceRenderer::new);
         if gpu_surfaces.is_none() {
             eprintln!("Warning: no wgpu render state available; molecular surfaces will use the CPU fallback path.");
         }
-        Self { datasets, active: 0, state: UiState::default(), status: None, jobs: JobQueue::default(), gpu_surfaces }
+        let StartupConfig { config, path, warning } = loaded_cfg;
+        let startup_rendering = config.rendering.clone();
+        let mut state = UiState::default();
+        state.view_params = config.view.clone();
+        let status = warning.map(|w| StatusMessage::warning(w, 0.0, &state.view_params.status));
+        let config_watcher = ConfigWatcher::new(path);
+        Self {
+            datasets,
+            active: 0,
+            state,
+            config,
+            startup_rendering,
+            config_watcher,
+            status,
+            jobs: JobQueue::default(),
+            gpu_surfaces,
+        }
+    }
+
+    fn apply_reloaded_config(&mut self, cfg: AppConfig) {
+        self.state.view_params = cfg.view.clone();
+        self.config = cfg;
     }
 
     /// Spawns a background load of `paths`, discarding the current workspace on success.
@@ -53,9 +79,10 @@ impl SmorgasprotApp {
             [one] => format!("Loading {one}…"),
             many => format!("Loading {} structures…", many.len()),
         };
+        let analysis = self.config.analysis.clone();
         self.jobs.spawn(ctx, label, move || {
             let started = std::time::Instant::now();
-            let loaded = loader::load_paths(&paths, &AnalysisParams::default())?;
+            let loaded = loader::load_paths(&paths, &analysis)?;
             let datasets = loaded.into_iter().map(|l| l.dataset).collect();
             Ok(JobOutput::Opened { datasets, elapsed: started.elapsed() })
         });
@@ -84,6 +111,33 @@ impl SmorgasprotApp {
             }
             Action::ExportHtml => self.status = Some(self.export_html(now)),
             Action::DismissStatus => self.status = None,
+            Action::SaveConfig => {
+                self.config.view = self.state.view_params.clone();
+                let params = &self.state.view_params.status;
+                self.status = Some(match self.config_watcher.path().map(Path::to_path_buf) {
+                    Some(path) => match self.config.save_to(&path) {
+                        Ok(()) => {
+                            self.config_watcher.record_synced();
+                            StatusMessage::success(format!("Saved config to {}", path.display()), now, params)
+                        }
+                        Err(err) => StatusMessage::error(err, now, params),
+                    },
+                    None => StatusMessage::warning("No config path available.", now, params),
+                });
+            }
+            Action::ReloadConfig => {
+                self.status = Some(match self.config_watcher.path().map(Path::to_path_buf) {
+                    Some(path) => match AppConfig::reload_from(&path) {
+                        Ok(cfg) => {
+                            self.apply_reloaded_config(cfg);
+                            self.config_watcher.record_synced();
+                            StatusMessage::info(format!("Reloaded {}", path.display()), now, &self.state.view_params.status)
+                        }
+                        Err(err) => StatusMessage::warning(err, now, &self.state.view_params.status),
+                    },
+                    None => StatusMessage::warning("No config path available.", now, &self.state.view_params.status),
+                });
+            }
         }
     }
 
@@ -150,6 +204,25 @@ impl eframe::App for SmorgasprotApp {
         // Apply any debounced presentation surface remesh whose timer has elapsed before rendering.
         for ds in &mut self.datasets {
             ds.poll_draw_surface_remesh(now);
+        }
+
+        // Poll app config for external edits at the configured cadence.
+        match self.config_watcher.poll(now, self.state.view_params.config.poll_interval_s) {
+            Some(ConfigPollEvent::Reloaded(cfg)) => {
+                self.apply_reloaded_config(cfg);
+                self.status = Some(StatusMessage::info(
+                    "Reloaded config from disk.",
+                    now,
+                    &self.state.view_params.status,
+                ));
+            }
+            Some(ConfigPollEvent::Warning(err)) => {
+                self.status = Some(StatusMessage::warning(err, now, &self.state.view_params.status));
+            }
+            None => {}
+        }
+        if let Some(delay) = self.config_watcher.next_poll_delay_s(now, self.state.view_params.config.poll_interval_s) {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(delay));
         }
 
         // Expire auto-timed status messages, and schedule a wake-up when due.
@@ -226,11 +299,27 @@ impl eframe::App for SmorgasprotApp {
                     .width_range(SIDE_PANEL_RANGE)
                     .show(ctx, |ui| panels::inspector(ui, ds, &self.state));
             }
-            CentralPanel::default().show(ctx, |ui| viewport::show(ui, ds, &mut self.state, self.gpu_surfaces.as_mut()));
+            let active_gpu = match self.config.rendering.backend {
+                RenderBackend::Auto | RenderBackend::Wgpu => self.gpu_surfaces.as_mut(),
+                RenderBackend::Glow => None,
+            };
+            CentralPanel::default().show(ctx, |ui| viewport::show(ui, ds, &mut self.state, active_gpu));
         } else {
             CentralPanel::default().show(ctx, |ui| {
                 ui.centered_and_justified(|ui| ui.label("No complex loaded. Pass a structure file on the command line."));
             });
+        }
+
+        if self.state.panels.preferences {
+            panels::preferences::show(
+                ctx,
+                &mut self.state,
+                &mut self.config,
+                &self.startup_rendering,
+                self.gpu_surfaces.is_some(),
+                self.config_watcher.path(),
+                &mut actions,
+            );
         }
 
         for action in actions {

@@ -4,7 +4,7 @@
 //! the Complex tab; text labels stay a final always-on-top pass (no text primitive in `DrawList`).
 //!
 //! TODO: still CPU painter's-algorithm depth, not a real GPU depth buffer — revisit if/when the Complex
-//! tab's own GPU migration (`viewport/gpu_surface.rs`) reaches this far.
+//! tab's own GPU migration (`render/surface.rs`) reaches this far.
 
 use super::draw_list::DrawList;
 use super::plane_space::PlaneFrame;

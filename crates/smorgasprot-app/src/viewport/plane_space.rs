@@ -49,7 +49,7 @@ impl PlaneFrame {
         Vec3::new(rel.dot(self.u), rel.dot(self.v), rel.dot(self.n))
     }
 
-    /// `to_local` as a `glam::Mat4`, for the GPU surface pipeline (`gpu_surface.rs`), which
+    /// `to_local` as a `glam::Mat4`, for the GPU surface pipeline (`render/surface.rs`), which
     /// needs a real matrix rather than a per-point method call.
     pub fn to_local_matrix(&self) -> glam::Mat4 {
         let rotation = glam::Mat3::from_cols(self.u, self.v, self.n).transpose();

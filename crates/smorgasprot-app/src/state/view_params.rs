@@ -1,11 +1,52 @@
 //! Tunable display and navigation parameter groups (app-side counterpart of core `AnalysisParams`).
 //! Feature-scoped groups keep domain tunables separate from unrelated rendering settings.
 
+use super::Choice;
 use serde::{Deserialize, Serialize};
 use smorgasprot_core::param_group;
 use smorgasprot_core::params::ParamGroup;
 
-/// All app-side parameter groups; saved in preferences and sessions.
+/// Preferred rendering backend.
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum RenderBackend {
+    /// Use `wgpu` at startup and GPU surface rendering when available; fall back to CPU/Glow otherwise.
+    #[default]
+    Auto,
+    /// Prefer `wgpu` at startup and GPU surface rendering (falls back only if `wgpu` fails to init).
+    Wgpu,
+    /// Use `Glow` at startup or force the CPU `DrawList` surface fallback while `wgpu` is active.
+    Glow,
+}
+
+impl Choice for RenderBackend {
+    const ALL: &'static [Self] = &[Self::Auto, Self::Wgpu, Self::Glow];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto (wgpu if available)",
+            Self::Wgpu => "wgpu (GPU surfaces)",
+            Self::Glow => "Glow (CPU fallback)",
+        }
+    }
+}
+
+/// App-wide graphics backend and MSAA settings.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(default)]
+pub struct RenderingSettings {
+    /// Graphics backend preference (`Auto`, `Wgpu`, or `Glow`).
+    pub backend: RenderBackend,
+    /// Viewport MSAA sample count applied at window startup (`1`, `2`, `4`, `8`).
+    pub multisampling: u16,
+}
+
+impl Default for RenderingSettings {
+    fn default() -> Self {
+        Self { backend: RenderBackend::Auto, multisampling: 4 }
+    }
+}
+
+/// All app-side parameter groups; saved in config files.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(default)]
 pub struct ViewParams {
@@ -17,11 +58,12 @@ pub struct ViewParams {
     pub lenses: LensParams,
     pub navigation: NavigationParams,
     pub status: StatusParams,
+    pub config: ConfigParams,
 }
 
 impl ViewParams {
     /// All groups in display order, for generic editors.
-    pub fn groups_mut(&mut self) -> [&mut dyn ParamGroup; 8] {
+    pub fn groups_mut(&mut self) -> [&mut dyn ParamGroup; 9] {
         [
             &mut self.explode,
             &mut self.morph,
@@ -31,6 +73,7 @@ impl ViewParams {
             &mut self.lenses,
             &mut self.navigation,
             &mut self.status,
+            &mut self.config,
         ]
     }
 }
@@ -158,5 +201,13 @@ param_group! {
     pub struct StatusParams("status", "Status Bar Notifications") {
         /// How long status messages stay visible before auto-hiding (0 = until dismissed).
         lifetime_s: f32 = 6.0, 0.0..=60.0, "Message lifetime (0 = until dismissed)", "s";
+    }
+}
+
+param_group! {
+    /// App-wide config hot-reload polling cadence (`0` = disabled).
+    pub struct ConfigParams("config", "Config & Hot-Reload") {
+        /// How often to check the config file mtime for external edits (0 = off).
+        poll_interval_s: f32 = 0.5, 0.0..=10.0, "Config poll interval (0 = off)", "s";
     }
 }
