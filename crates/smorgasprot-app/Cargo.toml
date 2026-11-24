@@ -10,7 +10,14 @@ smorgasprot-core.workspace = true
 glam.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-eframe = { version = "0.31", features = ["persistence"] }
+# "glow" (OpenGL) stays enabled via eframe's default features as a fallback/escape
+# hatch during the wgpu migration; `main.rs` selects `Renderer::Wgpu` at runtime.
+eframe = { version = "0.31", features = ["persistence", "wgpu"] }
+# Pinned to the exact versions eframe's "wgpu" feature pulls in, so `gpu_surface.rs`'s
+# types are the same crate instances as `cc.wgpu_render_state`'s.
+egui-wgpu = "0.31.1"
+wgpu = "24.0"
+bytemuck = { version = "1.25", features = ["derive"] }
 rfd = "0.18"
 egui = { version = "0.31", features = ["serde"] }
 ron = "0.8"

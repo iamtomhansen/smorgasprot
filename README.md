@@ -1,4 +1,4 @@
-# SmorgåsProt
+# SmörgåsProt
 Protein interface analysis tool. Provides interactive visualization of interactions at a protein's
 surface.
 

@@ -34,6 +34,7 @@ smorgasprot/
         ├── app.rs                SmorgasprotApp: frame loop, panel layout, Action dispatch
         ├── camera.rs             Orbit camera, ViewAxis snapping
         ├── dataset.rs            ViewerDataset: the open structure (chains, interfaces, source complex, render-ready snapshot — frozen JSON contract)
+        ├── render_policy.rs      Display defaults for a freshly loaded dataset (tessellation preset, face culling), as a pure function of atom count
         ├── loader.rs             Load pipeline (parse → partition → map → meshes), built-in examples
         ├── jobs.rs               Background jobs (threads natively, inline on wasm)
         ├── files.rs              rfd dialogs, drag-and-drop, file-type detection
@@ -44,7 +45,7 @@ smorgasprot/
         ├── style.rs              palette, lenses, sizing
         ├── panels.rs             top_bar, status_bar, complex/interface controls, inspector, widgets
         │                         (panels/parameters.rs is drafted but not yet wired into panels.rs)
-        ├── viewport.rs           Input, picking, scene dispatch; complex_scene, interface_scene, gizmo, grid, draw_list, plane_space
+        ├── viewport.rs           Input, picking, scene dispatch; complex_scene, interface_scene, gizmo, grid, draw_list, plane_space, gpu_surface
         └── export.rs             html.rs + template.html (frozen viewer), server.rs (--serve)
 ```
 
@@ -106,7 +107,7 @@ before the window opens.
 
 ## App architecture
 
-Dependency order, low to high: `camera`, `dataset` → `state` → `style` → `panels`, `viewport` → `app`. `loader`, `jobs`, `files`, `persistence` (drafted, unwired), `export` are I/O edges used by `app` and `main`. Lower layers never import higher ones.
+Dependency order, low to high: `camera`, `state` → `render_policy` → `dataset` → `style` → `panels`, `viewport` → `app`. `loader`, `jobs`, `files`, `persistence` (drafted, unwired), `export` are I/O edges used by `app` and `main`. Lower layers never import higher ones. (`render_policy` only borrows `state::SurfaceCulling`'s enum definition, not `UiState` itself — it's a pure function of a dataset's atom count, not app/UI logic. The only caller is `dataset::ViewerDataset::new`, which uses it to initialize `draw_preset`/`draw_mesh`/`culling` — all three live on `ViewerDataset` itself, editable afterward via the Complex panel, exactly like any other per-dataset fact; `app.rs` never touches render policy or these fields at all, by design — see `panels/complex_controls.rs` for where they're read/written instead.)
 
 Per frame, `SmorgasprotApp::update`:
 1. Advances tweens, expires the status message.
@@ -116,7 +117,21 @@ Per frame, `SmorgasprotApp::update`:
 5. Draws the viewport. Only `viewport.rs` mutates camera and selection; scenes only paint.
 6. Applies the queued actions.
 
-Rendering is CPU-projected and painted as one depth-sorted `egui::Mesh` per frame (`DrawList`).
+Cartoon ribbons, atom spheres, and interface boundary/envelope/negative meshes are CPU-projected
+and painted as one depth-sorted `egui::Mesh` per frame (`DrawList`). Chain molecular surfaces
+instead render on a dedicated `wgpu` pipeline (`viewport/gpu_surface.rs`) with a real,
+per-dataset depth buffer: a chain at effectively opaque alpha (`>= 0.999`) uses a normal
+depth-tested, depth-writing pipeline (so triangle submission order never matters — this is what
+guarantees alpha-1 chains actually occlude each other and themselves); a translucent chain
+depth-*tests* but doesn't depth-*write*, so it's still correctly hidden behind nearer opaque
+geometry without fighting other translucent fragments for the z-buffer, at the cost of blending
+overlapping translucent layers in draw order rather than true back-to-front order (an earlier
+attempt used Weighted Blended OIT instead; reverted; see the module's header comment for why it
+can't guarantee opacity). The result is composited as one textured quad under the `DrawList`
+layer; `complex_scene` falls back to the CPU triangle path for surfaces when no wgpu backend is
+available. The two don't yet depth-test against each other (the GPU quad is always painted
+first), and moving every Complex-tab primitive onto that same GPU target is tracked as future
+work (`docs/roadmap.md`, Phase 4.1 item 9).
 
 ## Parameters
 

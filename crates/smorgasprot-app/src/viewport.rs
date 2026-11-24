@@ -5,15 +5,18 @@ mod cartography_scene;
 mod complex_scene;
 mod draw_list;
 mod gizmo;
+pub mod gpu_surface;
 mod grid;
 mod plane_space;
 
 use crate::dataset::ViewerDataset;
 use crate::state::{UiState, WorkspaceTab};
 use egui::{CursorIcon, PointerButton, Sense, Ui};
+use gpu_surface::GpuSurfaceRenderer;
 
 /// Allocates the remaining space in `ui` and renders the active tab's scene.
-pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState) {
+/// `gpu_surfaces` is `None` on the CPU-only fallback path (see `GpuSurfaceRenderer::new`).
+pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState, gpu_surfaces: Option<&mut GpuSurfaceRenderer>) {
     let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, state.palette.chrome.viewport_bg);
@@ -46,7 +49,7 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState) {
     match state.active_tab {
         WorkspaceTab::Complex => {
             state.selection.hovered_atom = None;
-            complex_scene::paint(&painter, rect, ds, state);
+            complex_scene::paint(&painter, rect, ds, state, gpu_surfaces);
         }
         WorkspaceTab::Cartography => {
             let nodes = cartography_scene::project_nodes(ds, rect, &state.cartography);

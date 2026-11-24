@@ -3,7 +3,7 @@
 
 use crate::state::NavigationParams;
 use egui::{PointerButton, Pos2, Rect, Response, Ui, Vec2};
-use glam::Vec3;
+use glam::{Mat3, Mat4, Vec3};
 use serde::{Deserialize, Serialize};
 use std::f32::consts::{FRAC_PI_2, PI};
 
@@ -112,6 +112,35 @@ impl CameraState {
         (Pos2::new(c.x + r.x * self.zoom, c.y - r.y * self.zoom), r.z)
     }
 
+    /// GPU-pipeline equivalent of `rotate()` + `project()`'s orthographic pixel mapping,
+    /// for shaders that need a real matrix (the GPU molecular-surface renderer; later,
+    /// screen-ray unprojection for 3D picking). Produces wgpu clip space: x right, y up,
+    /// depth `0..1` with **smaller = nearer** — the opposite sign of `project()`'s own
+    /// "larger local-z is nearer" depth, since that's wgpu's convention, not ours.
+    ///
+    /// `half_depth_a` is a symmetric view-space depth half-range (Å) around `origin`
+    /// along the view axis; it must bound every point that will be rendered (otherwise
+    /// it's clipped), but otherwise doesn't affect the on-screen result — this is an
+    /// orthographic projection, exactly like `project()`, which never divides by depth.
+    pub fn view_projection_matrix(&self, rect: Rect, half_depth_a: f32) -> Mat4 {
+        // Same rotation composition as `rotate()`, in the same order, so a GPU-rendered
+        // layer lines up exactly with every CPU-projected one sharing this camera.
+        let rotation = Mat3::from_rotation_z(self.roll) * Mat3::from_rotation_x(self.pitch) * Mat3::from_rotation_y(self.yaw);
+        let view = Mat4::from_mat3(rotation) * Mat4::from_translation(-self.origin);
+
+        // Orthographic projection matching `project()`'s `center + pan ± r * zoom` pixel
+        // mapping, inverted through the standard NDC→viewport transform (NDC y up maps
+        // to the top of the viewport, matching `project()`'s screen-y-down convention).
+        let (w, h) = (rect.width(), rect.height());
+        let proj = Mat4::from_cols(
+            glam::Vec4::new(2.0 * self.zoom / w, 0.0, 0.0, 0.0),
+            glam::Vec4::new(0.0, 2.0 * self.zoom / h, 0.0, 0.0),
+            glam::Vec4::new(0.0, 0.0, -0.5 / half_depth_a, 0.0),
+            glam::Vec4::new(2.0 * self.pan.x / w, -2.0 * self.pan.y / h, 0.5, 1.0),
+        );
+        proj * view
+    }
+
     /// Restores the default face-on view of the tangent plane.
     pub fn reset(&mut self) {
         *self = Self::default();
@@ -155,6 +184,67 @@ impl CameraState {
             let (scroll, pinch) = ui.input(|i| (i.smooth_scroll_delta.y, i.zoom_delta()));
             let factor = pinch * (scroll * nav.zoom_per_scroll).exp();
             self.zoom = (self.zoom * factor).clamp(nav.min_zoom, nav.max_zoom);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `view_projection_matrix` must land on the exact same screen pixel (and agree on
+    /// relative depth order) as `project()` for every point, across a spread of camera
+    /// states. Ensures GPU and CPU rendering are mathematically identical.
+    #[test]
+    fn matrix_matches_pointwise_projection() {
+        let rect = Rect::from_min_size(Pos2::new(10.0, 20.0), egui::vec2(800.0, 600.0));
+        let half_depth_a = 1000.0;
+
+        let cameras = [
+            CameraState::default(),
+            CameraState { yaw: 0.6, ..CameraState::default() },
+            CameraState { pitch: -0.4, ..CameraState::default() },
+            CameraState { yaw: 0.3, pitch: 0.5, roll: 0.0, ..CameraState::default() },
+            CameraState { yaw: 0.3, pitch: 0.5, roll: 0.9, origin: Vec3::new(5.0, -3.0, 2.0), pan: Vec2::new(40.0, -15.0), zoom: 12.0 },
+            CameraState { yaw: -1.2, pitch: FRAC_PI_2 * 0.9, roll: -0.5, zoom: 3.5, ..CameraState::default() },
+        ];
+        let points = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(3.5, -2.0, 7.0),
+            Vec3::new(-12.0, 6.0, -4.0),
+        ];
+
+        for cam in cameras {
+            let vp = cam.view_projection_matrix(rect, half_depth_a);
+            let mut prev_depth = None;
+            for &p in &points {
+                let (expected_screen, depth) = cam.project(p, rect);
+
+                let clip = vp * p.extend(1.0);
+                let ndc = clip.truncate() / clip.w;
+                let got_screen = Pos2::new(
+                    rect.left() + (ndc.x * 0.5 + 0.5) * rect.width(),
+                    rect.top() + (1.0 - (ndc.y * 0.5 + 0.5)) * rect.height(),
+                );
+
+                assert!(
+                    (got_screen - expected_screen).length() < 1e-3,
+                    "screen mismatch: matrix={got_screen:?} project()={expected_screen:?} cam={cam:?} p={p:?}"
+                );
+                // wgpu convention is smaller-depth-nearer, the opposite of `project()`'s
+                // larger-is-nearer, so the ranking across points must invert.
+                if let Some((prev_ndc_z, prev_local_depth)) = prev_depth {
+                    assert_eq!(
+                        prev_ndc_z < ndc.z,
+                        prev_local_depth > depth,
+                        "depth order mismatch at cam={cam:?}"
+                    );
+                }
+                prev_depth = Some((ndc.z, depth));
+            }
         }
     }
 }

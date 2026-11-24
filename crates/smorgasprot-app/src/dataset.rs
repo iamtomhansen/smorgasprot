@@ -1,5 +1,6 @@
 //! Render-ready snapshot of one loaded complex and its interface maps.
 
+use crate::state::SurfaceCulling;
 use serde::Serialize;
 use smorgasprot_core::{
     AnalysisParams, AtomNode, AtomNodeIdx, ChainName, ComplexStructure, Element, GlobalAtomIdx, GlobalChainIdx,
@@ -191,6 +192,19 @@ pub struct ViewerDataset {
     /// Immutable analytical parameters used to compute scientific maps, stats, and void volumes.
     #[serde(skip)]
     analysis_params: AnalysisParams,
+    /// Requested presentation tessellation preset (panel-editable); decided at construction by
+    /// `render_policy::defaults_for`, debounced into `chains[*].draw_surface_mesh` by
+    /// `recompute_draw_surfaces`/`poll_draw_surface_remesh`.
+    #[serde(skip)]
+    pub draw_preset: GeodesicPreset,
+    /// Requested presentation meshing parameters (panel-editable), same debounce as above.
+    #[serde(skip)]
+    pub draw_mesh: SurfaceParams,
+    /// Face-culling mode for this dataset's 3D molecular surface (panel-editable); decided at
+    /// construction by `render_policy::defaults_for`. Pure pipeline state, takes effect
+    /// immediately next frame — no rebake/debounce needed, unlike the two fields above.
+    #[serde(skip)]
+    pub culling: SurfaceCulling,
     /// Last presentation tessellation preset baked into `chains[*].draw_surface_mesh`.
     #[serde(skip)]
     applied_draw_preset: GeodesicPreset,
@@ -211,7 +225,8 @@ impl ViewerDataset {
         partitions: Vec<InterfacePartition>,
         analysis_params: &AnalysisParams,
     ) -> Result<Self, String> {
-        let initial_preset = GeodesicPreset::Octahedron18;
+        let defaults = crate::render_policy::defaults_for(complex.atoms.len());
+        let initial_preset = defaults.draw_preset;
         let initial_draw_surface = SurfaceParams::display();
         let explode_offsets = compute_chain_explode_offsets(complex);
         let chains: Vec<ChainVisualData> = complex
@@ -249,6 +264,9 @@ impl ViewerDataset {
             default_origin: complex_centroid(complex),
             complex: Some(complex.clone()),
             analysis_params: analysis_params.clone(),
+            draw_preset: initial_preset,
+            draw_mesh: initial_draw_surface.clone(),
+            culling: defaults.culling,
             applied_draw_preset: initial_preset,
             applied_draw_surface: initial_draw_surface,
             draw_remesh_due: None,
@@ -277,6 +295,11 @@ impl ViewerDataset {
         &self.analysis_params
     }
 
+    /// Heavy-atom count, for `render_policy::defaults_for`.
+    pub fn atom_count(&self) -> usize {
+        self.complex.as_ref().map_or(0, |c| c.atoms.len())
+    }
+
     /// Presentation tessellation preset currently reflected by `chains[*].draw_surface_mesh`.
     pub fn applied_draw_preset(&self) -> GeodesicPreset {
         self.applied_draw_preset
@@ -285,6 +308,33 @@ impl ViewerDataset {
     /// Presentation surface parameters currently reflected by `chains[*].draw_surface_mesh`.
     pub fn applied_draw_surface(&self) -> &SurfaceParams {
         &self.applied_draw_surface
+    }
+
+    /// Whether `culling` still matches this dataset's size-based recommendation (recomputed
+    /// fresh, not a stored snapshot — `render_policy::defaults_for` is cheap and pure).
+    pub fn is_default_culling(&self) -> bool {
+        self.culling == crate::render_policy::defaults_for(self.atom_count()).culling
+    }
+
+    /// Resets `culling` to this dataset's size-based recommendation. Pure pipeline state — no
+    /// remesh/debounce needed, unlike `reset_draw_mesh`.
+    pub fn reset_culling(&mut self) {
+        self.culling = crate::render_policy::defaults_for(self.atom_count()).culling;
+    }
+
+    /// Whether `draw_preset`/`draw_mesh` still match this dataset's size-based recommendation
+    /// and the presentation meshing defaults.
+    pub fn is_default_draw_mesh(&self) -> bool {
+        self.draw_preset == crate::render_policy::defaults_for(self.atom_count()).draw_preset
+            && self.draw_mesh == SurfaceParams::display()
+    }
+
+    /// Resets `draw_preset`/`draw_mesh` to their defaults. Callers that care whether this
+    /// actually changed anything (to decide whether to schedule a remesh) should check
+    /// `is_default_draw_mesh` first, as `complex_controls.rs` does.
+    pub fn reset_draw_mesh(&mut self) {
+        self.draw_preset = crate::render_policy::defaults_for(self.atom_count()).draw_preset;
+        self.draw_mesh = SurfaceParams::display();
     }
 
     /// Adds a new interface partition, precomputing its analytical map and presentation geometry.
@@ -331,35 +381,30 @@ impl ViewerDataset {
     }
 
     /// Runs any pending presentation surface remesh whose deadline has arrived, or returns remaining wait seconds.
-    pub fn poll_draw_surface_remesh(
-        &mut self,
-        now: f64,
-        draw_preset: GeodesicPreset,
-        draw_surface: &SurfaceParams,
-    ) -> Option<f64> {
+    pub fn poll_draw_surface_remesh(&mut self, now: f64) -> Option<f64> {
         let due = self.draw_remesh_due?;
         if now >= due {
             self.draw_remesh_due = None;
-            self.recompute_draw_surfaces(draw_preset, draw_surface);
+            self.recompute_draw_surfaces();
             None
         } else {
             Some(due - now)
         }
     }
 
-    /// Recomputes presentation chain surfaces and interface contact envelopes from `draw_preset` and `draw_surface`.
-    /// Analytical metrics, maps, void volumes, and `analysis_params` remain untouched.
-    pub fn recompute_draw_surfaces(&mut self, draw_preset: GeodesicPreset, draw_surface: &SurfaceParams) {
+    /// Recomputes presentation chain surfaces and interface contact envelopes from `draw_preset`
+    /// and `draw_mesh`. Analytical metrics, maps, void volumes, and `analysis_params` remain untouched.
+    pub fn recompute_draw_surfaces(&mut self) {
         self.draw_remesh_due = None;
-        self.applied_draw_preset = draw_preset;
-        self.applied_draw_surface = draw_surface.clone();
+        self.applied_draw_preset = self.draw_preset;
+        self.applied_draw_surface = self.draw_mesh.clone();
         let Some(complex) = &self.complex else { return };
         for (c_idx, chain) in self.chains.iter_mut().enumerate() {
             chain.draw_surface_mesh = build_chain_surface_mesh_with_preset(
                 complex,
                 GlobalChainIdx(c_idx as u32),
-                draw_preset,
-                draw_surface,
+                self.draw_preset,
+                &self.draw_mesh,
             );
         }
         let draw_chain_meshes = self.draw_chain_meshes();

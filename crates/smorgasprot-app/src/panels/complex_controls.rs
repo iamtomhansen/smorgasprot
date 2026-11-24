@@ -70,13 +70,14 @@ pub fn show(ui: &mut Ui, ds: &mut ViewerDataset, state: &mut UiState) {
         ui.horizontal(|ui| {
             ui.checkbox(&mut s.surface.visible, RichText::new("Surface mesh").strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let surface_modified = !s.surface.is_default_channels() || !s.surface.is_default_draw_mesh();
+                let surface_modified = !s.surface.color.is_default() || !ds.is_default_culling() || !ds.is_default_draw_mesh();
                 let now = ui.input(|i| i.time);
                 customize_popover(ui, "cx_surface_popover", surface_modified, |ui| {
                     popover_header(ui, false, "Surface mesh layer", surface_modified, || {
-                        s.surface.reset_channels();
-                        if !s.surface.is_default_draw_mesh() {
-                            s.surface.reset_draw_mesh();
+                        s.surface.color.reset();
+                        ds.reset_culling();
+                        if !ds.is_default_draw_mesh() {
+                            ds.reset_draw_mesh();
                             ds.schedule_draw_surface_remesh(now, SURFACE_REMESH_DEBOUNCE_S);
                         }
                     });
@@ -88,18 +89,18 @@ pub fn show(ui: &mut Ui, ds: &mut ViewerDataset, state: &mut UiState) {
                         ChainColorLens::Fixed,
                     );
                     ui.label(RichText::new("Face culling:").strong());
-                    choice_combo(ui, "cx_surface_culling", &mut s.surface.culling);
+                    choice_combo(ui, "cx_surface_culling", &mut ds.culling);
                     ui.separator();
                     ui.label(RichText::new("Display meshing:").strong());
                     ui.add_enabled_ui(ds.complex.is_some(), |ui| {
                         ui.label("Resolution preset:");
-                        let prev_preset = s.surface.draw_preset;
-                        choice_combo(ui, "cx_surface_preset", &mut s.surface.draw_preset);
-                        let preset_changed = s.surface.draw_preset != prev_preset;
+                        let prev_preset = ds.draw_preset;
+                        choice_combo(ui, "cx_surface_preset", &mut ds.draw_preset);
+                        let preset_changed = ds.draw_preset != prev_preset;
                         let mut display_defaults = SurfaceParams::display();
                         let params_changed = param_group_controls(
                             ui,
-                            &mut s.surface.draw_mesh,
+                            &mut ds.draw_mesh,
                             Some(&mut display_defaults),
                         );
                         if preset_changed || params_changed {
@@ -227,6 +228,7 @@ struct InterfaceListUiState {
     confirm_delete: Option<ConfirmDelete>,
 }
 
+/// A pending deletion of a single interface or all interfaces, awaiting user confirmation.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ConfirmDelete {
     Single(usize),

@@ -174,16 +174,19 @@ fn export(args: &Args, datasets: &[ViewerDataset], complexes: HashMap<String, Co
 
 /// Opens the egui desktop window.
 fn run_gui(datasets: Vec<ViewerDataset>) -> Result<(), String> {
-    println!("\nLaunching Smorgasprot desktop application (egui)...");
+    println!("\nLaunching SmörgåsProt desktop application (egui)...");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 900.0])
             .with_min_inner_size([960.0, 600.0])
-            .with_title("Smorgasprot — Macromolecular Interface Cartography"),
+            .with_title("SmörgåsProt"),
         // Custom scene meshes are not feathered by egui, so MSAA smooths their edges.
         multisampling: 4,
+        // `wgpu` picks the best native backend per platform (Vulkan/Metal/DX12, falling
+        // back to GL). `glow` remains available for older systems/as an escape hatch.
+        renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
-    eframe::run_native("Smorgasprot", options, Box::new(|cc| Ok(Box::new(SmorgasprotApp::new(cc, datasets)))))
+    eframe::run_native("SmörgåsProt", options, Box::new(|cc| Ok(Box::new(SmorgasprotApp::new(cc, datasets)))))
         .map_err(|e| format!("Failed to run the desktop app: {e}"))
 }

@@ -5,7 +5,7 @@ use crate::camera::CameraState;
 use crate::style::{AtomSizeMode, ChainColorLens, ColorLens, VisualChannel};
 use egui::Color32;
 use serde::{Deserialize, Serialize};
-use smorgasprot_core::surface::{GeodesicPreset, SurfaceParams};
+use smorgasprot_core::surface::GeodesicPreset;
 
 /// Which derived interface geometry is drawn in the Complex tab.
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq)]
@@ -71,18 +71,16 @@ impl Choice for GeodesicPreset {
 }
 
 /// Visual channels and representation settings for the 3D molecular surface mesh layer.
+/// Tessellation preset, meshing params, and face culling live on `ViewerDataset` itself
+/// (per-dataset, decided at load time by `render_policy::defaults_for`), not here — this is
+/// purely the shared, sticky-across-tabs aesthetic preferences.
 #[derive(Clone, Debug)]
 pub struct SurfaceLayerStyle {
     pub visible: bool,
     pub alpha: Tween,
     pub show_faces: bool,
     pub show_wireframe: bool,
-    pub culling: SurfaceCulling,
     pub color: VisualChannel<ChainColorLens, Color32>,
-    /// Presentation-only tessellation preset (separate from analytical `Octahedron66`).
-    pub draw_preset: GeodesicPreset,
-    /// Presentation-only meshing parameters (never fed into analytical calculations).
-    pub draw_mesh: SurfaceParams,
 }
 
 impl Default for SurfaceLayerStyle {
@@ -92,31 +90,8 @@ impl Default for SurfaceLayerStyle {
             alpha: Tween::new(0.82),
             show_faces: true,
             show_wireframe: false,
-            culling: SurfaceCulling::None,
             color: VisualChannel::new(ChainColorLens::InterfaceSide, Color32::from_rgb(86, 180, 233)),
-            draw_preset: GeodesicPreset::Octahedron18,
-            draw_mesh: SurfaceParams::display(),
         }
-    }
-}
-
-impl SurfaceLayerStyle {
-    pub fn is_default_channels(&self) -> bool {
-        self.color.is_default() && self.culling == SurfaceCulling::None
-    }
-
-    pub fn reset_channels(&mut self) {
-        self.color.reset();
-        self.culling = SurfaceCulling::None;
-    }
-
-    pub fn is_default_draw_mesh(&self) -> bool {
-        self.draw_preset == GeodesicPreset::Octahedron18 && self.draw_mesh == SurfaceParams::display()
-    }
-
-    pub fn reset_draw_mesh(&mut self) {
-        self.draw_preset = GeodesicPreset::Octahedron18;
-        self.draw_mesh = SurfaceParams::display();
     }
 }
 

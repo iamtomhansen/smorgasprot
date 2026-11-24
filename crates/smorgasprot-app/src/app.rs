@@ -7,9 +7,9 @@ use crate::files::{self, FileKind};
 use crate::jobs::{JobOutput, JobQueue};
 use crate::loader;
 use crate::panels;
-use crate::state::UiState;
+use crate::state::{SurfaceCulling, UiState};
 use crate::status::StatusMessage;
-use crate::viewport;
+use crate::viewport::{self, gpu_surface::GpuSurfaceRenderer};
 use egui::{CentralPanel, Context, SidePanel, TopBottomPanel};
 use smorgasprot_core::AnalysisParams;
 
@@ -32,12 +32,19 @@ pub struct SmorgasprotApp {
     state: UiState,
     status: Option<StatusMessage>,
     jobs: JobQueue,
+    /// `None` on the glow escape hatch or a wgpu init failure; `complex_scene` falls back to
+    /// its CPU `DrawList` path for surfaces in that case (the "GPU check").
+    gpu_surfaces: Option<GpuSurfaceRenderer>,
 }
 
 impl SmorgasprotApp {
     pub fn new(cc: &eframe::CreationContext<'_>, datasets: Vec<ViewerDataset>) -> Self {
         crate::style::configure_fonts(&cc.egui_ctx);
-        Self { datasets, active: 0, state: UiState::default(), status: None, jobs: JobQueue::default() }
+        let gpu_surfaces = cc.wgpu_render_state.as_ref().map(GpuSurfaceRenderer::new);
+        if gpu_surfaces.is_none() {
+            eprintln!("Warning: no wgpu render state available; molecular surfaces will use the CPU fallback path.");
+        }
+        Self { datasets, active: 0, state: UiState::default(), status: None, jobs: JobQueue::default(), gpu_surfaces }
     }
 
     /// Spawns a background load of `paths`, discarding the current workspace on success.
@@ -60,14 +67,9 @@ impl SmorgasprotApp {
             Action::SelectDataset(idx) if idx < self.datasets.len() => {
                 self.active = idx;
                 // Atom and residue indices are per-dataset, so the old selection is cleared.
+                // Surface display settings (preset/mesh params/culling) live on `ViewerDataset`
+                // itself, not here, so there's nothing else to reconcile when switching tabs.
                 self.state.selection.clear();
-                let draw_preset = self.state.complex.surface.draw_preset;
-                let draw_surface = &self.state.complex.surface.draw_mesh;
-                if self.datasets[idx].applied_draw_preset() != draw_preset
-                    || self.datasets[idx].applied_draw_surface() != draw_surface
-                {
-                    self.datasets[idx].recompute_draw_surfaces(draw_preset, draw_surface);
-                }
             }
             Action::SelectDataset(_) => {}
             #[cfg(not(target_arch = "wasm32"))]
@@ -87,7 +89,7 @@ impl SmorgasprotApp {
 
     /// Applies a finished background job: a successful load replaces the whole workspace.
     fn apply_job(&mut self, result: crate::jobs::JobResult, now: f64) {
-        let params = &self.state.view_params.status;
+        let params = self.state.view_params.status.clone();
         self.status = Some(match result {
             Ok(JobOutput::Opened { datasets, elapsed }) => {
                 let what = match datasets.as_slice() {
@@ -97,9 +99,18 @@ impl SmorgasprotApp {
                 self.datasets = datasets;
                 self.active = 0;
                 self.state.selection.clear();
-                StatusMessage::success(format!("Loaded {what} in {:.2}s", elapsed.as_secs_f64()), now, params)
+
+                // A large structure starts at a coarser preset + backface culling, decided and
+                // baked onto the dataset itself at construction (`render_policy::defaults_for`,
+                // called from `ViewerDataset::new`) — this just reads that fact to phrase the
+                // status message, it isn't deciding anything.
+                let detail_note = match self.datasets.first() {
+                    Some(ds) if ds.culling == SurfaceCulling::Backfaces => " (reduced display detail due to size)",
+                    _ => "",
+                };
+                StatusMessage::success(format!("Loaded {what} in {:.2}s{detail_note}", elapsed.as_secs_f64()), now, &params)
             }
-            Err(e) => StatusMessage::error(e, now, params),
+            Err(e) => StatusMessage::error(e, now, &params),
         });
     }
 
@@ -137,10 +148,8 @@ impl eframe::App for SmorgasprotApp {
         }
 
         // Apply any debounced presentation surface remesh whose timer has elapsed before rendering.
-        let draw_preset = self.state.complex.surface.draw_preset;
-        let draw_surface = self.state.complex.surface.draw_mesh.clone();
         for ds in &mut self.datasets {
-            ds.poll_draw_surface_remesh(now, draw_preset, &draw_surface);
+            ds.poll_draw_surface_remesh(now);
         }
 
         // Expire auto-timed status messages, and schedule a wake-up when due.
@@ -217,7 +226,7 @@ impl eframe::App for SmorgasprotApp {
                     .width_range(SIDE_PANEL_RANGE)
                     .show(ctx, |ui| panels::inspector(ui, ds, &self.state));
             }
-            CentralPanel::default().show(ctx, |ui| viewport::show(ui, ds, &mut self.state));
+            CentralPanel::default().show(ctx, |ui| viewport::show(ui, ds, &mut self.state, self.gpu_surfaces.as_mut()));
         } else {
             CentralPanel::default().show(ctx, |ui| {
                 ui.centered_and_justified(|ui| ui.label("No complex loaded. Pass a structure file on the command line."));
@@ -229,10 +238,8 @@ impl eframe::App for SmorgasprotApp {
         }
 
         // Schedule wake-up if a panel scheduled a debounced presentation surface remesh during this frame.
-        let draw_preset = self.state.complex.surface.draw_preset;
-        let draw_surface = &self.state.complex.surface.draw_mesh;
         for ds in &mut self.datasets {
-            if let Some(rem) = ds.poll_draw_surface_remesh(now, draw_preset, draw_surface) {
+            if let Some(rem) = ds.poll_draw_surface_remesh(now) {
                 ctx.request_repaint_after(std::time::Duration::from_secs_f64(rem));
             }
         }

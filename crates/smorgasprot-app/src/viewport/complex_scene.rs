@@ -2,6 +2,7 @@
 //! All primitives go through one [`DrawList`] so they depth-sort against each other.
 
 use super::draw_list::DrawList;
+use super::gpu_surface::{GpuChainDraw, GpuSurfaceRenderer};
 use super::plane_space::{PlaneFrame, explode_offset};
 use crate::camera::CameraState;
 use crate::dataset::{InterfaceViewData, ViewerDataset};
@@ -17,8 +18,13 @@ use smorgasprot_core::{InterfaceSide, SurfaceMesh};
 /// Fixed world-space light direction for Lambert shading (not normalized; matches the HTML viewer).
 const LIGHT_DIR: Vec3 = Vec3::new(0.3, 0.5, 0.8);
 
+/// Symmetric view-space depth half-range (Å) handed to `GpuSurfaceRenderer::render`'s
+/// orthographic projection — generous enough to never clip any real or exploded structure,
+/// since (being orthographic) it otherwise has no effect on the rendered image.
+const GPU_HALF_DEPTH_BOUND_A: f32 = 100_000.0;
+
 /// Paints the Complex tab for the active dataset.
-pub fn paint(painter: &Painter, rect: Rect, ds: &ViewerDataset, state: &UiState) {
+pub fn paint(painter: &Painter, rect: Rect, ds: &ViewerDataset, state: &UiState, gpu_surfaces: Option<&mut GpuSurfaceRenderer>) {
     let iface = ds.active_interface();
     let frame = iface.map_or_else(|| PlaneFrame::world_centered(ds.default_origin), |i| PlaneFrame::from(&i.map.plane));
     let s = &state.complex;
@@ -38,7 +44,14 @@ pub fn paint(painter: &Painter, rect: Rect, ds: &ViewerDataset, state: &UiState)
     let min_alpha = opacity.min_draw_alpha;
 
     if s.surface.visible && s.surface.alpha.value > min_alpha && s.surface.color.lens != ChainColorLens::Off {
-        add_chain_surfaces(&mut list, &view, ds, s);
+        // The GPU path has no wireframe-edge geometry, so it only takes over when edges
+        // aren't requested; wireframe (with or without faces) keeps using the CPU path.
+        let gpu_drawn = s.surface.show_faces
+            && !s.surface.show_wireframe
+            && gpu_surfaces.and_then(|gpu| paint_gpu_chain_surfaces(painter, &view, ds, s, gpu)).is_some();
+        if !gpu_drawn {
+            add_chain_surfaces(&mut list, &view, ds, s);
+        }
     }
     if let Some(iface) = iface {
         if s.boundary.mode != InterfaceDisplayMode::Off && s.boundary.alpha.value > min_alpha {
@@ -151,7 +164,7 @@ fn add_chain_surfaces(list: &mut DrawList, view: &View, ds: &ViewerDataset, s: &
         let alpha = view.chain_alpha(side, s.surface.alpha.value, lens);
         let base = lenses::chain_surface_color(chain_idx, side, lens, s.surface.color.fixed, view.pal);
         let edge = mesh_wireframe_stroke(wf_width, base, 0.72 * alpha);
-        add_mesh(list, view, &ch.draw_surface_mesh, offset, s.surface.culling, |_, shade| {
+        add_mesh(list, view, &ch.draw_surface_mesh, offset, ds.culling, |_, shade| {
             let fill = if s.surface.show_faces {
                 palette::shaded(base, shade, alpha)
             } else {
@@ -160,6 +173,44 @@ fn add_chain_surfaces(list: &mut DrawList, view: &View, ds: &ViewerDataset, s: &
             (fill, edge)
         });
     }
+}
+
+/// GPU equivalent of `add_chain_surfaces` (faces only, no wireframe): renders every visible
+/// chain surface into an offscreen depth-tested texture and composites it into `painter`.
+/// Returns `None` if nothing was drawable or wgpu refused the frame, in which case the caller
+/// falls back to the CPU path instead of leaving a gap.
+fn paint_gpu_chain_surfaces(painter: &Painter, view: &View, ds: &ViewerDataset, s: &ComplexViewSettings, gpu: &mut GpuSurfaceRenderer) -> Option<()> {
+    let lens = s.surface.color.lens;
+    let mut draws = Vec::with_capacity(ds.chains.len());
+    for (chain_idx, ch) in ds.chains.iter().enumerate() {
+        let side = ds.chain_side(&ch.chain_id);
+        let alpha = view.chain_alpha(side, s.surface.alpha.value, lens);
+        if alpha <= 0.0 || ch.draw_surface_mesh.triangles.is_empty() {
+            continue;
+        }
+        draws.push(GpuChainDraw {
+            chain_idx,
+            mesh: &ch.draw_surface_mesh,
+            preset: ds.applied_draw_preset(),
+            surface_params: ds.applied_draw_surface(),
+            offset: chain_total_offset(view, side, ch.draw_explode_offset, s),
+            color: lenses::chain_surface_color(chain_idx, side, lens, s.surface.color.fixed, view.pal),
+            alpha,
+            culling: ds.culling,
+        });
+    }
+    let texture_id = gpu.render(
+        view.rect,
+        painter.pixels_per_point(),
+        view.camera,
+        GPU_HALF_DEPTH_BOUND_A,
+        view.frame.to_local_matrix(),
+        &ds.id,
+        &draws,
+    )?;
+    let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+    painter.image(texture_id, view.rect, uv, Color32::WHITE);
+    Some(())
 }
 
 /// The selected derived interface mesh; tracks the midpoint between exploded sides.

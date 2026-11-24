@@ -49,6 +49,13 @@ impl PlaneFrame {
         Vec3::new(rel.dot(self.u), rel.dot(self.v), rel.dot(self.n))
     }
 
+    /// `to_local` as a `glam::Mat4`, for the GPU surface pipeline (`gpu_surface.rs`), which
+    /// needs a real matrix rather than a per-point method call.
+    pub fn to_local_matrix(&self) -> glam::Mat4 {
+        let rotation = glam::Mat3::from_cols(self.u, self.v, self.n).transpose();
+        glam::Mat4::from_mat3(rotation) * glam::Mat4::from_translation(-self.origin)
+    }
+
     /// Rotates a world-space displacement vector into plane-local `(u, v, n)` coordinates.
     pub fn vector_to_local(&self, world_vec: [f32; 3]) -> Vec3 {
         let v = Vec3::from(world_vec);
