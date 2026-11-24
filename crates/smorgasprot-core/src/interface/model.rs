@@ -62,6 +62,8 @@ pub struct ResidueTerritory {
     pub contour_uv: Vec<[f32; 2]>,
     /// True 3D contour polygon vertices `(x, y, z)` draped over the residue's 3D atoms (at `flatten_t = 0.0`).
     pub contour_3d: Vec<[f32; 3]>,
+    /// Ear-clipping triangulation of `contour_uv`/`contour_3d` for rendering concave shape as a filled polygon.
+    pub contour_triangles: Vec<[u32; 3]>,
     /// Pole of inaccessibility in 2D `(u, v)` space for label placement (at `flatten_t = 1.0`).
     pub label_center_uv: [f32; 2],
     /// Pole of inaccessibility in 3D `(x, y, z)` space for label placement (at `flatten_t = 0.0`).

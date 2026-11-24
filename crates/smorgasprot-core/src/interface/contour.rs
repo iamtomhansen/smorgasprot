@@ -161,6 +161,8 @@ pub fn compute_territory_contours(
         let label_center_3d =
             drape_uv_to_3d(best_poi_uv, &my_atoms, origin, axis_u, axis_v, params).to_array();
 
+        // Triangulated once on computation.
+        territories[t_idx].contour_triangles = triangulate_polygon(&smooth2);
         territories[t_idx].contour_uv = smooth2.into_iter().map(|v| v.to_array()).collect();
         territories[t_idx].contour_3d = contour_3d;
         territories[t_idx].label_center_uv = best_poi_uv.to_array();
@@ -438,4 +440,60 @@ fn chaikin_smooth(poly: &[Vec2]) -> Vec<Vec2> {
         out.push(0.25 * p0 + 0.75 * p1);
     }
     out
+}
+
+/// Ear-clipping triangulation of a simple (non-self-intersecting) polygon, convex or concave.
+fn triangulate_polygon(points: &[Vec2]) -> Vec<[u32; 3]> {
+    let n = points.len();
+    if n < 3 {
+        return Vec::new();
+    }
+
+    // Area's sign gives the polygon's winding; ear-clipping needs it to tell convex corners from reflex ones.
+    let signed_area_x2: f32 =
+        (0..n).map(|i| { let (a, b) = (points[i], points[(i + 1) % n]); a.x * b.y - b.x * a.y }).sum();
+    let ccw = signed_area_x2 > 0.0;
+    let cross = |o: Vec2, a: Vec2, b: Vec2| (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    let is_convex_corner = |prev: Vec2, cur: Vec2, next: Vec2| {
+        let c = cross(prev, cur, next);
+        if ccw { c > 0.0 } else { c < 0.0 }
+    };
+    let point_in_triangle = |p: Vec2, a: Vec2, b: Vec2, c: Vec2| {
+        let (d1, d2, d3) = (cross(a, b, p), cross(b, c, p), cross(c, a, p));
+        let (has_neg, has_pos) = (d1 < 0.0 || d2 < 0.0 || d3 < 0.0, d1 > 0.0 || d2 > 0.0 || d3 > 0.0);
+        !(has_neg && has_pos)
+    };
+
+    let mut indices: Vec<u32> = (0..n as u32).collect();
+    let mut triangles = Vec::with_capacity(n.saturating_sub(2));
+    // Each successful clip removes one vertex; bail rather than loop forever on degenerate input.
+    let mut remaining_attempts = n * n;
+    while indices.len() > 3 && remaining_attempts > 0 {
+        remaining_attempts -= 1;
+        let m = indices.len();
+        let mut clipped = false;
+        for i in 0..m {
+            let (ip, ic, inx) = (indices[(i + m - 1) % m], indices[i], indices[(i + 1) % m]);
+            let (a, b, c) = (points[ip as usize], points[ic as usize], points[inx as usize]);
+            if !is_convex_corner(a, b, c) {
+                continue;
+            }
+            let is_ear = !indices
+                .iter()
+                .any(|&k| k != ip && k != ic && k != inx && point_in_triangle(points[k as usize], a, b, c));
+            if is_ear {
+                triangles.push([ip, ic, inx]);
+                indices.remove(i);
+                clipped = true;
+                break;
+            }
+        }
+        if !clipped {
+            break;
+        }
+    }
+    if indices.len() == 3 {
+        triangles.push([indices[0], indices[1], indices[2]]);
+    }
+    triangles
 }

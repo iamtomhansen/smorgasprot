@@ -452,6 +452,7 @@ pub fn extract_3d_interface_graph(
                 has_unsatisfied_polar: false,
                 contour_uv: Vec::new(),
                 contour_3d: Vec::new(),
+                contour_triangles: Vec::new(),
                 label_center_uv: [0.0, 0.0],
                 label_center_3d: [0.0, 0.0, 0.0],
                 local_uv_anchor: [0.0, 0.0],
