@@ -10,6 +10,7 @@ use crate::state::{
     NodeStrokeColorLens, Selection, TerritoryColorLens, UiState,
 };
 use crate::style::{Palette, lenses, palette, sizing};
+use egui::epaint::Mesh;
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, vec2};
 use smorgasprot_core::{AtomNodeIdx, InterfaceSide};
 
@@ -212,12 +213,75 @@ fn paint_territories(cx: &Ctx, selection: &Selection) {
             } else {
                 Stroke::new(width, palette::with_alpha(palette::edge_color(border_base), alpha * 0.75))
             };
-            if fill != Color32::TRANSPARENT || width > 0.0 {
-                // Voronoi cells clipped to a convex hull stay convex, so a convex fill is valid.
-                cx.painter.add(Shape::convex_polygon(pts, fill, stroke));
+            // `Shape::convex_polygon`'s fill assumes convexity, so filling them needs real triangulation.
+            if fill != Color32::TRANSPARENT {
+                cx.painter.add(Shape::mesh(triangulate_polygon_fill(&pts, fill)));
+            }
+            if stroke != Stroke::NONE {
+                cx.painter.add(Shape::closed_line(pts, stroke));
             }
         }
     }
+}
+
+/// Ear-clipping triangulation of a simple (non-self-intersecting) polygon, convex or concave.
+fn triangulate_polygon_fill(points: &[Pos2], fill: Color32) -> Mesh {
+    let mut mesh = Mesh::default();
+    for &p in points {
+        mesh.colored_vertex(p, fill);
+    }
+    let n = points.len();
+    if n < 3 {
+        return mesh;
+    }
+
+    // Signed area's sign gives the polygon's winding; ear-clipping needs it to tell convex
+    // corners from reflex ones.
+    let signed_area_x2: f32 =
+        (0..n).map(|i| { let (a, b) = (points[i], points[(i + 1) % n]); a.x * b.y - b.x * a.y }).sum();
+    let ccw = signed_area_x2 > 0.0;
+    let cross = |o: Pos2, a: Pos2, b: Pos2| (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    let is_convex_corner = |prev: Pos2, cur: Pos2, next: Pos2| {
+        let c = cross(prev, cur, next);
+        if ccw { c > 0.0 } else { c < 0.0 }
+    };
+    let point_in_triangle = |p: Pos2, a: Pos2, b: Pos2, c: Pos2| {
+        let (d1, d2, d3) = (cross(a, b, p), cross(b, c, p), cross(c, a, p));
+        let (has_neg, has_pos) = (d1 < 0.0 || d2 < 0.0 || d3 < 0.0, d1 > 0.0 || d2 > 0.0 || d3 > 0.0);
+        !(has_neg && has_pos)
+    };
+
+    let mut indices: Vec<u32> = (0..n as u32).collect();
+    // Each successful clip removes one vertex; bail rather than loop forever on degenerate input.
+    let mut remaining_attempts = n * n;
+    while indices.len() > 3 && remaining_attempts > 0 {
+        remaining_attempts -= 1;
+        let m = indices.len();
+        let mut clipped = false;
+        for i in 0..m {
+            let (ip, ic, inx) = (indices[(i + m - 1) % m], indices[i], indices[(i + 1) % m]);
+            let (a, b, c) = (points[ip as usize], points[ic as usize], points[inx as usize]);
+            if !is_convex_corner(a, b, c) {
+                continue;
+            }
+            let is_ear = !indices
+                .iter()
+                .any(|&k| k != ip && k != ic && k != inx && point_in_triangle(points[k as usize], a, b, c));
+            if is_ear {
+                mesh.add_triangle(ip, ic, inx);
+                indices.remove(i);
+                clipped = true;
+                break;
+            }
+        }
+        if !clipped {
+            break;
+        }
+    }
+    if indices.len() == 3 {
+        mesh.add_triangle(indices[0], indices[1], indices[2]);
+    }
+    mesh
 }
 
 /// First-shell springs within each side.
