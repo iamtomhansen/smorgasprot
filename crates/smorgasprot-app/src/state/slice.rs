@@ -68,8 +68,12 @@ pub struct SliceViewSettings {
     pub camera: CameraState,
     pub show_surface: bool,
     pub surface_alpha: Tween,
+    pub show_ribbon: bool,
+    pub ribbon_alpha: Tween,
     pub show_cartoon: bool,
     pub cartoon_alpha: Tween,
+    pub show_ball_stick: bool,
+    pub ball_stick_alpha: Tween,
     pub show_spheres: bool,
     pub spheres_alpha: Tween,
     pub boundary: BoundaryLayerStyle,
@@ -88,8 +92,12 @@ impl Default for SliceViewSettings {
             camera: CameraState::default(),
             show_surface: true,
             surface_alpha: Tween::new(0.82),
-            show_cartoon: true,
-            cartoon_alpha: Tween::new(0.70),
+            show_ribbon: true,
+            ribbon_alpha: Tween::new(0.70),
+            show_cartoon: false,
+            cartoon_alpha: Tween::new(0.92),
+            show_ball_stick: false,
+            ball_stick_alpha: Tween::new(1.0),
             show_spheres: false,
             spheres_alpha: Tween::new(0.90),
             boundary: BoundaryLayerStyle::default(),
@@ -108,23 +116,27 @@ impl SliceViewSettings {
         self.explode.value * params.max_explode_a
     }
 
-    /// Advances all tweens in the Complex tab; returns `true` while any tween is moving.
+    /// Advances all tweens in the Slice tab; returns `true` while any tween is moving.
     pub fn step_animations(&mut self, dt: f32, rate: f32) -> bool {
         self.explode.step(dt, rate)
             | self.complex_explode.step(dt, rate)
             | self.surface_alpha.step(dt, rate)
+            | self.ribbon_alpha.step(dt, rate)
             | self.cartoon_alpha.step(dt, rate)
+            | self.ball_stick_alpha.step(dt, rate)
             | self.spheres_alpha.step(dt, rate)
             | self.boundary.alpha.step(dt, rate)
             | self.interface_spheres_alpha.step(dt, rate)
     }
 
-    /// Immediately snaps all Complex tab tweens to their targets.
+    /// Immediately snaps all Slice tab tweens to their targets.
     pub fn finish_animations(&mut self) {
         self.explode.finish();
         self.complex_explode.finish();
         self.surface_alpha.finish();
+        self.ribbon_alpha.finish();
         self.cartoon_alpha.finish();
+        self.ball_stick_alpha.finish();
         self.spheres_alpha.finish();
         self.boundary.alpha.finish();
         self.interface_spheres_alpha.finish();

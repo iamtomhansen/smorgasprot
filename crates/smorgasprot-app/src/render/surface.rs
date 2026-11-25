@@ -31,7 +31,10 @@ const OPAQUE_ALPHA_THRESHOLD: f32 = 0.999;
 pub enum GpuMeshKey {
     Chain(usize),
     Boundary(usize, InterfaceDisplayMode),
+    Ribbon(usize),
     Cartoon(usize),
+    BallStickBonds(usize),
+    BallStickSpheres(usize),
     Spheres(usize),
     InterfaceSpheres(usize),
 }
@@ -374,12 +377,19 @@ fn wboit_color_targets() -> [Option<wgpu::ColorTargetState>; 2] {
     ]
 }
 
-fn pack_camera_uniform(vp: glam::Mat4, frame: glam::Mat4, depth_info: [f32; 4], viewport: [f32; 4]) -> [f32; 40] {
-    let mut out = [0.0_f32; 40];
+fn pack_camera_uniform(
+    vp: glam::Mat4,
+    frame: glam::Mat4,
+    depth_info: [f32; 4],
+    viewport: [f32; 4],
+    light_view: [f32; 4],
+) -> [f32; 44] {
+    let mut out = [0.0_f32; 44];
     out[..16].copy_from_slice(&vp.to_cols_array());
     out[16..32].copy_from_slice(&frame.to_cols_array());
     out[32..36].copy_from_slice(&depth_info);
     out[36..40].copy_from_slice(&viewport);
+    out[40..44].copy_from_slice(&light_view);
     out
 }
 
@@ -814,6 +824,7 @@ impl GpuSurfaceRenderer {
                 glam::Mat4::IDENTITY,
                 [0.0, 1.0, 1.0, 1e-5],
                 [1.0, 1.0, 1.0, 0.0],
+                [0.3, 0.5, 0.8, 0.0],
             )),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -1226,7 +1237,7 @@ impl GpuSurfaceRenderer {
             {
                 let id = next_outline_id;
                 next_outline_id += 1;
-                let w_px = (draw.border_width_px * pixels_per_point).clamp(0.0, 6.0);
+                let w_px = (draw.border_width_px * pixels_per_point).clamp(0.0, 48.0);
                 let col = unmultiplied_rgba(draw.border_color, draw.border_alpha);
                 if col[3] > 0.004 && w_px > 0.0 {
                     outline_colors[id] = col;
@@ -1400,11 +1411,15 @@ impl GpuSurfaceRenderer {
         let inv_clip_z_span = 1.0 / (clip_z_far - clip_z_near).max(1e-5);
         let peel_z_eps = (0.03 / (2.0 * half_depth_a)).clamp(2e-6, 5e-4);
         let r_clip_z_per_pt = 0.5 / (camera.zoom.max(1e-4) * half_depth_a);
+        let world_light = Vec3::new(0.3, 0.5, 0.8).normalize();
+        let local_light = frame_to_local.transform_vector3(world_light);
+        let view_light = camera.rotate(local_light).normalize_or(world_light);
         let camera_data = pack_camera_uniform(
             vp,
             frame_to_local,
             [clip_z_near, clip_z_far, inv_clip_z_span, peel_z_eps],
             [rect.width(), rect.height(), 1.0 / pixels_per_point, r_clip_z_per_pt],
+            [view_light.x, view_light.y, view_light.z, 0.0],
         );
         queue.write_buffer(&self.camera_buf, 0, bytemuck::cast_slice(&camera_data));
 

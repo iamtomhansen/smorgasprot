@@ -153,7 +153,7 @@ pub fn paint(
         camera: &s.camera,
         frame: PlaneFrame::from(&iface.map.plane),
         s,
-        lenses: &state.view_params.lenses,
+        lenses: &state.palette.thresholds,
         atom_draw: &state.view_params.atom_draw,
         grid: &state.view_params.grid,
         grid_color: state.view_params.grid_color,

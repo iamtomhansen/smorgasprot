@@ -22,7 +22,7 @@ pub fn controls(ui: &mut Ui, ds: &mut ViewerDataset, state: &mut UiState) {
     });
 }
 
-/// Right-hand inspector, scrollable.
-pub fn inspector(ui: &mut Ui, ds: &ViewerDataset, state: &UiState) {
+/// Right-hand inspector / palette panel, scrollable.
+pub fn inspector(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState) {
     ScrollArea::vertical().id_salt("inspector_scroll").show(ui, |ui| inspector::show(ui, ds, state));
 }

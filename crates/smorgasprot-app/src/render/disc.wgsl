@@ -4,6 +4,7 @@ struct Camera {
     frame: mat4x4<f32>,
     depth_info: vec4<f32>,
     viewport: vec4<f32>,
+    light_view: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> camera: Camera;
 
@@ -36,7 +37,7 @@ fn vs_main(
     let clip_c = camera.view_proj * vec4<f32>(center, 1.0);
     let half_vp = 0.5 * camera.viewport.xy;
     let r = max(radius_pt, 0.0);
-    let pad = r + 0.5 * max(outline_pt, 0.0) + camera.viewport.z;
+    let pad = r + max(outline_pt, 0.0) + camera.viewport.z;
     let local_pt = vec2<f32>(QUAD_X[vid], QUAD_Y[vid]) * pad;
 
     out.clip_position = vec4<f32>(clip_c.xy + local_pt / half_vp, clip_c.z, 1.0);
@@ -71,30 +72,47 @@ struct DiscEval {
 fn eval_disc(in: VsOut) -> DiscEval {
     let aa = 0.5 * camera.viewport.z;
     let r = in.radii.x;
-    let hw = 0.5 * in.radii.y;
+    let bw = in.radii.y;
     let d = length(in.local_pt);
 
-    var shade = 1.0;
+    let base_lin = srgb_decode(in.fill_color.rgb);
+    var lit_lin = base_lin;
     var depth = in.clip_position.z;
     if in.radii.z > 0.5 && r > 1e-4 {
         let norm_xy = in.local_pt / r;
         let r2 = dot(norm_xy, norm_xy);
         let nz = sqrt(max(0.0, 1.0 - r2));
         let n = vec3<f32>(norm_xy, nz);
-        let light_dir = normalize(vec3<f32>(0.3, 0.5, 0.8));
-        shade = 0.35 + 0.65 * max(dot(n, light_dir), 0.0);
+        let l_raw = camera.light_view.xyz;
+        let l_len = length(l_raw);
+        let l_dir = select(normalize(vec3<f32>(0.3, 0.5, 0.8)), l_raw / max(l_len, 1e-5), l_len > 1e-4);
+
+        let key = max(dot(n, l_dir), 0.0);
+        let bounce = max(dot(n, -l_dir), 0.0);
+        let hemi = 0.5 + 0.5 * n.y;
+        let rim = pow(clamp(1.0 - nz, 0.0, 1.0), 3.0) * 0.14;
+        let h_dir = normalize(l_dir + vec3<f32>(0.0, 0.0, 1.0));
+        let spec = pow(max(dot(n, h_dir), 0.0), 32.0) * 0.22;
+
+        let ambient = 0.22 + 0.08 * hemi;
+        let bounce_tint = mix(base_lin, vec3<f32>(0.55, 0.65, 0.85), 0.35);
+        lit_lin = clamp(
+            base_lin * (ambient + 0.72 * key + rim) + bounce_tint * (0.18 * bounce * bounce) + vec3<f32>(spec),
+            vec3<f32>(0.0),
+            vec3<f32>(1.0),
+        );
         depth = clamp(in.clip_position.z - nz * in.radii.w, 0.0, 1.0);
     }
 
     let fill_cov = 1.0 - smoothstep(max(r - aa, 0.0), r + aa, d);
     let fill_a = in.fill_color.a * fill_cov;
-    let fill_pre = srgb_decode(in.fill_color.rgb * shade) * fill_a;
+    let fill_pre = lit_lin * fill_a;
 
     var out_pre = fill_pre;
     var out_a = fill_a;
-    if in.radii.y > 0.0 && in.outline_color.a > 0.0 {
-        let outer_cov = 1.0 - smoothstep(max(r + hw - aa, 0.0), r + hw + aa, d);
-        let inner_cov = smoothstep(max(r - hw - aa, 0.0), r - hw + aa, d);
+    if bw > 0.0 && in.outline_color.a > 0.0 {
+        let outer_cov = 1.0 - smoothstep(max(r + bw - aa, 0.0), r + bw + aa, d);
+        let inner_cov = smoothstep(max(r - 0.25 - aa, 0.0), r - 0.25 + aa, d);
         let outl_a = in.outline_color.a * (outer_cov * inner_cov);
         let outl_pre = srgb_decode(in.outline_color.rgb) * outl_a;
         out_pre = outl_pre + fill_pre * (1.0 - outl_a);

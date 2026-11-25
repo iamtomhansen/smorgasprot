@@ -175,7 +175,7 @@ fn explicit_disulfide_bonds(complex: &ComplexStructure, pdb: &pdbtbx::PDB) -> Ve
         .filter_map(|(atom_a, atom_b, _)| {
             let a = *serial_to_idx.get(&atom_a.serial_number())?;
             let b = *serial_to_idx.get(&atom_b.serial_number())?;
-            Some(Bond { a, b, kind: BondKind::Disulfide })
+            Some(Bond { a, b, kind: BondKind::Disulfide, order: crate::model::BondOrder::Single })
         })
         .collect()
 }

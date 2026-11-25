@@ -7,14 +7,62 @@ use crate::style::Palette;
 use egui::Color32;
 use smorgasprot_core::{AtomNode, InterfaceEdge, ResidueTerritory};
 
-/// Normalized mobility in `[0, 1]` (`0` = rigid / high pLDDT confidence, `1` = labile / low confidence).
-pub fn node_mobility_t(node: &AtomNode, bfactor_mode: BFactorMode, params: &LensParams) -> f32 {
+/// Normalized mobility in `[0, 1]` from a raw B-factor / pLDDT scalar.
+pub fn bfactor_mobility_t(b_factor: f32, bfactor_mode: BFactorMode, params: &LensParams) -> f32 {
     let (v0, v1) = match bfactor_mode {
         BFactorMode::AlphaFold => (params.plddt_very_high_min, params.plddt_low_min),
         BFactorMode::Crystallographic => (params.bfactor_rigid_max_a2, params.bfactor_flexible_max_a2),
     };
     let span = v1 - v0;
-    if span.abs() < 1e-6 { 0.5 } else { ((node.b_factor - v0) / span).clamp(0.0, 1.0) }
+    if span.abs() < 1e-6 { 0.5 } else { ((b_factor - v0) / span).clamp(0.0, 1.0) }
+}
+
+/// Normalized mobility in `[0, 1]` (`0` = rigid / high pLDDT confidence, `1` = labile / low confidence).
+pub fn node_mobility_t(node: &AtomNode, bfactor_mode: BFactorMode, params: &LensParams) -> f32 {
+    bfactor_mobility_t(node.b_factor, bfactor_mode, params)
+}
+
+/// Evaluates a normalized `[0, 1]` [`ScalarMetric`] for any complex atom, using its [`AtomNode`] if interfacial.
+pub fn complex_atom_metric_norm(
+    metric: ScalarMetric,
+    atom: &smorgasprot_core::AtomRecord,
+    node: Option<&AtomNode>,
+    bfactor_mode: BFactorMode,
+    params: &LensParams,
+) -> f32 {
+    if let Some(n) = node {
+        return metric.atom_norm(n, bfactor_mode, params);
+    }
+    match metric {
+        ScalarMetric::Mobility => bfactor_mobility_t(atom.b_factor, bfactor_mode, params),
+        ScalarMetric::Rigidity => 1.0 - bfactor_mobility_t(atom.b_factor, bfactor_mode, params),
+        ScalarMetric::BuriedSasa | ScalarMetric::AliphaticScore | ScalarMetric::ClashSeverity => 0.0,
+    }
+}
+
+/// Evaluates a multiplicative size scale for any complex atom (shared by spheres and putty cartoon ribbons).
+pub fn complex_atom_scale(
+    mode: AtomSizeMode,
+    fixed_scale: f32,
+    atom: &smorgasprot_core::AtomRecord,
+    node: Option<&AtomNode>,
+    bfactor_mode: BFactorMode,
+    params: &LensParams,
+) -> f32 {
+    match mode {
+        AtomSizeMode::Fixed => fixed_scale,
+        AtomSizeMode::Off => 0.0,
+        AtomSizeMode::SqrtBuriedSasa => {
+            let t = node.map_or(0.0, |n| (n.buried_sasa_a2 / params.atom_buried_sasa_max_a2.max(1e-3)).clamp(0.0, 1.0).sqrt());
+            0.65 + 0.85 * t
+        }
+        _ => {
+            let t = mode
+                .scalar_metric()
+                .map_or(0.0, |m| complex_atom_metric_norm(m, atom, node, bfactor_mode, params));
+            0.65 + 0.85 * t
+        }
+    }
 }
 
 impl ScalarMetric {

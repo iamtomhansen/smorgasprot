@@ -76,21 +76,122 @@ impl Choice for MeshShading {
     }
 }
 
-/// Geometric representation of the Cα cartoon ribbon trace.
+/// Geometric representation of the Cα ribbon trace.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub enum CartoonStyle {
+pub enum RibbonStyle {
     #[default]
     Capsule2D,
     Prism8,
 }
 
-impl Choice for CartoonStyle {
+impl Choice for RibbonStyle {
     const ALL: &'static [Self] = &[Self::Capsule2D, Self::Prism8];
 
     fn label(self) -> &'static str {
         match self {
             Self::Capsule2D => "2D Capsule (smooth)",
             Self::Prism8 => "3D Prism (8-sided)",
+        }
+    }
+}
+
+/// Geometric complexity for DSSP Helix–Sheet–Loop protein cartoons.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum CartoonQuality {
+    Schematic,
+    #[default]
+    Detailed,
+}
+
+impl Choice for CartoonQuality {
+    const ALL: &'static [Self] = &[Self::Schematic, Self::Detailed];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Schematic => "Schematic (Cylinders & Boxes)",
+            Self::Detailed => "Detailed (Helical Ribbons & Sheet Arrows)",
+        }
+    }
+}
+
+/// Geometric complexity for Ball-and-Stick representations (2D or 3D impostors/meshes).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum BallStickQuality {
+    Flat2D,
+    #[default]
+    Impostor3D,
+    MeshCoarse,
+    MeshFine,
+}
+
+impl BallStickQuality {
+    pub fn geodesic_preset(self) -> Option<GeodesicPreset> {
+        match self {
+            Self::Flat2D | Self::Impostor3D => None,
+            Self::MeshCoarse => Some(GeodesicPreset::Octahedron18),
+            Self::MeshFine => Some(GeodesicPreset::Icosahedron42),
+        }
+    }
+}
+
+impl Choice for BallStickQuality {
+    const ALL: &'static [Self] = &[Self::Flat2D, Self::Impostor3D, Self::MeshCoarse, Self::MeshFine];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Flat2D => "2D Discs & Capsules",
+            Self::Impostor3D => "3D Impostor Spheres & Cylinders",
+            Self::MeshCoarse => "3D Mesh (Octahedron 18 + Cylinders)",
+            Self::MeshFine => "3D Mesh (Icosahedron 42 + Cylinders)",
+        }
+    }
+}
+
+/// How covalent bond cylinders/capsules are colored relative to their endpoint atoms.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum BondColorMode {
+    #[default]
+    SplitMidpoint,
+    Gradient,
+    Uniform,
+}
+
+impl Choice for BondColorMode {
+    const ALL: &'static [Self] = &[Self::SplitMidpoint, Self::Gradient, Self::Uniform];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::SplitMidpoint => "By atom (clean midpoint split)",
+            Self::Gradient => "By atom (smooth gradient)",
+            Self::Uniform => "Uniform fixed bond color",
+        }
+    }
+}
+
+/// Atom selection shortcut for Ball-and-Stick rendering.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum BallStickScope {
+    #[default]
+    AllAtoms,
+    SidechainsAndLigands,
+    InterfaceSidechains,
+    InterfaceResidues,
+}
+
+impl Choice for BallStickScope {
+    const ALL: &'static [Self] = &[
+        Self::AllAtoms,
+        Self::SidechainsAndLigands,
+        Self::InterfaceSidechains,
+        Self::InterfaceResidues,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::AllAtoms => "All atoms (whole complex)",
+            Self::SidechainsAndLigands => "Sidechains & ligands (anchor at Cα)",
+            Self::InterfaceSidechains => "Active interface sidechains (anchor at Cα)",
+            Self::InterfaceResidues => "Active interface residues (all atoms)",
         }
     }
 }
@@ -155,16 +256,28 @@ impl Default for AlphaChannels {
     }
 }
 
-/// Silhouette display border styling.
+/// Silhouette display border styling (world-space width in Å).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BorderStyle {
-    pub width_px: f32,
+    pub enabled: bool,
+    pub width_a: f32,
     pub color: Color32,
 }
 
 impl Default for BorderStyle {
     fn default() -> Self {
-        Self { width_px: 0.0, color: DEFAULT_BORDER_COLOR }
+        Self { enabled: false, width_a: 0.15, color: DEFAULT_BORDER_COLOR }
+    }
+}
+
+impl BorderStyle {
+    /// Screen-space border width in points at the given camera `zoom` (`px / Å`).
+    pub fn effective_width_px(&self, zoom: f32) -> f32 {
+        if self.enabled {
+            (self.width_a * zoom).max(0.0)
+        } else {
+            0.0
+        }
     }
 }
 

@@ -27,6 +27,7 @@ pub fn chain_surface_color(
         ChainColorLens::Off => Color32::TRANSPARENT,
         ChainColorLens::InterfaceSide => palette.sides.side(side),
         ChainColorLens::ChainIndex => palette.categorical(chain_idx),
+        _ => palette.sides.side(side),
     }
 }
 
@@ -43,6 +44,7 @@ pub fn chain_cartoon_color(
         ChainColorLens::Off => Color32::TRANSPARENT,
         ChainColorLens::InterfaceSide => palette.sides.side_dark(side),
         ChainColorLens::ChainIndex => darken(palette.categorical(chain_idx), 0.20),
+        _ => palette.sides.side_dark(side),
     }
 }
 
@@ -90,7 +92,71 @@ pub fn atom_fill_color(
         }
         ColorLens::AaChemistry => aa_chemistry_color(&meta.res_name, node.aliphatic_score, params, palette),
         ColorLens::ModernCpk => palette.elements.color(meta.element),
-        ColorLens::InterfaceSide => palette.sides.side(node.side),
+        ColorLens::InterfaceSide | ColorLens::InterfaceMembership | ColorLens::ChainIndex => {
+            palette.sides.side(node.side)
+        }
+        ColorLens::Bfactor | ColorLens::BuriedSasa | ColorLens::AliphaticScore | ColorLens::ClashSeverity => {
+            unreachable!()
+        }
+    }
+}
+
+/// Evaluates a [`ColorLens`] for any atom in the complex, using its [`AtomNode`] when interfacial.
+#[allow(clippy::too_many_arguments)]
+pub fn complex_atom_color(
+    atom: &smorgasprot_core::AtomRecord,
+    res_name: &str,
+    chain_idx: usize,
+    side: InterfaceSide,
+    node: Option<&AtomNode>,
+    lens: ColorLens,
+    fixed_color: Color32,
+    bfactor_mode: BFactorMode,
+    params: &LensParams,
+    palette: &Palette,
+) -> Color32 {
+    if let Some(metric) = lens.scalar_metric() {
+        let t = crate::style::sizing::complex_atom_metric_norm(metric, atom, node, bfactor_mode, params);
+        return sample_metric_color(metric, t, palette);
+    }
+    match lens {
+        ColorLens::Fixed => fixed_color,
+        ColorLens::Off => Color32::TRANSPARENT,
+        ColorLens::InterfaceSide => palette.sides.side(side),
+        ColorLens::ChainIndex => palette.categorical(chain_idx),
+        ColorLens::InterfaceMembership => match node {
+            Some(n) => palette.sides.side(n.side),
+            None => palette.sides.unassigned,
+        },
+        ColorLens::Interactions => match node {
+            Some(n) => {
+                let c = &palette.contacts;
+                if ScalarMetric::ClashSeverity.atom_raw(n) > params.clash_threshold_a {
+                    c.clash
+                } else if has_cross_interaction(n, EdgeKind::SaltBridge) {
+                    c.salt_bridge
+                } else if has_cross_interaction(n, EdgeKind::HBond) {
+                    c.hbond
+                } else if n.side == InterfaceSide::SideA {
+                    palette.sides.side_a
+                } else {
+                    palette.sides.side_light(InterfaceSide::SideB)
+                }
+            }
+            None => palette.sides.side(side),
+        },
+        ColorLens::AaChemistry => match node {
+            Some(n) => aa_chemistry_color(res_name, n.aliphatic_score, params, palette),
+            None => {
+                let score = if matches!(res_name, "ALA" | "VAL" | "ILE" | "LEU" | "MET") {
+                    params.aliphatic_threshold
+                } else {
+                    0.0
+                };
+                aa_chemistry_color(res_name, score, params, palette)
+            }
+        },
+        ColorLens::ModernCpk => palette.elements.color(atom.element),
         ColorLens::Bfactor | ColorLens::BuriedSasa | ColorLens::AliphaticScore | ColorLens::ClashSeverity => {
             unreachable!()
         }
@@ -394,7 +460,12 @@ pub fn legend(
         ColorLens::Interactions => palette.contacts.legend_entries(&palette.sides, group_a, group_b),
         ColorLens::AaChemistry => palette.aa_chemistry.legend_entries(),
         ColorLens::ModernCpk => palette.elements.legend_entries(),
-        ColorLens::InterfaceSide => palette.sides.legend_entries(group_a, group_b),
+        ColorLens::InterfaceSide | ColorLens::ChainIndex => palette.sides.legend_entries(group_a, group_b),
+        ColorLens::InterfaceMembership => vec![
+            (palette.sides.side_a, format!("{group_a} (Interface)")),
+            (palette.sides.side_b, format!("{group_b} (Interface)")),
+            (palette.sides.unassigned, "Non-interfacial".into()),
+        ],
         ColorLens::Bfactor | ColorLens::BuriedSasa | ColorLens::AliphaticScore | ColorLens::ClashSeverity => {
             unreachable!()
         }

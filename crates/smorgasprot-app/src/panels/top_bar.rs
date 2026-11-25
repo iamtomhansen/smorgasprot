@@ -18,6 +18,10 @@ pub fn show(ui: &mut Ui, datasets: &[ViewerDataset], active: usize, state: &mut 
                 }
                 ui.separator();
             }
+            if ui.button("📷 Export Viewport PNG…").clicked() {
+                actions.push(Action::ExportPng);
+                ui.close_menu();
+            }
             if ui.button("💾 Export Standalone HTML Report…").clicked() {
                 actions.push(Action::ExportHtml);
                 ui.close_menu();

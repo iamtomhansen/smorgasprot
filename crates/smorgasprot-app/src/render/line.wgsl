@@ -4,6 +4,7 @@ struct Camera {
     frame: mat4x4<f32>,
     depth_info: vec4<f32>,
     viewport: vec4<f32>,
+    light_view: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> camera: Camera;
 
@@ -55,7 +56,7 @@ fn vs_main(
 
     let half_w = 0.5 * max(params.x, 0.0);
     let b_pt = max(border_pt, 0.0);
-    let pad = half_w + 0.5 * b_pt + camera.viewport.z;
+    let pad = half_w + b_pt + camera.viewport.z;
     let u = mix(-pad, seg_len + pad, QUAD_U[vid]);
     let v = QUAD_V[vid] * pad;
 
@@ -125,7 +126,7 @@ fn eval_line(in: VsOut) -> vec4<f32> {
     let aa = 0.5 * px_pt;
     let half_w = in.seg_info.y;
     let b_pt = in.seg_info.z;
-    let join_limit = half_w * 3.0 + 0.5 * b_pt + px_pt;
+    let join_limit = (half_w + b_pt) * 3.0 + px_pt;
 
     let pa = in.rel_pts.xy;
     if in.join_dash.x > 0.5 && length(pa) < join_limit && dot(pa, in.join_normals.xy) < 0.0 {
@@ -155,9 +156,8 @@ fn eval_line(in: VsOut) -> vec4<f32> {
     var out_pre = fill_pre;
     var out_a = fill_a;
     if b_pt > 0.0 && in.border_color.a > 0.0 {
-        let hw_b = 0.5 * b_pt;
-        let outer = 1.0 - smoothstep(max(half_w + hw_b - aa, 0.0), half_w + hw_b + aa, sdf);
-        let inner = smoothstep(max(half_w - hw_b - aa, 0.0), half_w - hw_b + aa, sdf);
+        let outer = 1.0 - smoothstep(max(half_w + b_pt - aa, 0.0), half_w + b_pt + aa, sdf);
+        let inner = smoothstep(max(half_w - 0.25 - aa, 0.0), half_w - 0.25 + aa, sdf);
         let b_a = in.border_color.a * (outer * inner);
         let b_pre = srgb_decode(in.border_color.rgb) * b_a;
         out_pre = b_pre + fill_pre * (1.0 - b_a);

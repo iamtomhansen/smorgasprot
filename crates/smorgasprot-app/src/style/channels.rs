@@ -55,6 +55,8 @@ pub enum ColorLens {
     AaChemistry,
     ModernCpk,
     InterfaceSide,
+    ChainIndex,
+    InterfaceMembership,
     Bfactor,
     BuriedSasa,
     AliphaticScore,
@@ -82,6 +84,8 @@ impl Choice for ColorLens {
         Self::AaChemistry,
         Self::ModernCpk,
         Self::InterfaceSide,
+        Self::ChainIndex,
+        Self::InterfaceMembership,
         Self::Bfactor,
         Self::BuriedSasa,
         Self::AliphaticScore,
@@ -96,6 +100,8 @@ impl Choice for ColorLens {
             Self::AaChemistry => "AA Chemistry (Aliphatic / Polar / Charge / Aromatic)",
             Self::ModernCpk => "Modern CPK (Elemental Core Colors)",
             Self::InterfaceSide => "Interface Group (Side A vs. Side B)",
+            Self::ChainIndex => "By Polypeptide Chain (Categorical Palette)",
+            Self::InterfaceMembership => "Interfacial Atoms (Active Interface Membership)",
             Self::Bfactor => "B-Factor / pLDDT Mobility (Continuous)",
             Self::BuriedSasa => "Buried Interface Area ΔSASA (Continuous)",
             Self::AliphaticScore => "Aliphatic Burial Score (Continuous)",
@@ -147,7 +153,7 @@ impl Choice for NodeStrokeColorLens {
     }
 }
 
-/// Data projection assigned to whole-chain 3D representations (molecular surfaces and Cα cartoon ribbons).
+/// Data projection assigned to 3D molecular surfaces and Cα cartoon ribbons.
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum ChainColorLens {
     Fixed,
@@ -155,10 +161,56 @@ pub enum ChainColorLens {
     #[default]
     InterfaceSide,
     ChainIndex,
+    InterfaceMembership,
+    Interactions,
+    AaChemistry,
+    ModernCpk,
+    Bfactor,
+    BuriedSasa,
+    AliphaticScore,
+    ClashSeverity,
+}
+
+impl ChainColorLens {
+    /// True when the lens varies per-atom/per-vertex rather than staying uniform per chain.
+    pub const fn is_per_atom(self) -> bool {
+        !matches!(self, Self::Fixed | Self::Off | Self::InterfaceSide | Self::ChainIndex)
+    }
+
+    /// Converts to the equivalent [`ColorLens`] for shared per-atom color evaluation.
+    pub const fn to_color_lens(self) -> ColorLens {
+        match self {
+            Self::Fixed => ColorLens::Fixed,
+            Self::Off => ColorLens::Off,
+            Self::InterfaceSide => ColorLens::InterfaceSide,
+            Self::ChainIndex => ColorLens::ChainIndex,
+            Self::InterfaceMembership => ColorLens::InterfaceMembership,
+            Self::Interactions => ColorLens::Interactions,
+            Self::AaChemistry => ColorLens::AaChemistry,
+            Self::ModernCpk => ColorLens::ModernCpk,
+            Self::Bfactor => ColorLens::Bfactor,
+            Self::BuriedSasa => ColorLens::BuriedSasa,
+            Self::AliphaticScore => ColorLens::AliphaticScore,
+            Self::ClashSeverity => ColorLens::ClashSeverity,
+        }
+    }
 }
 
 impl Choice for ChainColorLens {
-    const ALL: &'static [Self] = &[Self::Fixed, Self::Off, Self::InterfaceSide, Self::ChainIndex];
+    const ALL: &'static [Self] = &[
+        Self::Fixed,
+        Self::Off,
+        Self::InterfaceSide,
+        Self::ChainIndex,
+        Self::InterfaceMembership,
+        Self::Interactions,
+        Self::AaChemistry,
+        Self::ModernCpk,
+        Self::Bfactor,
+        Self::BuriedSasa,
+        Self::AliphaticScore,
+        Self::ClashSeverity,
+    ];
 
     fn label(self) -> &'static str {
         match self {
@@ -166,6 +218,14 @@ impl Choice for ChainColorLens {
             Self::Off => "Off (Hidden)",
             Self::InterfaceSide => "Interface Group (Side A / Side B / Unassigned)",
             Self::ChainIndex => "By Polypeptide Chain (Categorical Palette)",
+            Self::InterfaceMembership => "Interfacial Atoms (Active Interface Membership)",
+            Self::Interactions => "Specific Interactions (H-Bonds / Salt Bridges / Clashes)",
+            Self::AaChemistry => "AA Chemistry (Aliphatic / Polar / Charge / Aromatic)",
+            Self::ModernCpk => "Modern CPK (Elemental Core Colors)",
+            Self::Bfactor => "B-Factor / pLDDT Mobility (Continuous)",
+            Self::BuriedSasa => "Buried Interface Area ΔSASA (Continuous)",
+            Self::AliphaticScore => "Aliphatic Burial Score (Continuous)",
+            Self::ClashSeverity => "Steric Clash Overlap (Continuous)",
         }
     }
 }

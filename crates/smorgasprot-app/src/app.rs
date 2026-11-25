@@ -40,6 +40,9 @@ pub struct SmorgasprotApp {
     /// `None` on the glow escape hatch or a wgpu init failure; `complex_scene` falls back to
     /// its CPU `DrawList` path for surfaces in that case (the "GPU check").
     gpu_surfaces: Option<GpuSurfaceRenderer>,
+    last_viewport_rect: Option<egui::Rect>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_png_export: Option<std::path::PathBuf>,
 }
 
 impl SmorgasprotApp {
@@ -65,6 +68,9 @@ impl SmorgasprotApp {
             status,
             jobs: JobQueue::default(),
             gpu_surfaces,
+            last_viewport_rect: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_png_export: None,
         }
     }
 
@@ -112,6 +118,28 @@ impl SmorgasprotApp {
                     .collect();
                 if !paths.is_empty() {
                     self.start_load(ctx, paths);
+                }
+            }
+            Action::ExportPng => {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let default_name = self
+                        .datasets
+                        .get(self.active)
+                        .map_or_else(|| "viewport.png".to_owned(), |ds| format!("{}.png", ds.id));
+                    if let Some(path) = files::dialogs::pick_png_save(&default_name) {
+                        self.pending_png_export = Some(path);
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+                        ctx.request_repaint();
+                    }
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    self.status = Some(StatusMessage::error(
+                        "PNG export is not yet available in the browser build.",
+                        now,
+                        &self.state.view_params.status,
+                    ));
                 }
             }
             Action::ExportHtml => self.status = Some(self.export_html(now)),
@@ -198,9 +226,55 @@ impl SmorgasprotApp {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn write_viewport_png(
+    path: &std::path::Path,
+    image: &egui::ColorImage,
+    viewport_rect: Option<egui::Rect>,
+    pixels_per_point: f32,
+) -> Result<(), String> {
+    let cropped;
+    let src = if let Some(rect) = viewport_rect {
+        cropped = image.region(&rect, Some(pixels_per_point));
+        &cropped
+    } else {
+        image
+    };
+    let [w, h] = src.size;
+    if w == 0 || h == 0 {
+        return Err("Viewport has zero area.".into());
+    }
+    let file = std::fs::File::create(path).map_err(|e| format!("Failed to create {}: {e}", path.display()))?;
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), w as u32, h as u32);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().map_err(|e| format!("PNG header error: {e}"))?;
+    let bytes: &[u8] = bytemuck::cast_slice(&src.pixels);
+    writer.write_image_data(bytes).map_err(|e| format!("PNG write error: {e}"))?;
+    Ok(())
+}
+
 impl eframe::App for SmorgasprotApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         let (now, dt) = ctx.input(|i| (i.time, i.stable_dt.min(MAX_DT_S)));
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.pending_png_export.is_some() {
+            let shot = ctx.input(|i| {
+                i.events.iter().find_map(|ev| match ev {
+                    egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                    _ => None,
+                })
+            });
+            if let Some(img) = shot
+                && let Some(path) = self.pending_png_export.take()
+            {
+                let params = &self.state.view_params.status;
+                self.status = Some(match write_viewport_png(&path, &img, self.last_viewport_rect, ctx.pixels_per_point()) {
+                    Ok(()) => StatusMessage::success(format!("Exported viewport PNG to {}", path.display()), now, params),
+                    Err(e) => StatusMessage::error(e, now, params),
+                });
+            }
+        }
         if self.state.step_animations(dt) {
             ctx.request_repaint();
         }
@@ -309,13 +383,14 @@ impl eframe::App for SmorgasprotApp {
                     .resizable(true)
                     .default_width(RIGHT_PANEL_WIDTH)
                     .width_range(SIDE_PANEL_RANGE)
-                    .show(ctx, |ui| panels::inspector(ui, ds, &self.state));
+                    .show(ctx, |ui| panels::inspector(ui, ds, &mut self.state));
             }
             let active_gpu = match self.config.rendering.backend {
                 RenderBackend::Auto | RenderBackend::Wgpu => self.gpu_surfaces.as_mut(),
                 RenderBackend::Glow => None,
             };
             CentralPanel::default().show(ctx, |ui| {
+                self.last_viewport_rect = Some(ui.max_rect());
                 viewport::show(ui, ds, &mut self.state, &self.config.rendering, active_gpu);
             });
         } else {

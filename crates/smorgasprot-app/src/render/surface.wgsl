@@ -11,6 +11,7 @@ struct Camera {
     depth_info: vec4<f32>,
     // `(width_pt, height_pt, px_per_pt_inv, 0.0)` for screen-space sizing in sibling shaders.
     viewport: vec4<f32>,
+    light_view: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> camera: Camera;
 

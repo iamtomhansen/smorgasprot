@@ -8,6 +8,8 @@ pub enum Action {
     /// Open one or more structure files via a native file dialog.
     #[cfg(not(target_arch = "wasm32"))]
     OpenFileDialog,
+    /// Capture and save the active viewport as a PNG image.
+    ExportPng,
     /// Write the standalone HTML report for all datasets.
     ExportHtml,
     /// Dismiss the current status-bar message.

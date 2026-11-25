@@ -1,6 +1,8 @@
 //! Complex & Garnish 3D scene renderer: molecular surfaces, Cα cartoons, atom spheres, and derived interface layers.
 //! Renders through [`GpuSurfaceRenderer`] (`wgpu`) when available, with a CPU [`DrawList`] fallback for Glow.
 
+use super::ball_stick_mesh::build_ball_stick_scene;
+use super::cartoon_mesh::{DsspResidueSample, build_dssp_cartoon_mesh};
 use super::draw_list::DrawList;
 use super::grid;
 use super::plane_space::{PlaneFrame, explode_offset};
@@ -8,16 +10,16 @@ use crate::camera::CameraState;
 use crate::dataset::ViewerDataset;
 use crate::render::{GpuDiscDraw, GpuLineDraw, GpuMeshDraw, GpuMeshKey, GpuSurfaceRenderer};
 use crate::state::{
-    AtomDrawParams, AtomSizeMode, BFactorMode, BoundaryLayerStyle, CartoonRepStyle, CartoonStyle, ChainColorLens,
+    AtomDrawParams, AtomSizeMode, BFactorMode, BallStickRepStyle, BoundaryLayerStyle, CartoonRepStyle, ChainColorLens,
     ColorLens, ExplodeParams, GridParams, InterfaceDisplayMode, LensParams, MeshShading, NodeStrokeColorLens,
-    OpacityParams, PresentationStyle, RenderingSettings, SphereQuality, SphereRepStyle, SurfaceCulling,
-    SurfaceRepStyle, UiState,
+    OpacityParams, PresentationStyle, RenderingSettings, RibbonRepStyle, RibbonStyle, SphereQuality, SphereRepStyle,
+    SurfaceCulling, SurfaceRepStyle, UiState,
 };
 use crate::style::{Palette, lenses, palette, sizing};
 use egui::{Color32, Painter, Pos2, Rect, Stroke};
 use glam::Vec3;
 use smorgasprot_core::surface::{GeodesicPreset, unit_geodesic_sphere};
-use smorgasprot_core::{InterfaceSide, SurfaceMesh};
+use smorgasprot_core::{InterfaceSide, SecStruct, SurfaceMesh};
 
 /// Fixed world-space light direction for Lambert shading (not normalized; matches the HTML viewer).
 const LIGHT_DIR: Vec3 = Vec3::new(0.3, 0.5, 0.8);
@@ -33,10 +35,14 @@ struct SceneInputs<'a> {
     complex_explode_val: f32,
     bfactor_mode: BFactorMode,
     surfaces_gate: LayerAlpha,
+    ribbon_gate: LayerAlpha,
     cartoon_gate: LayerAlpha,
+    ball_stick_gate: LayerAlpha,
     complex_spheres_gate: LayerAlpha,
     surface: &'a SurfaceRepStyle,
+    ribbon: &'a RibbonRepStyle,
     cartoon: &'a CartoonRepStyle,
+    ball_stick: &'a BallStickRepStyle,
     complex_spheres: &'a SphereRepStyle,
     boundary: Option<&'a BoundaryLayerStyle>,
     interface_spheres: Option<(LayerAlpha, &'a SphereRepStyle)>,
@@ -59,10 +65,14 @@ pub fn paint(
         complex_explode_val: cx.complex_explode.value,
         bfactor_mode: g.bfactor_mode,
         surfaces_gate: LayerAlpha { visible: cx.show_surface, master: cx.surface_alpha.value },
+        ribbon_gate: LayerAlpha { visible: cx.show_ribbon, master: cx.ribbon_alpha.value },
         cartoon_gate: LayerAlpha { visible: cx.show_cartoon, master: cx.cartoon_alpha.value },
+        ball_stick_gate: LayerAlpha { visible: cx.show_ball_stick, master: cx.ball_stick_alpha.value },
         complex_spheres_gate: LayerAlpha { visible: cx.show_spheres, master: cx.spheres_alpha.value },
         surface: &g.surface,
+        ribbon: &g.ribbon,
         cartoon: &g.cartoon,
+        ball_stick: &g.ball_stick,
         complex_spheres: &g.spheres,
         boundary: Some(&cx.boundary),
         interface_spheres: Some((
@@ -83,19 +93,67 @@ pub fn paint_garnish(
     gpu_surfaces: Option<&mut GpuSurfaceRenderer>,
 ) {
     let g = &state.garnish;
+    let cx = &state.slice;
+    let (
+        camera,
+        explode_val,
+        complex_explode_val,
+        surfaces_gate,
+        ribbon_gate,
+        cartoon_gate,
+        ball_stick_gate,
+        complex_spheres_gate,
+    ) = if g.sync_with_slice {
+        (
+            &cx.camera,
+            cx.explode.value,
+            cx.complex_explode.value,
+            LayerAlpha { visible: cx.show_surface, master: cx.surface_alpha.value },
+            LayerAlpha { visible: cx.show_ribbon, master: cx.ribbon_alpha.value },
+            LayerAlpha { visible: cx.show_cartoon, master: cx.cartoon_alpha.value },
+            LayerAlpha { visible: cx.show_ball_stick, master: cx.ball_stick_alpha.value },
+            LayerAlpha { visible: cx.show_spheres, master: cx.spheres_alpha.value },
+        )
+    } else {
+        (
+            &g.camera,
+            0.0,
+            0.0,
+            LayerAlpha { visible: g.surface_visible, master: g.surface_alpha.value },
+            LayerAlpha { visible: g.ribbon_visible, master: g.ribbon_alpha.value },
+            LayerAlpha { visible: g.cartoon_visible, master: g.cartoon_alpha.value },
+            LayerAlpha { visible: g.ball_stick_visible, master: g.ball_stick_alpha.value },
+            LayerAlpha { visible: g.spheres_visible, master: g.spheres_alpha.value },
+        )
+    };
+    let (boundary, interface_spheres) = if g.show_interface {
+        (
+            Some(&cx.boundary),
+            Some((
+                LayerAlpha { visible: cx.interface_spheres_visible, master: cx.interface_spheres_alpha.value },
+                &cx.interface_spheres,
+            )),
+        )
+    } else {
+        (None, None)
+    };
     let inputs = SceneInputs {
-        camera: &g.camera,
-        explode_val: 0.0,
-        complex_explode_val: 0.0,
+        camera,
+        explode_val,
+        complex_explode_val,
         bfactor_mode: g.bfactor_mode,
-        surfaces_gate: LayerAlpha { visible: g.surface_visible, master: g.surface_alpha.value },
-        cartoon_gate: LayerAlpha { visible: g.cartoon_visible, master: g.cartoon_alpha.value },
-        complex_spheres_gate: LayerAlpha { visible: g.spheres_visible, master: g.spheres_alpha.value },
+        surfaces_gate,
+        ribbon_gate,
+        cartoon_gate,
+        ball_stick_gate,
+        complex_spheres_gate,
         surface: &g.surface,
+        ribbon: &g.ribbon,
         cartoon: &g.cartoon,
+        ball_stick: &g.ball_stick,
         complex_spheres: &g.spheres,
-        boundary: None,
-        interface_spheres: None,
+        boundary,
+        interface_spheres,
     };
     paint_scene(painter, rect, ds, state, &inputs, rendering, gpu_surfaces);
 }
@@ -103,7 +161,8 @@ pub fn paint_garnish(
 fn presentation_active<Q>(pres: &PresentationStyle<Q>, master: f32, min_alpha: f32) -> bool {
     let has_fill = master * pres.alphas.fill > min_alpha;
     let has_wf = pres.wireframe.enabled && master * pres.alphas.wireframe > min_alpha;
-    let has_border = pres.border.width_px > 0.0 && pres.border.color.a() > 0 && master * pres.alphas.border > min_alpha;
+    let has_border =
+        pres.border.enabled && pres.border.width_a > 0.0 && pres.border.color.a() > 0 && master * pres.alphas.border > min_alpha;
     has_fill || has_wf || has_border
 }
 
@@ -129,7 +188,7 @@ fn paint_scene(
         grid_color: state.view_params.grid_color,
         opacity,
         atom_draw: &state.view_params.atom_draw,
-        lenses: &state.view_params.lenses,
+        lenses: &state.palette.thresholds,
         bfactor_mode: inputs.bfactor_mode,
         pal: &state.palette,
         rect,
@@ -143,9 +202,15 @@ fn paint_scene(
         && inputs.boundary.is_some_and(|b| {
             b.mode != InterfaceDisplayMode::Off && presentation_active(&b.presentation, b.alpha.value, min_alpha)
         });
+    let draw_ribbon = inputs.ribbon_gate.visible
+        && inputs.ribbon.color.lens != ChainColorLens::Off
+        && inputs.ribbon.width.lens != AtomSizeMode::Off
+        && presentation_active(&inputs.ribbon.presentation, inputs.ribbon_gate.master, min_alpha);
     let draw_cartoon = inputs.cartoon_gate.visible
         && inputs.cartoon.color.lens != ChainColorLens::Off
         && presentation_active(&inputs.cartoon.presentation, inputs.cartoon_gate.master, min_alpha);
+    let draw_ball_stick = inputs.ball_stick_gate.visible
+        && presentation_active(&inputs.ball_stick.presentation, inputs.ball_stick_gate.master, min_alpha);
     let draw_complex_spheres = inputs.complex_spheres_gate.visible
         && inputs.complex_spheres_gate.master > min_alpha
         && inputs.complex_spheres.fill.lens != ColorLens::Off
@@ -168,7 +233,9 @@ fn paint_scene(
                 rendering,
                 draw_surfaces,
                 draw_boundary,
+                draw_ribbon,
                 draw_cartoon,
+                draw_ball_stick,
                 draw_complex_spheres,
                 draw_iface_spheres,
                 gpu,
@@ -188,6 +255,9 @@ fn paint_scene(
             && let Some(boundary) = inputs.boundary
         {
             add_interface_geometry(&mut list, &view, ds, iface, boundary);
+        }
+        if draw_ribbon {
+            add_ribbon(&mut list, &view, ds, inputs);
         }
         if draw_cartoon {
             add_cartoon(&mut list, &view, ds, inputs);
@@ -226,12 +296,8 @@ impl View<'_> {
         self.camera.project(self.frame.to_local(world) + offset, self.rect)
     }
 
-    fn chain_alpha(&self, side: InterfaceSide, base_alpha: f32, lens: ChainColorLens) -> f32 {
-        if side == InterfaceSide::None && lens == ChainColorLens::InterfaceSide {
-            base_alpha * self.opacity.unassigned_alpha_scale
-        } else {
-            base_alpha
-        }
+    fn chain_alpha(&self, _side: InterfaceSide, base_alpha: f32, _lens: ChainColorLens) -> f32 {
+        base_alpha
     }
 }
 
@@ -277,11 +343,34 @@ fn interface_complex_offset(view: &View, ds: &ViewerDataset) -> Vec3 {
 
 fn sides_color_sig(pal: &Palette) -> u64 {
     let mut h = 0xcbf2_9ce4_8422_2325_u64;
-    for c in [pal.sides.side_a, pal.sides.side_b, pal.sides.unassigned] {
+    let mut feed = |c: Color32| {
         for b in c.to_array() {
             h ^= b as u64;
             h = h.wrapping_mul(0x0100_0000_01b3);
         }
+    };
+    for c in [
+        pal.sides.side_a, pal.sides.side_b, pal.sides.unassigned,
+        pal.sides.envelope_a, pal.sides.envelope_b,
+        pal.contacts.clash, pal.contacts.salt_bridge, pal.contacts.hbond,
+        pal.contacts.contact, pal.contacts.disulfide,
+        pal.aa_chemistry.aliphatic, pal.aa_chemistry.aromatic, pal.aa_chemistry.positive,
+        pal.aa_chemistry.negative, pal.aa_chemistry.gly_pro, pal.aa_chemistry.polar,
+        pal.elements.h, pal.elements.c, pal.elements.n, pal.elements.o,
+        pal.elements.s, pal.elements.p, pal.elements.se, pal.elements.na,
+        pal.elements.k, pal.elements.mg, pal.elements.ca, pal.elements.fe,
+        pal.elements.zn, pal.elements.other,
+    ] {
+        feed(c);
+    }
+    for &c in &pal.mobility.stops {
+        feed(c);
+    }
+    for &c in &pal.charge.stops {
+        feed(c);
+    }
+    for &c in &pal.categorical {
+        feed(c);
     }
     h
 }
@@ -383,48 +472,37 @@ fn for_each_sphere(
             let Some(ch) = ds.chains.get(chain_idx) else { continue };
             let side = ds.chain_side(&ch.chain_id);
             let offset = chain_total_offset(view, side, ch.draw_explode_offset);
-            let mob_t = {
-                let (v0, v1) = match view.bfactor_mode {
-                    BFactorMode::AlphaFold => (view.lenses.plddt_very_high_min, view.lenses.plddt_low_min),
-                    BFactorMode::Crystallographic => (view.lenses.bfactor_rigid_max_a2, view.lenses.bfactor_flexible_max_a2),
-                };
-                let span = v1 - v0;
-                if span.abs() < 1e-6 { 0.5 } else { ((atom.b_factor - v0) / span).clamp(0.0, 1.0) }
-            };
-            let radius_scale = match size_mode {
-                AtomSizeMode::Fixed => rep.radius.fixed,
-                AtomSizeMode::Mobility => 0.65 + 0.85 * mob_t,
-                AtomSizeMode::Rigidity => 0.65 + 0.85 * (1.0 - mob_t),
-                _ => 1.0,
-            };
+            let radius_scale = sizing::complex_atom_scale(size_mode, rep.radius.fixed, atom, None, view.bfactor_mode, view.lenses);
             let radius_px = (atom.vdw_radius_a * view.camera.zoom * view.atom_draw.complex_sphere_radius_per_zoom * radius_scale)
                 .max(view.atom_draw.min_atom_radius_px);
             if radius_px <= 0.0 {
                 continue;
             }
-            let base_color = match fill_lens {
-                ColorLens::Fixed => rep.fill.fixed,
-                ColorLens::Off => Color32::TRANSPARENT,
-                ColorLens::ModernCpk => view.pal.elements.color(atom.element),
-                ColorLens::AaChemistry => {
-                    let res_name = complex
-                        .residues
-                        .get(atom.residue_idx.0 as usize)
-                        .and_then(|r| std::str::from_utf8(&r.res_name).ok())
-                        .unwrap_or("UNK");
-                    lenses::aa_chemistry_color(res_name, 0.0, view.lenses, view.pal)
-                }
-                ColorLens::Bfactor => lenses::sample_metric_color(crate::state::ScalarMetric::Mobility, mob_t, view.pal),
-                ColorLens::InterfaceSide | ColorLens::Interactions | ColorLens::BuriedSasa | ColorLens::AliphaticScore | ColorLens::ClashSeverity => {
-                    view.pal.sides.side(side)
-                }
-            };
+            let res_name = complex
+                .residues
+                .get(atom.residue_idx.0 as usize)
+                .and_then(|r| std::str::from_utf8(&r.res_name).ok())
+                .unwrap_or("UNK");
+            let base_color = lenses::complex_atom_color(
+                atom,
+                res_name,
+                chain_idx,
+                side,
+                None,
+                fill_lens,
+                rep.fill.fixed,
+                view.bfactor_mode,
+                view.lenses,
+                view.pal,
+            );
             let stroke_width = match stroke_width_lens {
                 AtomSizeMode::Off => 0.0,
                 AtomSizeMode::Fixed => fixed_stroke_w,
-                AtomSizeMode::Mobility => 0.8 + 1.8 * mob_t,
-                AtomSizeMode::Rigidity => 0.8 + 1.8 * (1.0 - mob_t),
-                _ => fixed_stroke_w,
+                _ => {
+                    let mob_t = sizing::bfactor_mobility_t(atom.b_factor, view.bfactor_mode, view.lenses);
+                    let t = if stroke_width_lens == AtomSizeMode::Rigidity { 1.0 - mob_t } else { mob_t };
+                    0.8 + 1.8 * t
+                }
             };
             let outline = (stroke_color_lens != NodeStrokeColorLens::Off && stroke_width > 0.0).then(|| {
                 let stroke_color = match stroke_color_lens {
@@ -472,13 +550,14 @@ fn build_geodesic_spheres_mesh(atoms: &[([f32; 3], f32, Color32)], preset: Geode
     )
 }
 
-fn spheres_color_sig(view: &View, rep: &SphereRepStyle, interface_only: bool, preset: GeodesicPreset) -> u64 {
+fn spheres_color_sig(view: &View, ds: &ViewerDataset, rep: &SphereRepStyle, interface_only: bool, preset: GeodesicPreset) -> u64 {
     let mut h = sides_color_sig(view.pal);
     let mix = |h: &mut u64, v: u64| {
         *h ^= v;
         *h = h.wrapping_mul(0x0100_0000_01b3);
     };
     mix(&mut h, interface_only as u64);
+    mix(&mut h, ds.active_interface.map_or(u64::MAX, |i| i as u64));
     mix(&mut h, preset as u64);
     mix(&mut h, rep.fill.lens as u64);
     mix(&mut h, u32::from_le_bytes(rep.fill.fixed.to_array()) as u64);
@@ -489,20 +568,18 @@ fn spheres_color_sig(view: &View, rep: &SphereRepStyle, interface_only: bool, pr
     h
 }
 
-/// Calibrates the 3D prism cartoon radius (Å) to match the 2D capsule diameter at 1× scale.
-fn cartoon_prism_radius_a(atom_draw: &AtomDrawParams, width_scale: f32) -> f32 {
-    0.5 * atom_draw.complex_cartoon_width_per_zoom * width_scale
-}
 
-/// Builds a closed, parallel-transported N-sided prism mesh along `ca_positions` in world coordinates.
-fn build_cartoon_prism_mesh(ca_positions: &[[f32; 3]], sides: usize, radius_a: f32) -> SurfaceMesh {
-    let n = ca_positions.len();
-    if n < 2 || sides < 3 || radius_a <= 0.0 {
-        return SurfaceMesh::default();
+
+/// Builds a closed, parallel-transported N-sided prism mesh with per-residue radius and vertex color.
+fn build_cartoon_prism_mesh(samples: &[([f32; 3], f32, Color32)], sides: usize) -> (SurfaceMesh, Vec<Color32>) {
+    let n = samples.len();
+    if n < 2 || sides < 3 {
+        return (SurfaceMesh::default(), Vec::new());
     }
-    let pts: Vec<Vec3> = ca_positions.iter().map(|&p| Vec3::from(p)).collect();
+    let pts: Vec<Vec3> = samples.iter().map(|&(p, _, _)| Vec3::from(p)).collect();
     let mut vertices = Vec::with_capacity(n * sides + 2);
     let mut normals = Vec::with_capacity(n * sides + 2);
+    let mut colors = Vec::with_capacity(n * sides + 2);
     let mut triangles = Vec::with_capacity((n - 1) * sides * 2 + sides * 2);
 
     let mut tangents = Vec::with_capacity(n);
@@ -519,7 +596,7 @@ fn build_cartoon_prism_mesh(ca_positions: &[[f32; 3]], sides: usize, radius_a: f
     }
 
     let mut u = tangents[0].any_orthogonal_vector();
-    for (i, (&p, &t)) in pts.iter().zip(&tangents).enumerate() {
+    for (i, ((&p, &t), &(_, radius_a, col))) in pts.iter().zip(&tangents).zip(samples).enumerate() {
         if i > 0 {
             let proj = u - t * u.dot(t);
             u = if proj.length_squared() > 1e-6 {
@@ -529,12 +606,14 @@ fn build_cartoon_prism_mesh(ca_positions: &[[f32; 3]], sides: usize, radius_a: f
             };
         }
         let v = t.cross(u);
+        let r = radius_a.max(0.05);
         for s in 0..sides {
             let angle = (s as f32 / sides as f32) * std::f32::consts::TAU;
             let (sa, ca) = angle.sin_cos();
             let dir = (u * ca + v * sa).normalize();
-            vertices.push((p + dir * radius_a).into());
+            vertices.push((p + dir * r).into());
             normals.push(dir.into());
+            colors.push(col);
         }
     }
 
@@ -553,6 +632,7 @@ fn build_cartoon_prism_mesh(ca_positions: &[[f32; 3]], sides: usize, radius_a: f
     let cap_start = vertices.len() as u32;
     vertices.push(pts[0].into());
     normals.push((-tangents[0]).into());
+    colors.push(samples[0].2);
     for s in 0..sides {
         let s_next = (s + 1) % sides;
         triangles.push([cap_start, s_next as u32, s as u32]);
@@ -562,12 +642,194 @@ fn build_cartoon_prism_mesh(ca_positions: &[[f32; 3]], sides: usize, radius_a: f
     let last_ring = ((n - 1) * sides) as u32;
     vertices.push(pts[n - 1].into());
     normals.push(tangents[n - 1].into());
+    colors.push(samples[n - 1].2);
     for s in 0..sides {
         let s_next = (s + 1) % sides;
         triangles.push([cap_end, last_ring + s as u32, last_ring + s_next as u32]);
     }
 
-    SurfaceMesh { vertices, normals, triangles, nearest_atom: Vec::new() }
+    (SurfaceMesh { vertices, normals, triangles, nearest_atom: Vec::new() }, colors)
+}
+
+fn chain_color_sig(view: &View, ds: &ViewerDataset, lens: ChainColorLens, fixed: Color32, extra: u64) -> u64 {
+    let mut h = sides_color_sig(view.pal);
+    let mut mix = |v: u64| {
+        h ^= v;
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    };
+    mix(lens as u64);
+    mix(u32::from_le_bytes(fixed.to_array()) as u64);
+    mix(view.bfactor_mode as u64);
+    mix(ds.active_interface.map_or(u64::MAX, |i| i as u64));
+    mix(view.lenses.aliphatic_threshold.to_bits() as u64);
+    mix(view.lenses.clash_threshold_a.to_bits() as u64);
+    mix(view.lenses.bfactor_rigid_max_a2.to_bits() as u64);
+    mix(view.lenses.bfactor_flexible_max_a2.to_bits() as u64);
+    mix(view.lenses.plddt_very_high_min.to_bits() as u64);
+    mix(view.lenses.plddt_low_min.to_bits() as u64);
+    mix(view.lenses.atom_buried_sasa_max_a2.to_bits() as u64);
+    mix(view.lenses.clash_severity_max_a.to_bits() as u64);
+    mix(extra);
+    h
+}
+
+/// Evaluates per-atom colors for every atom in `ds.complex` under `lens`, indexed by `GlobalAtomIdx`.
+fn build_complex_atom_colors(view: &View, ds: &ViewerDataset, lens: ChainColorLens, fixed: Color32) -> Vec<Color32> {
+    let Some(complex) = &ds.complex else {
+        return Vec::new();
+    };
+    let color_lens = lens.to_color_lens();
+    let iface_opt = ds.active_interface();
+    let mut iface_lookup = vec![None; complex.atoms.len()];
+    if let Some(iface) = iface_opt {
+        for (ni, node) in iface.map.nodes.iter().enumerate() {
+            if let Some(slot) = iface_lookup.get_mut(node.global_atom.0 as usize) {
+                *slot = Some(ni);
+            }
+        }
+    }
+    complex
+        .atoms
+        .iter()
+        .map(|atom| {
+            let chain_idx = atom.chain_idx.0 as usize;
+            let side = ds
+                .chains
+                .get(chain_idx)
+                .map_or(InterfaceSide::None, |ch| ds.chain_side(&ch.chain_id));
+            let node = iface_lookup[atom.idx.0 as usize].and_then(|ni| iface_opt.map(|i| &i.map.nodes[ni]));
+            let res_name = complex
+                .residues
+                .get(atom.residue_idx.0 as usize)
+                .and_then(|r| std::str::from_utf8(&r.res_name).ok())
+                .unwrap_or("UNK");
+            lenses::complex_atom_color(
+                atom,
+                res_name,
+                chain_idx,
+                side,
+                node,
+                color_lens,
+                fixed,
+                view.bfactor_mode,
+                view.lenses,
+                view.pal,
+            )
+        })
+        .collect()
+}
+
+/// Evaluates per-Cα `(pos_3d, diameter_a, color)` samples for a chain's backbone ribbon.
+fn eval_ca_samples(
+    view: &View,
+    ds: &ViewerDataset,
+    chain_idx: usize,
+    ch: &crate::dataset::ChainVisualData,
+    side: InterfaceSide,
+    ribbon: &RibbonRepStyle,
+    atom_colors: Option<&[Color32]>,
+) -> Vec<([f32; 3], f32, Color32)> {
+    let uniform_color = lenses::chain_cartoon_color(chain_idx, side, ribbon.color.lens, ribbon.color.fixed, view.pal);
+    let complex_opt = ds.complex.as_ref();
+    let iface_opt = ds.active_interface();
+    let mut iface_by_atom = std::collections::HashMap::new();
+    if ribbon.width.lens != AtomSizeMode::Fixed
+        && let Some(iface) = iface_opt
+    {
+        for node in &iface.map.nodes {
+            iface_by_atom.insert(node.global_atom, node);
+        }
+    }
+    ch.ca_positions
+        .iter()
+        .enumerate()
+        .map(|(i, &pos)| {
+            let ga = ch.ca_atoms.get(i).copied();
+            let col = atom_colors
+                .and_then(|cols| ga.and_then(|g| cols.get(g.0 as usize).copied()))
+                .unwrap_or(uniform_color);
+            let diameter_a = if ribbon.width.lens == AtomSizeMode::Fixed {
+                ribbon.width.fixed * ribbon.width_scale
+            } else if let Some((complex, g)) = complex_opt.zip(ga)
+                && let Some(atom) = complex.atoms.get(g.0 as usize)
+            {
+                let node = iface_by_atom.get(&g).copied();
+                let scale = sizing::complex_atom_scale(
+                    ribbon.width.lens,
+                    1.0,
+                    atom,
+                    node,
+                    view.bfactor_mode,
+                    view.lenses,
+                );
+                view.atom_draw.complex_cartoon_width_per_zoom * scale * ribbon.width_scale
+            } else {
+                view.atom_draw.complex_cartoon_width_per_zoom * ribbon.width_scale
+            };
+            (pos, diameter_a, col)
+        })
+        .collect()
+}
+
+/// Builds DSSP Helix–Sheet–Loop cartoon meshes for every visible chain.
+fn collect_dssp_cartoon_meshes(
+    view: &View,
+    ds: &ViewerDataset,
+    cartoon: &CartoonRepStyle,
+    master: f32,
+    min_alpha: f32,
+) -> Vec<(usize, SurfaceMesh, Vec<Color32>, Vec3, f32)> {
+    let lens = cartoon.color.lens;
+    let atom_colors = lens
+        .is_per_atom()
+        .then(|| build_complex_atom_colors(view, ds, lens, cartoon.color.fixed));
+    let complex_opt = ds.complex.as_ref();
+    let mut out = Vec::new();
+    for (chain_idx, ch) in ds.chains.iter().enumerate() {
+        let side = ds.chain_side(&ch.chain_id);
+        let alpha = view.chain_alpha(side, master, lens);
+        if alpha <= min_alpha || ch.ca_positions.len() < 2 {
+            continue;
+        }
+        let uniform = lenses::chain_cartoon_color(chain_idx, side, lens, cartoon.color.fixed, view.pal);
+        let samples: Vec<DsspResidueSample> = ch
+            .ca_positions
+            .iter()
+            .enumerate()
+            .map(|(i, &pos)| {
+                let ga = ch.ca_atoms.get(i).copied();
+                let col = atom_colors
+                    .as_deref()
+                    .and_then(|cols| ga.and_then(|g| cols.get(g.0 as usize).copied()))
+                    .unwrap_or(uniform);
+                let (sec, co) = if let Some((complex, g)) = complex_opt.zip(ga)
+                    && let Some(atom) = complex.atoms.get(g.0 as usize)
+                    && let Some(res) = complex.residues.get(atom.residue_idx.0 as usize)
+                {
+                    let mut c_pos = None;
+                    let mut o_pos = None;
+                    for a in &complex.atoms[res.atom_range.0 as usize..res.atom_range.1 as usize] {
+                        if &a.atom_name == b"C   " {
+                            c_pos = Some(Vec3::from(a.pos_3d));
+                        } else if &a.atom_name == b"O   " {
+                            o_pos = Some(Vec3::from(a.pos_3d));
+                        }
+                    }
+                    let co_vec = c_pos.zip(o_pos).map_or(Vec3::ZERO, |(c, o)| (o - c).normalize_or_zero());
+                    (res.sec_struct, co_vec)
+                } else {
+                    (SecStruct::Loop, Vec3::ZERO)
+                };
+                DsspResidueSample { ca: Vec3::from(pos), co, sec, color: col }
+            })
+            .collect();
+        let (mesh, colors) = build_dssp_cartoon_mesh(&samples, cartoon.presentation.quality, &cartoon.params);
+        if !mesh.triangles.is_empty() {
+            let offset = chain_total_offset(view, side, ch.draw_explode_offset);
+            out.push((chain_idx, mesh, colors, offset, alpha));
+        }
+    }
+    out
 }
 
 fn collect_geodesic_sphere_meshes(
@@ -612,11 +874,13 @@ fn push_mesh_draw<'a, Q>(
     culling: SurfaceCulling,
     pres: &PresentationStyle<Q>,
     min_alpha: f32,
+    zoom: f32,
 ) {
     let face_alpha = base_alpha * pres.alphas.fill;
     let wf_alpha = edge_base_alpha * pres.alphas.wireframe;
     let border_alpha = base_alpha * pres.alphas.border;
-    let has_border = pres.border.width_px > 0.0 && pres.border.color.a() > 0 && border_alpha > min_alpha;
+    let border_width_px = pres.border.effective_width_px(zoom);
+    let has_border = border_width_px > 0.0 && pres.border.color.a() > 0 && border_alpha > min_alpha;
     let show_faces = face_alpha > min_alpha || has_border;
     let wf_width = if pres.wireframe.enabled && wf_alpha > min_alpha {
         pres.wireframe.width_px.max(0.5)
@@ -637,7 +901,7 @@ fn push_mesh_draw<'a, Q>(
         wireframe_width_px: wf_width,
         culling,
         shading: pres.shading,
-        border_width_px: pres.border.width_px,
+        border_width_px,
         border_color: pres.border.color,
         border_alpha,
     });
@@ -652,7 +916,9 @@ fn paint_gpu_scene(
     rendering: &RenderingSettings,
     draw_surfaces: bool,
     draw_boundary: bool,
+    draw_ribbon: bool,
     draw_cartoon: bool,
+    draw_ball_stick: bool,
     draw_complex_spheres: bool,
     draw_iface_spheres: bool,
     gpu: &mut GpuSurfaceRenderer,
@@ -681,22 +947,64 @@ fn paint_gpu_scene(
         });
     }
 
-    let mut prism_meshes: Vec<(usize, SurfaceMesh, Vec3, Color32, f32)> = Vec::new();
-    if draw_cartoon && inputs.cartoon.presentation.quality == CartoonStyle::Prism8 {
-        let radius_a = cartoon_prism_radius_a(view.atom_draw, inputs.cartoon.width_scale);
-        let lens = inputs.cartoon.color.lens;
+    let mut prism_meshes: Vec<(usize, SurfaceMesh, Vec<Color32>, Vec3, f32)> = Vec::new();
+    let ribbon_atom_colors = (draw_ribbon && inputs.ribbon.color.lens.is_per_atom())
+        .then(|| build_complex_atom_colors(view, ds, inputs.ribbon.color.lens, inputs.ribbon.color.fixed));
+    if draw_ribbon && inputs.ribbon.presentation.quality == RibbonStyle::Prism8 {
+        let lens = inputs.ribbon.color.lens;
         for (chain_idx, ch) in ds.chains.iter().enumerate() {
             let side = ds.chain_side(&ch.chain_id);
-            let alpha = view.chain_alpha(side, inputs.cartoon_gate.master, lens);
+            let alpha = view.chain_alpha(side, inputs.ribbon_gate.master, lens);
             if alpha <= min_alpha || ch.ca_positions.len() < 2 {
                 continue;
             }
             let offset = chain_total_offset(view, side, ch.draw_explode_offset);
-            let color = lenses::chain_cartoon_color(chain_idx, side, lens, inputs.cartoon.color.fixed, view.pal);
-            let mesh = build_cartoon_prism_mesh(&ch.ca_positions, 8, radius_a);
-            prism_meshes.push((chain_idx, mesh, offset, color, alpha));
+            let mut samples = eval_ca_samples(
+                view,
+                ds,
+                chain_idx,
+                ch,
+                side,
+                inputs.ribbon,
+                ribbon_atom_colors.as_deref(),
+            );
+            for s in &mut samples {
+                s.1 *= 0.5;
+            }
+            let (mesh, colors) = build_cartoon_prism_mesh(&samples, 8);
+            prism_meshes.push((chain_idx, mesh, colors, offset, alpha));
         }
     }
+
+    let dssp_cartoon_meshes = if draw_cartoon {
+        collect_dssp_cartoon_meshes(view, ds, inputs.cartoon, inputs.cartoon_gate.master, min_alpha)
+    } else {
+        Vec::new()
+    };
+
+    let ball_stick_meshes = if draw_ball_stick {
+        build_ball_stick_scene(
+            ds,
+            inputs.ball_stick,
+            inputs.ball_stick_gate.master,
+            view.camera.zoom,
+            view.bfactor_mode,
+            view.atom_draw,
+            view.lenses,
+            view.pal,
+            |ci, world_pos| {
+                let (side, exp) = ds
+                    .chains
+                    .get(ci)
+                    .map_or((InterfaceSide::None, [0.0; 3]), |ch| (ds.chain_side(&ch.chain_id), ch.draw_explode_offset));
+                view.frame.to_local(world_pos) + chain_total_offset(view, side, exp)
+            },
+            &mut line_draws,
+            &mut disc_draws,
+        )
+    } else {
+        Vec::new()
+    };
 
     let complex_sphere_meshes = if draw_complex_spheres {
         collect_geodesic_sphere_meshes(view, ds, inputs.complex_spheres, false)
@@ -711,30 +1019,58 @@ fn paint_gpu_scene(
         Vec::new()
     };
 
+    let mut surface_vert_colors: Vec<Vec<Color32>> = Vec::new();
     if draw_surfaces {
         let lens = inputs.surface.color.lens;
         let pres = &inputs.surface.presentation;
+        let per_atom = lens.is_per_atom();
+        let atom_colors = per_atom
+            .then(|| build_complex_atom_colors(view, ds, lens, inputs.surface.color.fixed));
+        if let Some(ref cols) = atom_colors {
+            surface_vert_colors = ds
+                .chains
+                .iter()
+                .map(|ch| {
+                    ch.draw_surface_mesh
+                        .nearest_atom
+                        .iter()
+                        .map(|g| cols.get(g.0 as usize).copied().unwrap_or(Color32::WHITE))
+                        .collect()
+                })
+                .collect();
+        }
+        let surface_sig = if per_atom {
+            chain_color_sig(view, ds, lens, inputs.surface.color.fixed, 0)
+        } else {
+            0
+        };
         for (chain_idx, ch) in ds.chains.iter().enumerate() {
             let side = ds.chain_side(&ch.chain_id);
             let alpha = view.chain_alpha(side, inputs.surfaces_gate.master, lens);
             if alpha <= min_alpha || ch.draw_surface_mesh.triangles.is_empty() {
                 continue;
             }
-            let color = lenses::chain_surface_color(chain_idx, side, lens, inputs.surface.color.fixed, view.pal);
+            let (vc, color, edge_color) = if per_atom {
+                (surface_vert_colors.get(chain_idx).map(Vec::as_slice), Color32::WHITE, Color32::WHITE)
+            } else {
+                let c = lenses::chain_surface_color(chain_idx, side, lens, inputs.surface.color.fixed, view.pal);
+                (None, c, palette::edge_color(c))
+            };
             push_mesh_draw(
                 &mut mesh_draws,
                 GpuMeshKey::Chain(chain_idx),
                 &ch.draw_surface_mesh,
-                None,
-                0,
+                vc,
+                surface_sig,
                 chain_total_offset(view, side, ch.draw_explode_offset),
                 color,
-                palette::edge_color(color),
+                edge_color,
                 alpha,
                 0.72 * alpha,
                 ds.culling,
                 pres,
                 min_alpha,
+                view.camera.zoom,
             );
         }
     }
@@ -765,6 +1101,7 @@ fn paint_gpu_scene(
                     pres.culling,
                     pres,
                     min_alpha,
+                    view.camera.zoom,
                 );
             }
             InterfaceDisplayMode::ContactEnvelope => {
@@ -792,6 +1129,7 @@ fn paint_gpu_scene(
                     pres.culling,
                     pres,
                     min_alpha,
+                    view.camera.zoom,
                 );
             }
             InterfaceDisplayMode::NegativeSpace => {
@@ -809,60 +1147,176 @@ fn paint_gpu_scene(
                     pres.culling,
                     pres,
                     min_alpha,
+                    view.camera.zoom,
                 );
             }
             InterfaceDisplayMode::Off => {}
         }
     }
 
-    if draw_cartoon {
-        let pres = &inputs.cartoon.presentation;
-        if pres.quality == CartoonStyle::Capsule2D {
-            let width_pt = sizing::complex_cartoon_width_px(view.camera.zoom, inputs.cartoon.width_scale, view.atom_draw);
-            let lens = inputs.cartoon.color.lens;
+    if draw_ribbon {
+        let pres = &inputs.ribbon.presentation;
+        let lens = inputs.ribbon.color.lens;
+        if pres.quality == RibbonStyle::Capsule2D {
             for (chain_idx, ch) in ds.chains.iter().enumerate() {
                 let side = ds.chain_side(&ch.chain_id);
-                let alpha = view.chain_alpha(side, inputs.cartoon_gate.master, lens);
+                let alpha = view.chain_alpha(side, inputs.ribbon_gate.master, lens);
                 if alpha <= min_alpha || ch.ca_positions.len() < 2 {
                     continue;
                 }
                 let offset = chain_total_offset(view, side, ch.draw_explode_offset);
-                let color = lenses::chain_cartoon_color(chain_idx, side, lens, inputs.cartoon.color.fixed, view.pal);
-                let pts: Vec<Vec3> = ch.ca_positions.iter().map(|&p| view.frame.to_local(p) + offset).collect();
+                let samples = eval_ca_samples(
+                    view,
+                    ds,
+                    chain_idx,
+                    ch,
+                    side,
+                    inputs.ribbon,
+                    ribbon_atom_colors.as_deref(),
+                );
+                let pts: Vec<Vec3> = samples.iter().map(|&(p, _, _)| view.frame.to_local(p) + offset).collect();
                 for (i, w) in pts.windows(2).enumerate() {
+                    let avg_diameter_a = 0.5 * (samples[i].1 + samples[i + 1].1);
+                    let width_pt = (view.camera.zoom * avg_diameter_a).max(view.atom_draw.min_complex_cartoon_width_px);
                     line_draws.push(GpuLineDraw {
                         a: w[0],
                         b: w[1],
                         prev: i.checked_sub(1).map(|k| pts[k]),
                         next: pts.get(i + 2).copied(),
-                        color,
+                        color: samples[i].2,
                         alpha: alpha * pres.alphas.fill,
                         width_pt,
                         dash: None,
-                        border_pt: pres.border.width_px,
+                        border_pt: pres.border.effective_width_px(view.camera.zoom),
                         border_color: pres.border.color,
                         border_alpha: alpha * pres.alphas.border,
                     });
                 }
             }
         } else {
-            let radius_a = cartoon_prism_radius_a(view.atom_draw, inputs.cartoon.width_scale);
-            let sig = 8_u64 | ((radius_a.to_bits() as u64) << 8);
-            for (chain_idx, mesh, offset, color, alpha) in &prism_meshes {
+            let extra = (inputs.ribbon.width.lens as u64)
+                ^ ((inputs.ribbon.width.fixed.to_bits() as u64) << 8)
+                ^ ((inputs.ribbon.width_scale.to_bits() as u64) << 24)
+                ^ ((view.atom_draw.complex_cartoon_width_per_zoom.to_bits() as u64) << 40);
+            let sig = chain_color_sig(view, ds, lens, inputs.ribbon.color.fixed, extra);
+            for (chain_idx, mesh, colors, offset, alpha) in &prism_meshes {
                 push_mesh_draw(
                     &mut mesh_draws,
-                    GpuMeshKey::Cartoon(*chain_idx),
+                    GpuMeshKey::Ribbon(*chain_idx),
                     mesh,
-                    None,
+                    Some(colors),
                     sig,
                     *offset,
-                    *color,
-                    palette::edge_color(*color),
+                    Color32::WHITE,
+                    Color32::WHITE,
                     *alpha,
                     0.72 * *alpha,
                     pres.culling,
                     pres,
                     min_alpha,
+                    view.camera.zoom,
+                );
+            }
+        }
+    }
+
+    if draw_cartoon {
+        let pres = &inputs.cartoon.presentation;
+        let p = &inputs.cartoon.params;
+        let mut extra = (pres.quality as u64)
+            ^ ((p.helix_smoothing.to_bits() as u64) << 4)
+            ^ ((p.helix_radius_a.to_bits() as u64) << 16)
+            ^ ((p.helix_arrow as u64) << 28)
+            ^ ((p.sheet_width_a.to_bits() as u64) << 32);
+        extra ^= (p.sheet_thickness_a.to_bits() as u64)
+            ^ ((p.sheet_zigzag as u64) << 8)
+            ^ ((p.sheet_arrow_scale.to_bits() as u64) << 12)
+            ^ ((p.loop_radius_a.to_bits() as u64) << 24)
+            ^ ((p.spline_subdiv as u64) << 48);
+        let sig = chain_color_sig(view, ds, inputs.cartoon.color.lens, inputs.cartoon.color.fixed, extra);
+        for (chain_idx, mesh, colors, offset, alpha) in &dssp_cartoon_meshes {
+            push_mesh_draw(
+                &mut mesh_draws,
+                GpuMeshKey::Cartoon(*chain_idx),
+                mesh,
+                Some(colors),
+                sig,
+                *offset,
+                Color32::WHITE,
+                Color32::WHITE,
+                *alpha,
+                0.72 * *alpha,
+                pres.culling,
+                pres,
+                min_alpha,
+                view.camera.zoom,
+            );
+        }
+    }
+
+    if draw_ball_stick && !ball_stick_meshes.is_empty() {
+        let rep = inputs.ball_stick;
+        let pres = &rep.presentation;
+        let p = &rep.params;
+        let mut h = sides_color_sig(view.pal);
+        let mut mix = |v: u64| {
+            h ^= v;
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        };
+        mix(pres.quality as u64);
+        mix(p.scope as u64);
+        mix(p.bond_radius_a.to_bits() as u64);
+        mix(p.bond_color_mode as u64);
+        mix(u32::from_le_bytes(p.bond_color.to_array()) as u64);
+        mix((p.show_double_bonds as u64) | ((p.show_aromatic_rings as u64) << 1));
+        mix(rep.atom_color.lens as u64);
+        mix(u32::from_le_bytes(rep.atom_color.fixed.to_array()) as u64);
+        mix(rep.atom_scale.lens as u64);
+        mix(rep.atom_scale.fixed.to_bits() as u64);
+        mix(view.bfactor_mode as u64);
+        mix(ds.active_interface.map_or(u64::MAX, |i| i as u64));
+
+        for entry in &ball_stick_meshes {
+            let (side, exp) = ds
+                .chains
+                .get(entry.chain_idx)
+                .map_or((InterfaceSide::None, [0.0; 3]), |ch| (ds.chain_side(&ch.chain_id), ch.draw_explode_offset));
+            let offset = chain_total_offset(view, side, exp);
+            let alpha = inputs.ball_stick_gate.master;
+            if !entry.bond_mesh.triangles.is_empty() {
+                push_mesh_draw(
+                    &mut mesh_draws,
+                    GpuMeshKey::BallStickBonds(entry.chain_idx),
+                    &entry.bond_mesh,
+                    Some(&entry.bond_colors),
+                    h,
+                    offset,
+                    Color32::WHITE,
+                    Color32::WHITE,
+                    alpha,
+                    0.72 * alpha,
+                    pres.culling,
+                    pres,
+                    min_alpha,
+                    view.camera.zoom,
+                );
+            }
+            if let Some((ref sp_mesh, ref sp_cols)) = entry.sphere_mesh {
+                push_mesh_draw(
+                    &mut mesh_draws,
+                    GpuMeshKey::BallStickSpheres(entry.chain_idx),
+                    sp_mesh,
+                    Some(sp_cols),
+                    h,
+                    offset,
+                    Color32::WHITE,
+                    Color32::WHITE,
+                    alpha,
+                    0.72 * alpha,
+                    pres.culling,
+                    pres,
+                    min_alpha,
+                    view.camera.zoom,
                 );
             }
         }
@@ -882,7 +1336,7 @@ fn paint_gpu_scene(
     ) {
         let pres = &rep.presentation;
         if let Some(preset) = pres.quality.geodesic_preset() {
-            let sig = spheres_color_sig(view, rep, interface_only, preset);
+            let sig = spheres_color_sig(view, ds, rep, interface_only, preset);
             for (chain_idx, mesh, colors, offset) in sphere_meshes {
                 let key = if interface_only {
                     GpuMeshKey::InterfaceSpheres(*chain_idx)
@@ -903,6 +1357,7 @@ fn paint_gpu_scene(
                     pres.culling,
                     pres,
                     min_alpha,
+                    view.camera.zoom,
                 );
             }
         } else {
@@ -1060,31 +1515,47 @@ fn add_interface_geometry(
 }
 
 /// CPU fallback: Cα trace per chain as thick segments or 3D 8-sided prism meshes.
-fn add_cartoon(list: &mut DrawList, view: &View, ds: &ViewerDataset, inputs: &SceneInputs<'_>) {
-    let width = sizing::complex_cartoon_width_px(view.camera.zoom, inputs.cartoon.width_scale, view.atom_draw);
-    let lens = inputs.cartoon.color.lens;
-    let pres = &inputs.cartoon.presentation;
+fn add_ribbon(list: &mut DrawList, view: &View, ds: &ViewerDataset, inputs: &SceneInputs<'_>) {
+    let width = (view.camera.zoom * inputs.ribbon.width.fixed * inputs.ribbon.width_scale)
+        .max(view.atom_draw.min_complex_cartoon_width_px);
+    let lens = inputs.ribbon.color.lens;
+    let pres = &inputs.ribbon.presentation;
     for (chain_idx, ch) in ds.chains.iter().enumerate() {
         let side = ds.chain_side(&ch.chain_id);
         let offset = chain_total_offset(view, side, ch.draw_explode_offset);
-        let alpha = view.chain_alpha(side, inputs.cartoon_gate.master, lens);
-        let color = lenses::chain_cartoon_color(chain_idx, side, lens, inputs.cartoon.color.fixed, view.pal);
-        if pres.quality == CartoonStyle::Capsule2D {
+        let alpha = view.chain_alpha(side, inputs.ribbon_gate.master, lens);
+        let color = lenses::chain_cartoon_color(chain_idx, side, lens, inputs.ribbon.color.fixed, view.pal);
+        if pres.quality == RibbonStyle::Capsule2D {
             let stroke = Stroke::new(width, palette::with_alpha(color, alpha * pres.alphas.fill));
             let pts: Vec<(Pos2, f32)> = ch.ca_positions.iter().map(|&p| view.project(p, offset)).collect();
             for w in pts.windows(2) {
                 list.segment(w[0].0, w[1].0, 0.5 * (w[0].1 + w[1].1), stroke);
             }
         } else {
-            let mesh = build_cartoon_prism_mesh(
-                &ch.ca_positions,
-                8,
-                cartoon_prism_radius_a(view.atom_draw, inputs.cartoon.width_scale),
-            );
-            add_mesh(list, view, &mesh, offset, pres.culling, pres.shading, |_, shade| {
-                (palette::shaded(color, shade, alpha * pres.alphas.fill), Stroke::NONE)
+            let mut samples = eval_ca_samples(view, ds, chain_idx, ch, side, inputs.ribbon, None);
+            for s in &mut samples {
+                s.1 *= 0.5;
+            }
+            let (mesh, colors) = build_cartoon_prism_mesh(&samples, 8);
+            add_mesh(list, view, &mesh, offset, pres.culling, pres.shading, |v, shade| {
+                let c = colors.get(v).copied().unwrap_or(color);
+                (palette::shaded(c, shade, alpha * pres.alphas.fill), Stroke::NONE)
             });
         }
+    }
+}
+
+/// CPU fallback: DSSP Helix–Sheet–Loop cartoon meshes.
+fn add_cartoon(list: &mut DrawList, view: &View, ds: &ViewerDataset, inputs: &SceneInputs<'_>) {
+    let pres = &inputs.cartoon.presentation;
+    let min_alpha = view.opacity.min_draw_alpha;
+    for (_, mesh, colors, offset, alpha) in
+        collect_dssp_cartoon_meshes(view, ds, inputs.cartoon, inputs.cartoon_gate.master, min_alpha)
+    {
+        add_mesh(list, view, &mesh, offset, pres.culling, pres.shading, |v, shade| {
+            let c = colors.get(v).copied().unwrap_or(Color32::WHITE);
+            (palette::shaded(c, shade, alpha * pres.alphas.fill), Stroke::NONE)
+        });
     }
 }
 

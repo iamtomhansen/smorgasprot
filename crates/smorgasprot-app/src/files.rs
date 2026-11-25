@@ -127,4 +127,12 @@ pub mod dialogs {
             .set_file_name("viewer.html")
             .save_file()
     }
+
+    pub fn pick_png_save(default_name: &str) -> Option<PathBuf> {
+        rfd::FileDialog::new()
+            .set_title("Export Viewport PNG")
+            .add_filter("PNG image", &["png"])
+            .set_file_name(default_name)
+            .save_file()
+    }
 }

@@ -1,7 +1,9 @@
 //! Central 3D canvas: camera input, picking, and dispatch to the active tab's scene.
 //! Scenes are pure painters; only this module mutates camera and selection state.
 
+mod ball_stick_mesh;
 mod cartography_scene;
+mod cartoon_mesh;
 mod complex_scene;
 mod draw_list;
 mod gizmo;

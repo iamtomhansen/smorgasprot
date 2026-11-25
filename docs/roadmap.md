@@ -89,14 +89,15 @@ Using a generic capability descriptor (`PresentationCaps`), one shared `presenta
   * Thread independent `border_alpha` through `GpuMeshDraw`, `GpuLineDraw`, and `GpuDiscDraw`.
   * Separate **Interface Spheres** (Slice tab → Interface section) from **Complex Spheres** (all-atom molecular sphere representation).
   * Add `WorkspaceTab::Garnish` (`3. Garnish`) owning shared molecular representation styles that carry directly into `1. Slice`, and replace single "Customize" popovers with dedicated **Channels** and **Presentation** popovers.
-* [ ] **5.2 Expanded Visual Channel Embeddings:**
-  * Support full per-atom/per-residue channel embeddings (`AaChemistry`, `Bfactor` / `pLDDT`, `Chain`, `InterfaceSide`) across Surfaces, Cartoons (`Prism8` vertex colors), and Spheres.
+* [x] **5.2 Expanded Visual Channel Embeddings:**
+  * Support full per-atom/per-residue channel embeddings (`AaChemistry`, `Bfactor` / `pLDDT`, `Chain`, `InterfaceSide`, `InterfaceMembership`) across Surfaces, Cartoons (`Prism8` & `Capsule2D`), and Spheres.
   * Allow scalar channels (such as B-factor / mobility) to modulate cartoon ribbon thickness (putty/sausage style) in addition to sphere radii.
-* [ ] **5.3 Helix–Sheet–Loop Protein Cartoons:**
-  * Drive procedural `SurfaceMesh` spline ribbons from `smorgasprot-core::dssp` (`Helix`, `Sheet`, `Coil`) with wide helical ribbons, β-strand arrows, and slender `Prism8` loops inheriting shading, OIT, and silhouette borders.
-* [ ] **5.4 Ball-and-Stick & Per-Selection Representations:**
-  * Add covalent bond perception (`smorgasprot-core`) rendered as 3D bond capsules/cylinders + scaled spheres.
-  * Evolve `GarnishViewSettings` into `Vec<RepresentationLayer>` with selectable `AtomSelection` targets (`All`, `Chain`, `Protein`, `Ligand`, `Interface`, residue ranges), matching PyMOL/ChimeraX workflows.
-* [ ] **5.5 SVG Vector Export & Live Redesign Workbench:**
-  * Add a depth-sorted SVG vector exporter over the shared `GpuMeshDraw` / `GpuPolyTri` / `GpuLineDraw` / `GpuDiscDraw` scene descriptors + text labels.
-  * Complete live rotamer / $\chi$-angle minimization (`rotamers.rs`, `minimize.rs`) and `.pdb`/`.cif` structure export.
+* [x] **5.3 Helix–Sheet–Loop Protein Cartoons:**
+  * Renamed Cα trace to **Ribbon** and added procedural DSSP **Cartoon** (`Helix`, `Sheet`, `Loop`) with `Schematic` (cylinders & boxes) and `Detailed` (helical ribbons, β-strand arrows, spline-smoothed `Loop` tubes) plus parameterized smoothing/pleat/arrow controls.
+* [x] **5.4 Ball-and-Stick, Upgraded 3D Sphere Impostors & Sidechain Scopes:**
+  * Upgraded 2-triangle 3D sphere impostors (`disc.wgsl`) with world-locked key lighting, shadow-side bounce fill, rim sheen, Blinn-Phong speculars, and exact spherical `frag_depth`.
+  * Added 2D/3D **Ball-and-Stick** (`Flat2D`, `Impostor3D`, `MeshCoarse`, `MeshFine`) with midpoint-split/gradient/uniform bond coloring, `BondOrder` double/triple/aromatic toggles, and sidechain/interface selection shortcuts (`AllAtoms`, `SidechainsAndLigands`, `InterfaceSidechains`, `InterfaceResidues`).
+* [ ] **5.5 Image Export & Live Redesign Workbench:**
+  * [x] **Viewport PNG Export:** Lossless cropped viewport PNG capture (`File → Export Viewport PNG…`).
+  * [ ] *(Stretch goal)* Depth-sorted SVG vector exporter over shared scene descriptors + text labels, and general `Vec<RepresentationLayer>` per-selection stacking.
+  * [ ] Complete live rotamer / $\chi$-angle minimization (`rotamers.rs`, `minimize.rs`) and `.pdb`/`.cif` structure export.

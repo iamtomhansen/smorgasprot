@@ -14,10 +14,13 @@ pub use crate::style::{
     VisualChannel,
 };
 pub use cartography::{AtomLayerStyle, CartographyViewSettings, EdgeLayerStyle, TerritoryLayerStyle};
-pub use garnish::{CartoonRepStyle, GarnishViewSettings, SphereRepStyle, SurfaceRepStyle};
+pub use garnish::{
+    BallStickParams, BallStickRepStyle, CartoonParams, CartoonRepStyle, GarnishViewSettings, RibbonRepStyle,
+    SphereRepStyle, SurfaceRepStyle,
+};
 pub use presentation::{
-    AlphaChannels, BorderStyle, CartoonStyle, DEFAULT_BORDER_COLOR, MeshShading, PresentationCaps, PresentationStyle,
-    SphereQuality, SurfaceCulling, WireframeStyle,
+    AlphaChannels, BallStickQuality, BallStickScope, BondColorMode, BorderStyle, CartoonQuality, DEFAULT_BORDER_COLOR,
+    MeshShading, PresentationCaps, PresentationStyle, RibbonStyle, SphereQuality, SurfaceCulling, WireframeStyle,
 };
 pub use slice::{BoundaryLayerStyle, InterfaceDisplayMode, SliceViewSettings};
 pub use tween::Tween;
@@ -106,7 +109,13 @@ impl UiState {
         match self.active_tab {
             WorkspaceTab::Slice => &self.slice.camera,
             WorkspaceTab::Cartography => &self.cartography.camera,
-            WorkspaceTab::Garnish => &self.garnish.camera,
+            WorkspaceTab::Garnish => {
+                if self.garnish.sync_with_slice {
+                    &self.slice.camera
+                } else {
+                    &self.garnish.camera
+                }
+            }
         }
     }
 
@@ -115,7 +124,13 @@ impl UiState {
         match self.active_tab {
             WorkspaceTab::Slice => &mut self.slice.camera,
             WorkspaceTab::Cartography => &mut self.cartography.camera,
-            WorkspaceTab::Garnish => &mut self.garnish.camera,
+            WorkspaceTab::Garnish => {
+                if self.garnish.sync_with_slice {
+                    &mut self.slice.camera
+                } else {
+                    &mut self.garnish.camera
+                }
+            }
         }
     }
 

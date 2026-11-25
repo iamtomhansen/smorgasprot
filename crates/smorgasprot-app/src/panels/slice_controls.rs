@@ -79,9 +79,19 @@ pub fn show(ui: &mut Ui, ds: &mut ViewerDataset, state: &mut UiState) {
             slider(ui, "Alpha:", &mut s.surface_alpha, UNIT_RANGE);
         }
 
-        ui.checkbox(&mut s.show_cartoon, RichText::new("Cartoon ribbon").strong());
+        ui.checkbox(&mut s.show_ribbon, RichText::new("Ribbon").strong());
+        if s.show_ribbon {
+            slider(ui, "Alpha:", &mut s.ribbon_alpha, UNIT_RANGE);
+        }
+
+        ui.checkbox(&mut s.show_cartoon, RichText::new("Cartoon (DSSP)").strong());
         if s.show_cartoon {
             slider(ui, "Alpha:", &mut s.cartoon_alpha, UNIT_RANGE);
+        }
+
+        ui.checkbox(&mut s.show_ball_stick, RichText::new("Ball-and-stick").strong());
+        if s.show_ball_stick {
+            slider(ui, "Alpha:", &mut s.ball_stick_alpha, UNIT_RANGE);
         }
 
         ui.checkbox(&mut s.show_spheres, RichText::new("Atom spheres (whole complex)").strong());

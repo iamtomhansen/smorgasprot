@@ -224,15 +224,21 @@ pub fn presentation_popover<Q: PartialEq + Copy + 'static>(
         }
         if caps.border {
             ui.separator();
-            ui.label(RichText::new("Display border").strong());
             ui.horizontal(|ui| {
-                ui.color_edit_button_srgba(&mut pres.border.color);
-                ui.add(Slider::new(&mut pres.border.width_px, 0.0..=6.0).step_by(0.5).text("px"));
+                ui.checkbox(&mut pres.border.enabled, RichText::new("Display border").strong());
+                if pres.border.enabled {
+                    ui.color_edit_button_srgba(&mut pres.border.color);
+                }
             });
-            ui.horizontal(|ui| {
-                ui.label("Border alpha:");
-                ui.add(Slider::new(&mut pres.alphas.border, 0.0..=1.0).step_by(0.05));
-            });
+            if pres.border.enabled {
+                ui.horizontal(|ui| {
+                    ui.add(Slider::new(&mut pres.border.width_a, 0.02..=1.0).step_by(0.01).text("Å"));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Border alpha:");
+                    ui.add(Slider::new(&mut pres.alphas.border, 0.0..=1.0).step_by(0.05));
+                });
+            }
         }
         if caps.wireframe {
             ui.separator();
@@ -280,15 +286,19 @@ pub fn sphere_popovers(ui: &mut Ui, id_prefix: &str, title: &str, rep: &mut Sphe
                 ui.label("Shading:");
                 choice_combo(ui, &format!("{id_prefix}_shading"), &mut pres.shading);
                 ui.separator();
-                ui.label(RichText::new("Display border").strong());
                 ui.horizontal(|ui| {
-                    ui.color_edit_button_srgba(&mut pres.border.color);
-                    ui.add(Slider::new(&mut pres.border.width_px, 0.0..=6.0).step_by(0.5).text("px"));
+                    ui.checkbox(&mut pres.border.enabled, RichText::new("Display border").strong());
+                    if pres.border.enabled {
+                        ui.color_edit_button_srgba(&mut pres.border.color);
+                    }
                 });
-                ui.horizontal(|ui| {
-                    ui.label("Border alpha:");
-                    ui.add(Slider::new(&mut pres.alphas.border, 0.0..=1.0).step_by(0.05));
-                });
+                if pres.border.enabled {
+                    ui.add(Slider::new(&mut pres.border.width_a, 0.02..=1.0).step_by(0.01).text("Å"));
+                    ui.horizontal(|ui| {
+                        ui.label("Border alpha:");
+                        ui.add(Slider::new(&mut pres.alphas.border, 0.0..=1.0).step_by(0.05));
+                    });
+                }
             } else {
                 ui.horizontal(|ui| {
                     ui.label("Border alpha:");

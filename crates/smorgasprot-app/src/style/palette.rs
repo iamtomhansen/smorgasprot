@@ -91,6 +91,7 @@ pub struct Palette {
     pub elements: ElementPalette,
     pub mobility: ColorMap,
     pub charge: ColorMap,
+    pub thresholds: crate::state::LensParams,
     #[serde(skip)]
     pub gizmo: GizmoPalette,
     #[serde(skip)]
@@ -122,6 +123,7 @@ impl Default for Palette {
                 Color32::WHITE,
                 Color32::from_rgb(37, 99, 235),
             ),
+            thresholds: crate::state::LensParams::default(),
             gizmo: GizmoPalette::default(),
             chrome: ChromePalette::default(),
         }
@@ -201,6 +203,7 @@ impl Palette {
         self.elements = preset.elements.clone();
         self.mobility = preset.mobility.clone();
         self.charge = preset.charge.clone();
+        self.thresholds = preset.thresholds.clone();
     }
 
     /// Applies the loaded palette matching `name`, if present in `available`.

@@ -134,12 +134,24 @@ pub enum BondKind {
     Other,
 }
 
+/// Covalent bond multiplicity / aromaticity (ready for future bond-order & ring perception).
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum BondOrder {
+    #[default]
+    Single,
+    Double,
+    Triple,
+    Aromatic,
+}
+
 /// A single covalent bond between two heavy atoms.
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Bond {
     pub a: GlobalAtomIdx,
     pub b: GlobalAtomIdx,
     pub kind: BondKind,
+    #[serde(default)]
+    pub order: BondOrder,
 }
 
 impl ComplexStructure {

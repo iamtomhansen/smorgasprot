@@ -90,7 +90,7 @@ pub fn detect_bonds(complex: &ComplexStructure, p: &BondParams) -> Vec<Bond> {
             } else {
                 BondKind::Other
             };
-            bonds.push(Bond { a: atom_a.idx, b: atom_b.idx, kind });
+            bonds.push(Bond { a: atom_a.idx, b: atom_b.idx, kind, order: crate::model::BondOrder::Single });
         });
     }
     bonds

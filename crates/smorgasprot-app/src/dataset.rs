@@ -30,6 +30,9 @@ pub struct ChainVisualData {
     pub atom_count: usize,
     /// Alpha carbon positions in plane-local space.
     pub ca_positions: Vec<[f32; 3]>,
+    /// Global atom index for each alpha carbon in `ca_positions` (render cache, not exported).
+    #[serde(skip)]
+    pub ca_atoms: Vec<GlobalAtomIdx>,
     /// Presentation-only molecular surface mesh (i.e. not used in core analysis) in plane-local space.
     #[serde(rename = "surface_mesh")]
     pub draw_surface_mesh: SurfaceMesh,
@@ -255,18 +258,22 @@ impl ViewerDataset {
             .chains
             .iter()
             .enumerate()
-            .map(|(c_idx, chain)| ChainVisualData {
-                chain_id: chain.chain_id.clone(),
-                residue_count: (chain.residue_range.1 - chain.residue_range.0) as usize,
-                atom_count: (chain.atom_range.1 - chain.atom_range.0) as usize,
-                ca_positions: ca_trace(complex, chain.residue_range),
-                draw_surface_mesh: build_chain_surface_mesh_with_preset(
-                    complex,
-                    GlobalChainIdx(c_idx as u32),
-                    initial_preset,
-                    &initial_draw_surface,
-                ),
-                draw_explode_offset: explode_offsets.get(c_idx).copied().unwrap_or([0.0; 3]),
+            .map(|(c_idx, chain)| {
+                let (ca_positions, ca_atoms) = ca_trace(complex, chain.residue_range);
+                ChainVisualData {
+                    chain_id: chain.chain_id.clone(),
+                    residue_count: (chain.residue_range.1 - chain.residue_range.0) as usize,
+                    atom_count: (chain.atom_range.1 - chain.atom_range.0) as usize,
+                    ca_positions,
+                    ca_atoms,
+                    draw_surface_mesh: build_chain_surface_mesh_with_preset(
+                        complex,
+                        GlobalChainIdx(c_idx as u32),
+                        initial_preset,
+                        &initial_draw_surface,
+                    ),
+                    draw_explode_offset: explode_offsets.get(c_idx).copied().unwrap_or([0.0; 3]),
+                }
             })
             .collect();
 
@@ -555,16 +562,19 @@ fn complex_centroid(complex: &ComplexStructure) -> [f32; 3] {
 }
 
 /// Collects one Cα position per residue in `residue_range` (residues without Cα are skipped).
-fn ca_trace(complex: &ComplexStructure, residue_range: (u32, u32)) -> Vec<[f32; 3]> {
-    complex.residues[residue_range.0 as usize..residue_range.1 as usize]
-        .iter()
-        .filter_map(|res| {
-            complex.atoms[res.atom_range.0 as usize..res.atom_range.1 as usize]
-                .iter()
-                .find(|a| &a.atom_name == b"CA  ")
-                .map(|a| a.pos_3d)
-        })
-        .collect()
+fn ca_trace(complex: &ComplexStructure, residue_range: (u32, u32)) -> (Vec<[f32; 3]>, Vec<GlobalAtomIdx>) {
+    let mut positions = Vec::new();
+    let mut atoms = Vec::new();
+    for res in &complex.residues[residue_range.0 as usize..residue_range.1 as usize] {
+        if let Some(a) = complex.atoms[res.atom_range.0 as usize..res.atom_range.1 as usize]
+            .iter()
+            .find(|a| &a.atom_name == b"CA  ")
+        {
+            positions.push(a.pos_3d);
+            atoms.push(a.idx);
+        }
+    }
+    (positions, atoms)
 }
 
 /// Builds metadata for one atom from the complex.

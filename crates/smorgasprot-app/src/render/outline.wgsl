@@ -48,7 +48,7 @@ fn fs_outline(in: VsOut) -> @location(0) vec4<f32> {
     let z_c = textureLoad(outline_depth_tex, px, 0);
     let op_z = textureLoad(opaque_depth_tex, px, 0);
 
-    let max_w = clamp(outline.widths[0].y, 0.0, 6.0);
+    let max_w = clamp(outline.widths[0].y, 0.0, 48.0);
     let r = i32(ceil(max_w + 0.5));
     if r <= 0 {
         discard;
