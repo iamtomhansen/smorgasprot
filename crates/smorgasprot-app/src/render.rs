@@ -2,4 +2,4 @@
 
 pub mod surface;
 
-pub use surface::{GpuChainDraw, GpuSurfaceRenderer};
+pub use surface::{GpuDiscDraw, GpuLineDraw, GpuMeshDraw, GpuMeshKey, GpuPolyTri, GpuSurfaceRenderer};

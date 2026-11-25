@@ -1,21 +1,19 @@
 //! Complex tab controls: group names, color palette, 3D representations with customization popovers, and explode separation.
 
 use super::widgets::{
-    UNIT_RANGE, choice_combo, color_channel_control, customize_popover, max_text_width, param_group_controls,
-    popover_header, row_height, scalar_channel_control, section, slider, tween_presets, tween_slider,
+    UNIT_RANGE, choice_combo, max_text_width, presentation_popover, row_height, section, slider, sphere_popovers,
+    tween_presets, tween_slider,
 };
 use crate::dataset::ViewerDataset;
-use crate::state::{AtomSizeMode, ChainColorLens, ColorLens, InterfaceDisplayMode, UiState};
-use egui::{Color32, RichText, ScrollArea, Slider, Ui};
+use crate::state::{
+    BoundaryLayerStyle, InterfaceDisplayMode, PresentationCaps, UiState, WorkspaceTab,
+};
+use egui::{Color32, RichText, ScrollArea, Ui};
 use smorgasprot_core::InterfaceSide;
-use smorgasprot_core::surface::SurfaceParams;
 
-/// Pause after the last surface parameter edit before triggering a full 3D remesh (s).
-const SURFACE_REMESH_DEBOUNCE_S: f64 = 0.2;
-
-/// Renders the Complex tab's side panel.
+/// Renders the Slice tab's side panel.
 pub fn show(ui: &mut Ui, ds: &mut ViewerDataset, state: &mut UiState) {
-    ui.heading("3D Complex Assembly");
+    ui.heading("Interface Slicing");
     ui.add_space(4.0);
 
     let danger_color = state.palette.chrome.error;
@@ -64,142 +62,85 @@ pub fn show(ui: &mut Ui, ds: &mut ViewerDataset, state: &mut UiState) {
     });
 
     let void_color = state.palette.sides.void;
-    let s = &mut state.complex;
-    section(ui, "2. 3D layers, lenses & opacity", |ui| {
-        // Molecular Surface layer row + Customize popover
+    let mut open_garnish = false;
+    let s = &mut state.slice;
+    section(ui, "2. Complex display", |ui| {
         ui.horizontal(|ui| {
-            ui.checkbox(&mut s.surface.visible, RichText::new("Surface mesh").strong());
+            ui.weak("Inherits styles from Garnish.");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let surface_modified = !s.surface.color.is_default() || !ds.is_default_culling() || !ds.is_default_draw_mesh();
-                let now = ui.input(|i| i.time);
-                customize_popover(ui, "cx_surface_popover", surface_modified, |ui| {
-                    popover_header(ui, false, "Surface mesh layer", surface_modified, || {
-                        s.surface.color.reset();
-                        ds.reset_culling();
-                        if !ds.is_default_draw_mesh() {
-                            ds.reset_draw_mesh();
-                            ds.schedule_draw_surface_remesh(now, SURFACE_REMESH_DEBOUNCE_S);
-                        }
-                    });
-                    color_channel_control(
-                        ui,
-                        "cx_surface_color_lens",
-                        "Surface color",
-                        &mut s.surface.color,
-                        ChainColorLens::Fixed,
-                    );
-                    ui.label(RichText::new("Face culling:").strong());
-                    choice_combo(ui, "cx_surface_culling", &mut ds.culling);
-                    ui.separator();
-                    ui.label(RichText::new("Display meshing:").strong());
-                    ui.add_enabled_ui(ds.complex.is_some(), |ui| {
-                        ui.label("Resolution preset:");
-                        let prev_preset = ds.draw_preset;
-                        choice_combo(ui, "cx_surface_preset", &mut ds.draw_preset);
-                        let preset_changed = ds.draw_preset != prev_preset;
-                        let mut display_defaults = SurfaceParams::display();
-                        let params_changed = param_group_controls(
-                            ui,
-                            &mut ds.draw_mesh,
-                            Some(&mut display_defaults),
-                        );
-                        if preset_changed || params_changed {
-                            ds.schedule_draw_surface_remesh(now, SURFACE_REMESH_DEBOUNCE_S);
-                        }
-                    });
-                });
+                if ui.small_button("Edit in Garnish ->").clicked() {
+                    open_garnish = true;
+                }
             });
         });
-        if s.surface.visible {
-            slider(ui, "Alpha:", &mut s.surface.alpha, UNIT_RANGE);
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut s.surface.show_faces, "Faces");
-                ui.checkbox(&mut s.surface.show_wireframe, "Wireframe");
-            });
+
+        ui.checkbox(&mut s.show_surface, RichText::new("Surface mesh").strong());
+        if s.show_surface {
+            slider(ui, "Alpha:", &mut s.surface_alpha, UNIT_RANGE);
         }
 
-        ui.separator();
+        ui.checkbox(&mut s.show_cartoon, RichText::new("Cartoon ribbon").strong());
+        if s.show_cartoon {
+            slider(ui, "Alpha:", &mut s.cartoon_alpha, UNIT_RANGE);
+        }
 
-        // Cartoon Ribbon layer row + Customize popover
+        ui.checkbox(&mut s.show_spheres, RichText::new("Atom spheres (whole complex)").strong());
+        if s.show_spheres {
+            slider(ui, "Alpha:", &mut s.spheres_alpha, UNIT_RANGE);
+        }
+    });
+
+    section(ui, "3. Interface analysis", |ui| {
         ui.horizontal(|ui| {
-            ui.checkbox(&mut s.cartoon.visible, RichText::new("Cartoon ribbon").strong());
+            ui.label(RichText::new("3D interface boundary:").strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                customize_popover(ui, "cx_cartoon_popover", !s.cartoon.is_default_channels(), |ui| {
-                    popover_header(ui, false, "Cartoon ribbon layer", !s.cartoon.is_default_channels(), || {
-                        s.cartoon.reset_channels();
-                    });
-                    color_channel_control(
+                if s.boundary.mode != InterfaceDisplayMode::Off {
+                    presentation_popover(
                         ui,
-                        "cx_cartoon_color_lens",
-                        "Ribbon color",
-                        &mut s.cartoon.color,
-                        ChainColorLens::Fixed,
+                        "cx_boundary_pres",
+                        "Boundary presentation",
+                        &mut s.boundary.presentation,
+                        &BoundaryLayerStyle::default_presentation(),
+                        PresentationCaps {
+                            shading: true,
+                            culling: true,
+                            border: true,
+                            wireframe: true,
+                            fill_alpha: true,
+                        },
+                        false,
+                        |_, _| {},
                     );
-                    ui.label(RichText::new("Ribbon width scale:").strong());
-                    ui.add(Slider::new(&mut s.cartoon.width_scale, 0.3..=2.5).step_by(0.05).text("× scale"));
-                });
+                }
             });
         });
-        if s.cartoon.visible {
-            slider(ui, "Alpha:", &mut s.cartoon.alpha, UNIT_RANGE);
-        }
-
-        ui.separator();
-
-        // 3D Interface Boundary mesh layer
-        ui.label(RichText::new("3D interface boundary:").strong());
         choice_combo(ui, "cx_interface_mode", &mut s.boundary.mode);
         if s.boundary.mode != InterfaceDisplayMode::Off {
             slider(ui, "Alpha:", &mut s.boundary.alpha, UNIT_RANGE);
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut s.boundary.show_faces, "Faces");
-                ui.checkbox(&mut s.boundary.show_wireframe, "Wireframe");
-            });
         }
-        if s.boundary.mode == InterfaceDisplayMode::NegativeSpace {
-            if let Some(iface) = ds.active_interface() {
-                ui.colored_label(void_color, format!("Sub-solvent void volume: {:.1} Å³", iface.analysis_void_volume_a3));
-            }
+        if s.boundary.mode == InterfaceDisplayMode::NegativeSpace
+            && let Some(iface) = ds.active_interface()
+        {
+            ui.colored_label(void_color, format!("Sub-solvent void volume: {:.1} Å³", iface.analysis_void_volume_a3));
         }
 
         ui.separator();
 
-        // Interfacial Atom Spheres layer row + Customize popover
         ui.horizontal(|ui| {
-            ui.checkbox(&mut s.spheres.visible, RichText::new("Interfacial spheres").strong());
+            ui.checkbox(&mut s.interface_spheres_visible, RichText::new("Interface spheres").strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                customize_popover(ui, "cx_spheres_popover", !s.spheres.is_default_channels(), |ui| {
-                    popover_header(ui, false, "Interfacial spheres layer", !s.spheres.is_default_channels(), || {
-                        s.spheres.reset_channels();
-                    });
-                    color_channel_control(
-                        ui,
-                        "cx_sphere_fill_lens",
-                        "Sphere color",
-                        &mut s.spheres.fill,
-                        ColorLens::Fixed,
-                    );
-                    scalar_channel_control(
-                        ui,
-                        "cx_sphere_radius_mode",
-                        "Sphere radius",
-                        &mut s.spheres.radius,
-                        AtomSizeMode::Fixed,
-                        0.3..=2.5,
-                        "× vdW scale",
-                    );
-                });
+                sphere_popovers(ui, "cx_iface_spheres", "Interface spheres", &mut s.interface_spheres);
             });
         });
-        if s.spheres.visible {
-            slider(ui, "Alpha:", &mut s.spheres.alpha, UNIT_RANGE);
+        if s.interface_spheres_visible {
+            slider(ui, "Alpha:", &mut s.interface_spheres_alpha, UNIT_RANGE);
         }
     });
 
     let explode_params = &state.view_params.explode;
     let mean_complex_disp_a =
         ds.mean_chain_explode_distance_a() * s.complex_explode.value * explode_params.complex_explode_scale;
-    section(ui, "3. Explode separation", |ui| {
+    section(ui, "4. Explode separation", |ui| {
         ui.add_enabled_ui(ds.chains.len() > 1, |ui| {
             ui.label(RichText::new("Complex subunits:").strong());
             let label = format!("{:.1} Å", mean_complex_disp_a);
@@ -218,6 +159,10 @@ pub fn show(ui: &mut Ui, ds: &mut ViewerDataset, state: &mut UiState) {
             tween_presets(ui, &mut s.explode, &[("Closed", 0.0), ("Half", 0.5), ("Exploded", 1.0)]);
         });
     });
+
+    if open_garnish {
+        state.switch_tab(WorkspaceTab::Garnish);
+    }
 }
 
 /// Stateful monitoring for short term UI interactions in the 'Complex' workspace.

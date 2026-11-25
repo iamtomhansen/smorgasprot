@@ -16,6 +16,9 @@ use smorgasprot_core::{
     },
 };
 
+/// Above this many heavy atoms, new loads start at the coarsest preset and backface culling.
+const LARGE_COMPLEX_ATOM_THRESHOLD: usize = 15_000;
+
 /// Per-chain presentation geometry (alpha carbon trace + display molecular surface).
 #[derive(Serialize, Clone, Debug)]
 pub struct ChainVisualData {
@@ -222,9 +225,6 @@ pub struct ViewerDataset {
     draw_mesh_gen: u64,
 }
 
-/// Above this many heavy atoms, new loads start at the coarsest preset and backface culling.
-const LARGE_COMPLEX_ATOM_THRESHOLD: usize = 15_000;
-
 struct DisplayDefaults {
     draw_preset: GeodesicPreset,
     culling: SurfaceCulling,
@@ -379,6 +379,7 @@ impl ViewerDataset {
         self.interfaces.push(iface);
         let idx = self.interfaces.len() - 1;
         self.active_interface = Some(idx);
+        self.draw_mesh_gen = self.draw_mesh_gen.wrapping_add(1);
         Ok(idx)
     }
 
@@ -395,12 +396,14 @@ impl ViewerDataset {
             Some(active) if active > idx => Some(active - 1),
             other => other,
         };
+        self.draw_mesh_gen = self.draw_mesh_gen.wrapping_add(1);
     }
 
     /// Removes all computed interface partitions, leaving the bare 3D complex.
     pub fn remove_all_interfaces(&mut self) {
         self.interfaces.clear();
         self.active_interface = None;
+        self.draw_mesh_gen = self.draw_mesh_gen.wrapping_add(1);
     }
 
     /// Schedules a debounced presentation surface remesh after `delay_s` seconds of inactivity.
@@ -451,6 +454,7 @@ impl ViewerDataset {
         if let Some(iface) = self.interfaces.get_mut(active_idx) {
             iface.recompute_analysis(complex, &draw_chain_meshes, analysis_params)?;
         }
+        self.draw_mesh_gen = self.draw_mesh_gen.wrapping_add(1);
         Ok(())
     }
 

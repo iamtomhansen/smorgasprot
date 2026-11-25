@@ -269,6 +269,14 @@ impl eframe::App for SmorgasprotApp {
             ctx.request_repaint();
         }
 
+        ctx.set_visuals(if self.state.dark_mode { egui::Visuals::dark() } else { egui::Visuals::light() });
+        if self.state.dark_mode {
+            self.state.palette.chrome.viewport_bg = self.state.view_params.dark_viewport_bg;
+            self.state.palette.chrome.ink = egui::Color32::from_rgb(226, 232, 240);
+        } else {
+            self.state.palette.chrome.viewport_bg = self.state.view_params.viewport_bg;
+            self.state.palette.chrome.ink = egui::Color32::from_rgb(15, 23, 42);
+        }
         let mut actions = Vec::new();
 
         // Edge panels must be added before the central panel.
@@ -307,7 +315,9 @@ impl eframe::App for SmorgasprotApp {
                 RenderBackend::Auto | RenderBackend::Wgpu => self.gpu_surfaces.as_mut(),
                 RenderBackend::Glow => None,
             };
-            CentralPanel::default().show(ctx, |ui| viewport::show(ui, ds, &mut self.state, active_gpu));
+            CentralPanel::default().show(ctx, |ui| {
+                viewport::show(ui, ds, &mut self.state, &self.config.rendering, active_gpu);
+            });
         } else {
             CentralPanel::default().show(ctx, |ui| {
                 ui.centered_and_justified(|ui| ui.label("No complex loaded. Pass a structure file on the command line."));
@@ -315,12 +325,14 @@ impl eframe::App for SmorgasprotApp {
         }
 
         if self.state.panels.preferences {
+            let wboit_supported = self.gpu_surfaces.as_ref().is_some_and(GpuSurfaceRenderer::wboit_supported);
             panels::preferences::show(
                 ctx,
                 &mut self.state,
                 &mut self.config,
                 &self.startup_rendering,
                 self.gpu_surfaces.is_some(),
+                wboit_supported,
                 self.config_watcher.path(),
                 &mut actions,
             );

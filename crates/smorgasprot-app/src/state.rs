@@ -2,7 +2,9 @@
 //! Global session state lives here; each workspace tab encapsulates its state in a submodule.
 
 pub mod cartography;
-pub mod complex;
+pub mod garnish;
+pub mod presentation;
+pub mod slice;
 mod tween;
 pub mod view_params;
 
@@ -12,14 +14,16 @@ pub use crate::style::{
     VisualChannel,
 };
 pub use cartography::{AtomLayerStyle, CartographyViewSettings, EdgeLayerStyle, TerritoryLayerStyle};
-pub use complex::{
-    BoundaryLayerStyle, CartoonLayerStyle, ComplexViewSettings, InterfaceDisplayMode, SphereLayerStyle,
-    SurfaceCulling, SurfaceLayerStyle,
+pub use garnish::{CartoonRepStyle, GarnishViewSettings, SphereRepStyle, SurfaceRepStyle};
+pub use presentation::{
+    AlphaChannels, BorderStyle, CartoonStyle, DEFAULT_BORDER_COLOR, MeshShading, PresentationCaps, PresentationStyle,
+    SphereQuality, SurfaceCulling, WireframeStyle,
 };
+pub use slice::{BoundaryLayerStyle, InterfaceDisplayMode, SliceViewSettings};
 pub use tween::Tween;
 pub use view_params::{
     AtomDrawParams, ConfigParams, ExplodeParams, GridParams, LensParams, MorphParams, NavigationParams,
-    OpacityParams, RenderBackend, RenderingSettings, StatusParams, ViewParams,
+    OpacityParams, RenderBackend, RenderingSettings, StatusParams, TransparencyMode, ViewParams,
 };
 
 use crate::camera::CameraState;
@@ -38,10 +42,12 @@ pub trait Choice: Copy + PartialEq + 'static {
 /// Top-level workspace tab (Blender-style).
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq)]
 pub enum WorkspaceTab {
-    /// 3D macromolecular complex assembly setup: surfaces, cartoon, explode.
-    Complex,
+    /// Slicing structures into pairwise interfaces.
+    Slice,
     /// Unwrapped 2D/3D interface cartography ("Sandwich" workspace).
     Cartography,
+    /// Molecular presentation & styling studio ("Garnish" workspace).
+    Garnish,
 }
 
 /// Visibility toggles for collapsible side/bottom panels and floating windows.
@@ -68,9 +74,11 @@ impl Default for PanelVisibility {
 #[derive(Clone, Debug)]
 pub struct UiState {
     pub active_tab: WorkspaceTab,
+    pub dark_mode: bool,
     pub panels: PanelVisibility,
-    pub complex: ComplexViewSettings,
+    pub slice: SliceViewSettings,
     pub cartography: CartographyViewSettings,
+    pub garnish: GarnishViewSettings,
     pub selection: Selection,
     pub view_params: ViewParams,
     pub palette: Palette,
@@ -79,10 +87,12 @@ pub struct UiState {
 impl Default for UiState {
     fn default() -> Self {
         Self {
-            active_tab: WorkspaceTab::Complex,
+            active_tab: WorkspaceTab::Slice,
+            dark_mode: true,
             panels: PanelVisibility::default(),
-            complex: ComplexViewSettings::default(),
+            slice: SliceViewSettings::default(),
             cartography: CartographyViewSettings::default(),
+            garnish: GarnishViewSettings::default(),
             selection: Selection::default(),
             view_params: ViewParams::default(),
             palette: Palette::load_default(),
@@ -94,16 +104,18 @@ impl UiState {
     /// Camera of the currently active workspace tab.
     pub fn active_camera(&self) -> &CameraState {
         match self.active_tab {
-            WorkspaceTab::Complex => &self.complex.camera,
+            WorkspaceTab::Slice => &self.slice.camera,
             WorkspaceTab::Cartography => &self.cartography.camera,
+            WorkspaceTab::Garnish => &self.garnish.camera,
         }
     }
 
     /// Mutable camera of the currently active workspace tab.
     pub fn active_camera_mut(&mut self) -> &mut CameraState {
         match self.active_tab {
-            WorkspaceTab::Complex => &mut self.complex.camera,
+            WorkspaceTab::Slice => &mut self.slice.camera,
             WorkspaceTab::Cartography => &mut self.cartography.camera,
+            WorkspaceTab::Garnish => &mut self.garnish.camera,
         }
     }
 
@@ -111,8 +123,9 @@ impl UiState {
     pub fn switch_tab(&mut self, tab: WorkspaceTab) {
         if self.active_tab != tab {
             match self.active_tab {
-                WorkspaceTab::Complex => self.complex.finish_animations(),
+                WorkspaceTab::Slice => self.slice.finish_animations(),
                 WorkspaceTab::Cartography => self.cartography.finish_animations(),
+                WorkspaceTab::Garnish => self.garnish.finish_animations(),
             }
             self.active_tab = tab;
         }
@@ -122,8 +135,9 @@ impl UiState {
     pub fn step_animations(&mut self, dt: f32) -> bool {
         let rate = self.view_params.navigation.animation_rate_per_s;
         match self.active_tab {
-            WorkspaceTab::Complex => self.complex.step_animations(dt, rate),
+            WorkspaceTab::Slice => self.slice.step_animations(dt, rate),
             WorkspaceTab::Cartography => self.cartography.step_animations(dt, rate),
+            WorkspaceTab::Garnish => self.garnish.step_animations(dt, rate),
         }
     }
 }

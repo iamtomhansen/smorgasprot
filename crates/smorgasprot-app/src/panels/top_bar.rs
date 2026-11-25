@@ -57,20 +57,12 @@ pub fn show(ui: &mut Ui, datasets: &[ViewerDataset], active: usize, state: &mut 
                 ui.close_menu();
             }
             ui.separator();
+            ui.checkbox(&mut state.dark_mode, "Dark Mode");
+            ui.separator();
             ui.checkbox(&mut state.panels.left_controls, "Controls Panel");
             ui.checkbox(&mut state.panels.right_inspector, "Inspector Panel");
             ui.checkbox(&mut state.panels.status_bar, "Status Bar");
         });
-
-        ui.separator();
-        for (tab, label) in [
-            (WorkspaceTab::Complex, "🧊 1. Complex (3D Assembly)"),
-            (WorkspaceTab::Cartography, "🥪 2. Sandwich (2D/3D Cartography)"),
-        ] {
-            if ui.selectable_label(state.active_tab == tab, label).clicked() {
-                state.switch_tab(tab);
-            }
-        }
 
         // Right-aligned dataset picker (layout is right-to-left, so the label comes last).
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -84,5 +76,18 @@ pub fn show(ui: &mut Ui, datasets: &[ViewerDataset], active: usize, state: &mut 
             });
             ui.label("Dataset:");
         });
+    });
+
+    ui.separator();
+    ui.horizontal(|ui| {
+        for (tab, label) in [
+            (WorkspaceTab::Slice, "1. Slice (Interfaces)"),
+            (WorkspaceTab::Cartography, "2. Sandwich (2D/3D Cartography)"),
+            (WorkspaceTab::Garnish, "3. Garnish (Presentation)"),
+        ] {
+            if ui.selectable_label(state.active_tab == tab, label).clicked() {
+                state.switch_tab(tab);
+            }
+        }
     });
 }

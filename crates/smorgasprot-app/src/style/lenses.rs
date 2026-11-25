@@ -47,7 +47,7 @@ pub fn chain_cartoon_color(
 }
 
 /// Samples the appropriate continuous [`ColorMap`] on `palette` for a normalized `[0, 1]` [`ScalarMetric`].
-fn sample_metric_color(metric: ScalarMetric, t: f32, palette: &Palette) -> Color32 {
+pub(crate) fn sample_metric_color(metric: ScalarMetric, t: f32, palette: &Palette) -> Color32 {
     match metric {
         ScalarMetric::ClashSeverity => palette.charge.sample(t),
         ScalarMetric::BuriedSasa
@@ -361,7 +361,7 @@ fn format_atom_value(node: &AtomNode, ch: LabelValueChannel) -> Option<String> {
     }
 }
 
-fn aa_chemistry_color(res_name: &str, aliphatic_score: f32, params: &LensParams, palette: &Palette) -> Color32 {
+pub(crate) fn aa_chemistry_color(res_name: &str, aliphatic_score: f32, params: &LensParams, palette: &Palette) -> Color32 {
     let ch = &palette.aa_chemistry;
     if aliphatic_score >= params.aliphatic_threshold {
         return ch.aliphatic;

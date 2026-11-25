@@ -1,59 +1,102 @@
-# Engineering Roadmap
+# Engineering & Rendering Roadmap
 
 ## Milestone Overview
 
 ```
-Phase 1: Core Ingestion, Spatial Grid & ΔSASA Extraction (Done)
+Phases 1–3: Core Biophysical Extraction, Unwrapping & Initial Interactive Viewer (Done)
    │
    ▼
-Phase 2: Tangent-Plane SVD, Coupled 2D Relaxation & Voronoi Territory Contours (Done)
+Phase 4: WGPU Pipeline Migration, Unified OIT & Cartography GPU Rendering (Done)
    │
    ▼
-Phase 3: Initial Interactive HTML5 Canvas Viewer, Gizmo, Sidebars & Context Menu (Done)
-   │
-   ▼
-Phase 4: Module-by-Module Code Audit + Tabbed [Complex | Interface] Live Rust Workspace (Current)
-   │
-   ▼
-Phase 5: Live Redesign Workbench (Rotamers, χ-Minimization, Mutation & PDB/mmCIF Export)
+Phase 5: Garnish Workspace, Composable Presentation & MolViz Roadmap (Current)
+   ├── 5.1 Composable PresentationStyle, Slice vs. Interface Split & Garnish Tab
+   ├── 5.2 Expanded Visual Channel Embeddings (AaChemistry, B-factor Scaling/Color)
+   ├── 5.3 Helix–Sheet–Loop DSSP Protein Cartoons
+   ├── 5.4 Ball-and-Stick & Per-Selection Representation Layers
+   └── 5.5 SVG Vector Export & Live Redesign Workbench
 ```
 
 ---
 
-## Phase 1–3 — Initial Prototype & Core Engine (Completed)
+## Completed Foundation (Phases 1–4)
 
-* [x] **1.1–1.5 Core Biophysical Extraction:** `pdbtbx` loader, 3D `SpatialGrid`, 72-point Fibonacci sphere $\Delta\text{SASA}$, and VdW clash / H-bond / salt bridge / buried unsatisfied polar classifier.
-* [x] **2.1–2.4 Metric Surface Unwrapping:** Weighted $3 \times 3$ Jacobi SVD tangent frame, 160-step coupled 2D spring + hard-core repulsion + cross-contact registration solver, and Voronoi-clipped Chaikin residue territory contours.
-* [x] **3.1–3.4 Interactive `<canvas>` Viewport:** Continuous $t \in [0, 1]$ (3D $\leftrightarrow$ Bas-Relief $\leftrightarrow$ 2D) and $\theta_{\text{book}} \in [0, 1]$ (Overlay $\leftrightarrow$ Open-Book Butterfly) sliders, Blender-style 3D orientation gizmo, collapsible/resizable sidebars, and custom right-click context menu.
-
----
-
-## Phase 4 — Line-by-Line Code Audit & Tabbed `[Complex | Interface]` Workspace (In Progress)
-
-**Goal:** Audit every module in the codebase together while refactoring from static `Binder`/`Target` loading to the full multi-chain **`[Complex]` $\to$ `[Interface]`** tabbed workflow powered by live Rust computation.
-
-* [ ] **4.1 Module-by-Module Code Audit & Refactor:**
-  1. **[`model.rs`](file:///mnt/shared/code/smorgasprot/crates/smorgasprot-core/src/model.rs) (In Review):** Replace `PartnerRole::Target | Binder` with symmetric `InterfaceSide::GroupA | GroupB` + arbitrary-named `PartnerGroup { side, name, chain_ids }`, add `ChainRecord` / `ChainIdx` so `ComplexStructure` holds *all* chains in the file, and add `SurfaceMesh`.
-  2. **[`ingest.rs`](file:///mnt/shared/code/smorgasprot/crates/smorgasprot-core/src/ingest.rs):** Audit `pdbtbx` ingestion and update `load_complex` to load all chains in a structure without pre-filtering to two chains.
-  3. **[`spatial.rs`](file:///mnt/shared/code/smorgasprot/crates/smorgasprot-core/src/spatial.rs):** Audit the 3D voxel hash grid.
-  4. **[`sasa.rs`](file:///mnt/shared/code/smorgasprot/crates/smorgasprot-core/src/sasa.rs) & [`physics.rs`](file:///mnt/shared/code/smorgasprot/crates/smorgasprot-core/src/physics.rs):** Audit Shrake-Rupley $\Delta\text{SASA}$ and interaction classification parameterized by active `(GroupA, GroupB)` chain membership.
-  5. **[`flatten.rs`](file:///mnt/shared/code/smorgasprot/crates/smorgasprot-core/src/flatten.rs) & [`contour.rs`](file:///mnt/shared/code/smorgasprot/crates/smorgasprot-core/src/contour.rs):** Audit SVD tangent plane, coupled 2D spring relaxation, and Voronoi-clipped territory contours.
-  6. **`surface.rs` (New Core Module):** Implement 3D Marching Cubes molecular surface mesh per chain (with `nearest_atom` vertex mapping for instant interface vertex highlighting) and the approximated inter-chain interface sheet mesh for Cartoon mode.
-  7. **[`main.rs`](file:///mnt/shared/code/smorgasprot/crates/smorgasprot-app/src/main.rs) & [`viewport.rs`](file:///mnt/shared/code/smorgasprot/crates/smorgasprot-app/src/viewport.rs):** Audit and upgrade the app to a live Rust server / WASM bridge supporting the **`[1. Complex]`** tab (chain assignment, group naming, Surface/Cartoon/Spheres + independent Alphas, desaturated unassigned chains, live vertex highlighting, and 3D Explode slider) and **`[2. Interface]`** tab.
-  8. [x] **Dynamic structure loading:** File → Open Structure… and drag-and-drop both run the load pipeline on a background thread (`jobs::JobQueue`) and replace the whole workspace on success, with a status-bar message reporting elapsed load time. Session save/reload and a live Parameters/Recompute window (`persistence.rs`, `panels/parameters.rs`) remain future work — drafted but not wired in yet.
-  9. [x] **GPU molecular surface rendering:** migrated the renderer to `wgpu` and moved chain molecular surfaces off the CPU `DrawList` painter's algorithm onto a dedicated `viewport/gpu_surface.rs` pipeline with a real, shared depth buffer per dataset — an effectively-opaque chain (`alpha >= 0.999`) depth-writes (standard z-buffering, so alpha=1 chains always fully occlude, regardless of draw order), a translucent one depth-tests only (correctly hidden behind opaque geometry, blends with other translucent layers in draw order rather than a true sort) — with a graceful CPU fallback when no wgpu backend is available. (An earlier attempt used Weighted Blended OIT instead; reverted after it turned out to be the wrong tool — it has no concept of one fragment fully occluding another, so it could never guarantee opacity at alpha=1 no matter how it was tuned.) **Not yet done, tracked here:** cartoon ribbons and the atom-sphere stand-ins (and, later, true 3D cartoon/sphere geometry) still render on the CPU `DrawList` and are always painted over the GPU surface layer regardless of true relative depth. The long-term direction is to move all Complex-tab 3D primitives onto one shared GPU target, so depth-compositing between every layer is correct and `DrawList` becomes a true no-wgpu fallback rather than the primary renderer for anything.
+* [x] **Core Biophysical & Flattening Engine (`smorgasprot-core`):** `pdbtbx` PDB/mmCIF ingestion (with `.gz` & in-memory parsing), 3D `SpatialGrid`, 72-point Fibonacci $\Delta\text{SASA}$, clash/H-bond/salt-bridge physics, Jacobi SVD tangent frame, coupled 2D spring relaxation, Voronoi residue contours, Marching Cubes chain surfaces (`GeodesicPreset`), and derived interface boundary geometry (`SmoothedSdf`, `ContactEnvelope`, `NegativeSpace`).
+* [x] **Unified `wgpu` Renderer (`smorgasprot-app::render`):** Migrated both Slice and Cartography ("Sandwich") workspaces onto one shared depth-tested offscreen target with CentroidSorted, WBOIT, and Depth Peeling transparency modes, linear-space blending, analytic 3D billboard sphere shading + `frag_depth`, `GeodesicPreset` unit spheres, calibrated 8-sided 3D prism cartoons, seamless polyline joins + dashed lines, and ChimeraX-style silhouette display borders (`outline.wgsl`). Graceful CPU `DrawList` fallback retained for Glow.
+* [x] **App Configuration & WebAssembly:** Hot-reloadable `smorgasprot.ron` config (`ViewParams`, `AnalysisParams`, `RenderingSettings`), live Preferences editor (including `viewport_bg` and `grid_color`), and WebGL2-compatible `wasm32-unknown-unknown` target.
 
 ---
 
-## Phase 5 — Live Redesign Workbench (Rotamers, $\chi$-Minimization, Mutation & Export)
+## Phase 5 — Composable Presentation & `Garnish` Architecture (Current)
 
-* [ ] **5.1 Sidechain Forward Kinematics & Rotamer Table (`rotamers.rs`):** Embed ideal amino acid sidechain internal coordinates and backbone-dependent Lovell/Dunbrack rotamer table.
-* [ ] **5.2 Local $\chi$-Angle Minimizer (`minimize.rs`):** Coordinate-descent / Nelder-Mead torsion optimization on either group of the interface.
-* [ ] **5.3 Pinned Territory Updates & Structure Export:** Live preview inside pinned 2D territories, **"Re-relax 2D Map"** trigger, and `.pdb`/`.cif` export.
+### Core Architectural Principle: Composition Over Inheritance
+
+Every visual representation composes three orthogonal concerns as flat Rust data structures:
+1. **Target / Scope** — *What* geometry is drawn (`Dataset` chains/selections vs. `Interface` derived products).
+2. **Channel Mapping (`Channels` popover)** — *How* biophysical data maps to visual properties (`Fill color`, `Radius / Width scale`, `Mobility mode`, `Labels`).
+3. **Presentation Style (`Presentation` popover)** — *How* geometry is built and rasterized (`Geometry / Quality`, `Shading`, `Face Culling`, `Display Border`, `Wireframe`, and per-channel `AlphaChannels`). **Geometry and SDF meshing settings live inside Presentation.**
+
+### Workspace Split: `1. Slice` | `2. Sandwich` | `3. Garnish`
+
+* **`1. Slice` (Assembly & Interface Inspection):**
+  * Focuses on chain partitioning, group naming, palette selection, explode sliders, and **Interface Analysis** layers (**3D Interface Boundary** + **Interface Spheres** with contact lenses like `Interactions` and `BuriedSasa`).
+  * Retains lightweight visibility/master-opacity toggles for molecular layers (`Surface`, `Cartoon`, `Spheres`), automatically inheriting the full channel & presentation styling calibrated in **Garnish**.
+* **`2. Sandwich` (2D/3D Interface Cartography):**
+  * Unwrapped interface map with flatten/open-book morphing, residue territories, contact edges, and labels.
+* **`3. Garnish` (PyMOL/ChimeraX-Style Presentation Studio):**
+  * Dedicated workspace for calibrating rich molecular representations (`Surface`, `Cartoon`, `Atom Spheres`, and upcoming `Ball-and-Stick` / per-selection layers) without interface clutter.
+  * Each representation row uses dedicated **`Channels`** and **`Presentation`** popovers instead of a single catch-all drawer.
+
+### Composable State Model (`PresentationStyle<Q>`)
+
+```rust
+pub struct AlphaChannels {
+    pub master: f32,    // Layer master fade multiplier
+    pub fill: f32,      // Face / interior opacity
+    pub border: f32,    // Silhouette outline opacity
+    pub wireframe: f32, // Triangle edge overlay opacity
+}
+
+pub struct BorderStyle {
+    pub width_px: f32,
+    pub color: Color32,
+}
+
+pub struct WireframeStyle {
+    pub enabled: bool,
+    pub width_px: f32,
+    pub color: Option<Color32>, // None = derived palette::edge_color(fill)
+}
+
+pub struct PresentationStyle<Q = ()> {
+    pub quality: Q,
+    pub shading: MeshShading,    // Flat | Smooth | Unlit
+    pub culling: SurfaceCulling, // None | Backfaces | Frontfaces
+    pub border: BorderStyle,
+    pub wireframe: WireframeStyle,
+    pub alphas: AlphaChannels,
+}
+```
+
+Using a generic capability descriptor (`PresentationCaps`), one shared `presentation_popover` widget renders consistent **Presentation** controls across every Slice, Interface, and Garnish object.
 
 ---
 
-## Deferred / Future v2 Extensions
+### Milestone Checklist
 
-* **Multiple Bookmarked Interfaces in `Complex` Tab:** Define multiple named interface pairs (e.g. `Interface 1: A <-> C`, `Interface 2: A <-> B`) in the `Complex` tab and jump between them in the `Interface` tab.
-* **Intra-Chain Self-Interfaces & Residue-Range Selectors:** Support sub-chain range syntax (`Chain A & resi 50–150`) with covalent linker clash exclusion to unwrap domain–domain interfaces within a single polypeptide chain.
+* [x] **5.1 Domain Split, Composable Presentation & `Garnish` Tab:**
+  * Extract `AlphaChannels`, `BorderStyle`, `WireframeStyle`, `PresentationStyle<Q>`, and `PresentationCaps`.
+  * Thread independent `border_alpha` through `GpuMeshDraw`, `GpuLineDraw`, and `GpuDiscDraw`.
+  * Separate **Interface Spheres** (Slice tab → Interface section) from **Complex Spheres** (all-atom molecular sphere representation).
+  * Add `WorkspaceTab::Garnish` (`3. Garnish`) owning shared molecular representation styles that carry directly into `1. Slice`, and replace single "Customize" popovers with dedicated **Channels** and **Presentation** popovers.
+* [ ] **5.2 Expanded Visual Channel Embeddings:**
+  * Support full per-atom/per-residue channel embeddings (`AaChemistry`, `Bfactor` / `pLDDT`, `Chain`, `InterfaceSide`) across Surfaces, Cartoons (`Prism8` vertex colors), and Spheres.
+  * Allow scalar channels (such as B-factor / mobility) to modulate cartoon ribbon thickness (putty/sausage style) in addition to sphere radii.
+* [ ] **5.3 Helix–Sheet–Loop Protein Cartoons:**
+  * Drive procedural `SurfaceMesh` spline ribbons from `smorgasprot-core::dssp` (`Helix`, `Sheet`, `Coil`) with wide helical ribbons, β-strand arrows, and slender `Prism8` loops inheriting shading, OIT, and silhouette borders.
+* [ ] **5.4 Ball-and-Stick & Per-Selection Representations:**
+  * Add covalent bond perception (`smorgasprot-core`) rendered as 3D bond capsules/cylinders + scaled spheres.
+  * Evolve `GarnishViewSettings` into `Vec<RepresentationLayer>` with selectable `AtomSelection` targets (`All`, `Chain`, `Protein`, `Ligand`, `Interface`, residue ranges), matching PyMOL/ChimeraX workflows.
+* [ ] **5.5 SVG Vector Export & Live Redesign Workbench:**
+  * Add a depth-sorted SVG vector exporter over the shared `GpuMeshDraw` / `GpuPolyTri` / `GpuLineDraw` / `GpuDiscDraw` scene descriptors + text labels.
+  * Complete live rotamer / $\chi$-angle minimization (`rotamers.rs`, `minimize.rs`) and `.pdb`/`.cif` structure export.

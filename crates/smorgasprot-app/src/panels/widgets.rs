@@ -1,7 +1,9 @@
 //! Small reusable widgets shared by the side panels.
 //! Keeps section styling, sliders, and combo boxes consistent across tabs.
 
-use crate::state::{Choice, Tween};
+use crate::state::{
+    AtomSizeMode, Choice, ColorLens, NodeStrokeColorLens, PresentationCaps, PresentationStyle, SphereRepStyle, Tween,
+};
 use crate::style::ChromePalette;
 use egui::{Color32, ComboBox, RichText, Slider, Ui, vec2};
 use smorgasprot_core::params::{ParamDefault, ParamGroup, ParamMeta, ParamVisitor};
@@ -124,12 +126,21 @@ pub fn channel_combo<T: Choice>(ui: &mut Ui, id_salt: &str, value: &mut T) {
 /// Minimum width of a layer customization popover so dropdown labels fit cleanly.
 pub const POPOVER_MIN_WIDTH: f32 = 290.0;
 
-/// Toggle button that opens a layer customization popover (`egui::Area` so nested `ComboBox`es work).
-/// Closes automatically when clicking outside the popover or pressing `Escape`.
-pub fn customize_popover(ui: &mut Ui, id_salt: &str, modified: bool, add_contents: impl FnOnce(&mut Ui)) {
+/// Toggle button opening a floating popover with click-outside and Escape dismissal.
+pub fn named_popover(
+    ui: &mut Ui,
+    id_salt: &str,
+    base_label: &str,
+    modified: bool,
+    add_contents: impl FnOnce(&mut Ui),
+) {
     let state_key = egui::Id::new("active_customize_popover");
     let this_id = ui.make_persistent_id(id_salt);
-    let label = if modified { "Customize*..." } else { "Customize..." };
+    let label = if modified {
+        format!("{base_label}*")
+    } else {
+        base_label.to_string()
+    };
     let resp = ui.button(label);
     let toggled_this_frame = resp.clicked();
     if toggled_this_frame {
@@ -142,8 +153,7 @@ pub fn customize_popover(ui: &mut Ui, id_salt: &str, modified: bool, add_content
 
     let is_open = ui.ctx().data(|d| d.get_temp::<Option<egui::Id>>(state_key)).flatten() == Some(this_id);
     if is_open {
-        // Snapshot whether a nested ComboBox popup was open at the start of the frame so selecting an item
-        // from the ComboBox doesn't count as clicking outside the outer popover.
+        // Snapshot nested popup state before drawing so ComboBox selection doesn't close the outer popover.
         let nested_popup_was_open = ui.ctx().memory(|m| m.any_popup_open());
         let pos = resp.rect.left_bottom() + vec2(0.0, 4.0);
         let area_resp = egui::Area::new(this_id)
@@ -170,6 +180,156 @@ pub fn customize_popover(ui: &mut Ui, id_salt: &str, modified: bool, add_content
             }
         }
     }
+}
+
+/// Legacy single-drawer popover wrapper retained for Cartography controls.
+pub fn customize_popover(ui: &mut Ui, id_salt: &str, modified: bool, add_contents: impl FnOnce(&mut Ui)) {
+    named_popover(ui, id_salt, "Customize...", modified, add_contents);
+}
+
+/// Shared `Presentation` popover for any representation's quality/geometry, shading, culling, border, wireframe, and alphas.
+/// Returns `true` when "Reset Layer" was clicked so callers can reset any sibling state cleanly.
+#[allow(clippy::too_many_arguments)]
+pub fn presentation_popover<Q: PartialEq + Copy + 'static>(
+    ui: &mut Ui,
+    id_salt: &str,
+    title: &str,
+    pres: &mut PresentationStyle<Q>,
+    baseline: &PresentationStyle<Q>,
+    caps: PresentationCaps,
+    extra_modified: bool,
+    extra_geometry: impl FnOnce(&mut Ui, &mut PresentationStyle<Q>),
+) -> bool {
+    let mut reset_clicked = false;
+    let modified = !pres.is_default_vs(baseline) || extra_modified;
+    named_popover(ui, id_salt, "Presentation", modified, |ui| {
+        popover_header(ui, false, title, modified, || {
+            *pres = baseline.clone();
+            reset_clicked = true;
+        });
+        extra_geometry(ui, pres);
+        if caps.shading {
+            ui.label("Shading:");
+            choice_combo(ui, &format!("{id_salt}_shading"), &mut pres.shading);
+        }
+        if caps.culling {
+            ui.label("Face culling:");
+            choice_combo(ui, &format!("{id_salt}_culling"), &mut pres.culling);
+        }
+        if caps.fill_alpha {
+            ui.horizontal(|ui| {
+                ui.label("Fill alpha:");
+                ui.add(Slider::new(&mut pres.alphas.fill, 0.0..=1.0).step_by(0.05));
+            });
+        }
+        if caps.border {
+            ui.separator();
+            ui.label(RichText::new("Display border").strong());
+            ui.horizontal(|ui| {
+                ui.color_edit_button_srgba(&mut pres.border.color);
+                ui.add(Slider::new(&mut pres.border.width_px, 0.0..=6.0).step_by(0.5).text("px"));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Border alpha:");
+                ui.add(Slider::new(&mut pres.alphas.border, 0.0..=1.0).step_by(0.05));
+            });
+        }
+        if caps.wireframe {
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut pres.wireframe.enabled, RichText::new("Wireframe").strong());
+                if pres.wireframe.enabled {
+                    ui.add(Slider::new(&mut pres.wireframe.width_px, 0.5..=3.0).step_by(0.25).text("px"));
+                }
+            });
+            if pres.wireframe.enabled {
+                ui.horizontal(|ui| {
+                    ui.label("Wireframe alpha:");
+                    ui.add(Slider::new(&mut pres.alphas.wireframe, 0.0..=1.0).step_by(0.05));
+                });
+            }
+        }
+    });
+    reset_clicked
+}
+
+/// Renders dedicated `Channels` and `Presentation` popovers for a [`SphereRepStyle`].
+pub fn sphere_popovers(ui: &mut Ui, id_prefix: &str, title: &str, rep: &mut SphereRepStyle) {
+    let baseline = SphereRepStyle::default_presentation();
+    let pres_id = format!("{id_prefix}_pres");
+    let chan_id = format!("{id_prefix}_chan");
+    let is_mesh = rep.presentation.quality.geodesic_preset().is_some();
+    presentation_popover(
+        ui,
+        &pres_id,
+        &format!("{title} presentation"),
+        &mut rep.presentation,
+        &baseline,
+        PresentationCaps {
+            shading: false,
+            culling: true,
+            border: false,
+            wireframe: is_mesh,
+            fill_alpha: true,
+        },
+        false,
+        |ui, pres| {
+            ui.label(RichText::new("Quality / Geometry").strong());
+            choice_combo(ui, &format!("{id_prefix}_quality"), &mut pres.quality);
+            if pres.quality.geodesic_preset().is_some() {
+                ui.label("Shading:");
+                choice_combo(ui, &format!("{id_prefix}_shading"), &mut pres.shading);
+                ui.separator();
+                ui.label(RichText::new("Display border").strong());
+                ui.horizontal(|ui| {
+                    ui.color_edit_button_srgba(&mut pres.border.color);
+                    ui.add(Slider::new(&mut pres.border.width_px, 0.0..=6.0).step_by(0.5).text("px"));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Border alpha:");
+                    ui.add(Slider::new(&mut pres.alphas.border, 0.0..=1.0).step_by(0.05));
+                });
+            } else {
+                ui.horizontal(|ui| {
+                    ui.label("Border alpha:");
+                    ui.add(Slider::new(&mut pres.alphas.border, 0.0..=1.0).step_by(0.05));
+                });
+            }
+        },
+    );
+    named_popover(ui, &chan_id, "Channels", !rep.is_default_channels(), |ui| {
+        popover_header(ui, false, &format!("{title} channels"), !rep.is_default_channels(), || {
+            rep.reset_channels();
+        });
+        color_channel_control(ui, &format!("{id_prefix}_fill"), "Fill color", &mut rep.fill, ColorLens::Fixed);
+        scalar_channel_control(
+            ui,
+            &format!("{id_prefix}_radius"),
+            "Radius scale",
+            &mut rep.radius,
+            AtomSizeMode::Fixed,
+            0.3..=2.5,
+            "× vdW scale",
+        );
+        if rep.presentation.quality.geodesic_preset().is_none() {
+            color_channel_control(
+                ui,
+                &format!("{id_prefix}_stroke_col"),
+                "Border color",
+                &mut rep.stroke_color,
+                NodeStrokeColorLens::Fixed,
+            );
+            scalar_channel_control(
+                ui,
+                &format!("{id_prefix}_stroke_w"),
+                "Border width",
+                &mut rep.stroke_width,
+                AtomSizeMode::Fixed,
+                0.0..=5.0,
+                "px",
+            );
+        }
+    });
 }
 
 /// Title row inside a layer customization popover with a layer-wide reset button and optional close button.

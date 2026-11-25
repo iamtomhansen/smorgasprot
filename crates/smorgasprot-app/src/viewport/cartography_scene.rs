@@ -1,22 +1,22 @@
-//! Cartography ("Sandwich") tab scene: atoms morphing between true 3D and the flat 2D map, with territories
-//! indicating amino acid residues (and/or small molecules) and edges indicating contacts. Territories,
-//! backbone, contact edges, and atoms depth-sort through the same CPU `DrawList` painter's algorithm as
-//! the Complex tab; text labels stay a final always-on-top pass (no text primitive in `DrawList`).
-//!
-//! TODO: still CPU painter's-algorithm depth, not a real GPU depth buffer — revisit if/when the Complex
-//! tab's own GPU migration (`render/surface.rs`) reaches this far.
+//! Cartography ("Sandwich") tab scene: atoms morphing between true 3D and the flat 2D map, with
+//! territories for residues and edges for contacts. All spatial layers render via the shared `wgpu`
+//! depth-tested pipeline (with the CPU `DrawList` kept as a fallback for Glow); hover rings and text
+//! labels always draw on top via `egui::Painter`.
 
 use super::draw_list::DrawList;
+use super::grid;
 use super::plane_space::PlaneFrame;
 use crate::camera::CameraState;
 use crate::dataset::{InterfaceViewData, ViewerDataset};
+use crate::render::{GpuDiscDraw, GpuLineDraw, GpuPolyTri, GpuSurfaceRenderer};
 use crate::state::{
-    AtomDrawParams, AtomSizeMode, CartographyViewSettings, ColorLens, EdgeColorLens, EdgeWidthLens, LensParams,
-    NodeStrokeColorLens, Selection, TerritoryColorLens, UiState,
+    AtomDrawParams, AtomSizeMode, CartographyViewSettings, ColorLens, EdgeColorLens, EdgeWidthLens, GridParams,
+    LensParams, NodeStrokeColorLens, RenderingSettings, Selection, TerritoryColorLens, UiState,
 };
 use crate::style::{Palette, lenses, palette, sizing};
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Stroke, vec2};
-use smorgasprot_core::{AtomNodeIdx, InterfaceSide};
+use glam::Vec3;
+use smorgasprot_core::{AtomNodeIdx, InterfaceEdge, InterfaceSide, ResidueTerritory};
 
 /// Sides at or below this opacity are not drawn.
 const MIN_DRAW_ALPHA: f32 = 0.02;
@@ -24,6 +24,8 @@ const MIN_DRAW_ALPHA: f32 = 0.02;
 const MIN_INTERACTIVE_ALPHA: f32 = 0.05;
 /// Maximum pointer distance (px) for hovering an atom.
 const PICK_RADIUS_PX: f32 = 14.0;
+/// View-ray tie-break offset (Å) separating coplanar Sandwich layers above `peel_z_eps` (0.03 Å).
+const COPLANAR_LAYER_STEP_A: f32 = 0.06;
 
 // Hinge (open-book butterfly line)
 /// Half-length (Å) of the drawn open-book hinge line.
@@ -75,16 +77,20 @@ struct Ctx<'a> {
     s: &'a CartographyViewSettings,
     lenses: &'a LensParams,
     atom_draw: &'a AtomDrawParams,
+    grid: &'a GridParams,
+    grid_color: Color32,
     pal: &'a Palette,
 }
 
 impl Ctx<'_> {
-    /// Morphs a point by the current flatten/butterfly state and projects it to screen, returning
-    /// `(position, depth)` — depth follows `CameraState::project`'s "larger is nearer" convention,
-    /// the same one `DrawList` sorts by.
+    /// Morphs a point into plane-local `(u, v, n)` under the current flatten/butterfly state.
+    fn morph_local(&self, world: [f32; 3], uv: [f32; 2], side: InterfaceSide) -> Vec3 {
+        self.frame.morph(world, uv, side, self.s.flatten.value, self.s.book.value)
+    }
+
+    /// Morphs a point and projects it to screen `(position, depth)` (larger depth is nearer).
     fn morph(&self, world: [f32; 3], uv: [f32; 2], side: InterfaceSide) -> (Pos2, f32) {
-        let local = self.frame.morph(world, uv, side, self.s.flatten.value, self.s.book.value);
-        self.camera.project(local, self.rect)
+        self.camera.project(self.morph_local(world, uv, side), self.rect)
     }
 }
 
@@ -118,12 +124,21 @@ pub fn pick_atom(ds: &ViewerDataset, s: &CartographyViewSettings, nodes: &[(Pos2
 }
 
 /// Paints the Cartography ("Sandwich") tab; `nodes` comes from [`project_nodes`] for this frame.
-pub fn paint(painter: &Painter, rect: Rect, ds: &ViewerDataset, state: &UiState, nodes: &[(Pos2, f32)]) {
+pub fn paint(
+    painter: &Painter,
+    rect: Rect,
+    ds: &ViewerDataset,
+    state: &UiState,
+    rendering: &RenderingSettings,
+    nodes: &[(Pos2, f32)],
+    gpu_surfaces: Option<&mut GpuSurfaceRenderer>,
+) {
     let Some(iface) = ds.active_interface() else {
+        grid::paint(painter, rect, state.active_camera(), &state.view_params.grid, state.view_params.grid_color);
         painter.text(
             rect.center(),
             Align2::CENTER_CENTER,
-            "No active interface selected — select or create an interface in the Complex tab.",
+            "No active interface selected — select or create an interface in the Slice tab.",
             FontId::proportional(14.0),
             palette::with_alpha(state.palette.chrome.ink, 0.55),
         );
@@ -140,21 +155,18 @@ pub fn paint(painter: &Painter, rect: Rect, ds: &ViewerDataset, state: &UiState,
         s,
         lenses: &state.view_params.lenses,
         atom_draw: &state.view_params.atom_draw,
+        grid: &state.view_params.grid,
+        grid_color: state.view_params.grid_color,
         pal: &state.palette,
     };
 
-    paint_hinge(&cx);
-
-    let mut list = DrawList::default();
-    if s.show_backbone {
-        paint_backbone(&cx, &mut list);
-    }
-    if s.territories.visible {
-        paint_territories(&cx, &state.selection, &mut list);
-    }
-    paint_edges(&cx, nodes, &mut list);
-    let hover_ring = paint_atoms(&cx, &state.selection, nodes, &mut list);
-    list.paint(painter);
+    let hover_ring = if let Some(gpu) = gpu_surfaces
+        && let Some(ring) = paint_gpu_scene(&cx, &state.selection, rendering, nodes, gpu)
+    {
+        ring
+    } else {
+        paint_cpu_scene(&cx, &state.selection, nodes)
+    };
 
     // The hover ring is a UI affordance, not molecular content — always on top, like labels.
     if let Some((pos, radius)) = hover_ring {
@@ -163,19 +175,263 @@ pub fn paint(painter: &Painter, rect: Rect, ds: &ViewerDataset, state: &UiState,
     paint_labels(&cx, nodes);
 }
 
+/// Plane-local unit vector pointing toward the orthographic viewer (inverse of `CameraState::rotate`).
+fn camera_toward_vec(camera: &CameraState) -> Vec3 {
+    let (sy, cy) = camera.yaw.sin_cos();
+    let (sp, cp) = camera.pitch.sin_cos();
+    Vec3::new(-sy * cp, sp, cy * cp)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_gpu_scene(
+    cx: &Ctx,
+    selection: &Selection,
+    rendering: &RenderingSettings,
+    nodes: &[(Pos2, f32)],
+    gpu: &mut GpuSurfaceRenderer,
+) -> Option<Option<(Pos2, f32)>> {
+    let cam_step = camera_toward_vec(cx.camera) * COPLANAR_LAYER_STEP_A;
+    let mut poly_draws = Vec::new();
+    let mut line_draws = Vec::new();
+    let mut disc_draws = Vec::new();
+
+    if cx.grid.alpha > 0.004 && cx.grid.grid_extent_a > 0.0 {
+        grid::for_each_segment(cx.grid, |a, b| {
+            line_draws.push(GpuLineDraw {
+                a,
+                b,
+                prev: None,
+                next: None,
+                color: cx.grid_color,
+                alpha: cx.grid.alpha,
+                width_pt: 1.0,
+                dash: None,
+                border_pt: 0.0,
+                border_color: Color32::TRANSPARENT,
+                border_alpha: 1.0,
+            });
+        });
+    }
+
+    if let Some(([a, b], color, width_pt)) = hinge_segment(cx) {
+        let off = cam_step;
+        line_draws.push(GpuLineDraw {
+            a: a + off,
+            b: b + off,
+            prev: None,
+            next: None,
+            color,
+            alpha: 1.0,
+            width_pt,
+            dash: None,
+            border_pt: 0.0,
+            border_color: Color32::TRANSPARENT,
+            border_alpha: 1.0,
+        });
+    }
+
+    if cx.s.territories.visible {
+        for_each_territory(cx, selection, |terr, pts, fill, border, side_idx| {
+            if let Some((color, alpha)) = fill {
+                let off = cam_step * (2.0 + side_idx as f32);
+                for tri in &terr.contour_triangles {
+                    let [i0, i1, i2] = tri.map(|i| i as usize);
+                    poly_draws.push(GpuPolyTri {
+                        pts: [pts[i0] + off, pts[i1] + off, pts[i2] + off],
+                        color,
+                        alpha,
+                    });
+                }
+            }
+            if let Some((color, alpha, width_pt)) = border {
+                let off = cam_step * (4.0 + side_idx as f32);
+                let n = pts.len();
+                for i in 0..n {
+                    line_draws.push(GpuLineDraw {
+                        a: pts[i] + off,
+                        b: pts[(i + 1) % n] + off,
+                        prev: (n >= 3).then(|| pts[(i + n - 1) % n] + off),
+                        next: (n >= 3).then(|| pts[(i + 2) % n] + off),
+                        color,
+                        alpha,
+                        width_pt,
+                        dash: None,
+                        border_pt: 0.0,
+                        border_color: Color32::TRANSPARENT,
+                border_alpha: 1.0,
+                    });
+                }
+            }
+        });
+    }
+
+    if cx.s.show_backbone {
+        let off = cam_step * 6.0;
+        for_each_backbone_chain(cx, |pts, color, alpha, width_pt| {
+            for (i, w) in pts.windows(2).enumerate() {
+                line_draws.push(GpuLineDraw {
+                    a: w[0] + off,
+                    b: w[1] + off,
+                    prev: i.checked_sub(1).map(|k| pts[k] + off),
+                    next: pts.get(i + 2).map(|&p| p + off),
+                    color,
+                    alpha,
+                    width_pt,
+                    dash: None,
+                    border_pt: 0.0,
+                    border_color: Color32::TRANSPARENT,
+                border_alpha: 1.0,
+                });
+            }
+        });
+    }
+
+    let local_nodes: Vec<Vec3> = cx
+        .iface
+        .map
+        .nodes
+        .iter()
+        .map(|n| {
+            let uv = if cx.s.use_relaxed_uv { n.pos_uv } else { n.pos_uv_raw };
+            cx.morph_local(n.pos_3d, uv, n.side)
+        })
+        .collect();
+
+    for_each_edge(cx, |e, color, alpha, width_pt| {
+        let off = cam_step * if e.is_cross_interface { 8.0 } else { 7.0 };
+        line_draws.push(GpuLineDraw {
+            a: local_nodes[e.a.0 as usize] + off,
+            b: local_nodes[e.b.0 as usize] + off,
+            prev: None,
+            next: None,
+            color,
+            alpha,
+            width_pt,
+            dash: None,
+            border_pt: 0.0,
+            border_color: Color32::TRANSPARENT,
+            border_alpha: 1.0,
+        });
+    });
+
+    let disc_off = cam_step * 9.0;
+    let mut hover_ring = None;
+    for_each_atom(cx, selection, |idx, radius_pt, fill, outline, hovered| {
+        if fill.is_some() || outline.is_some() {
+            let (fill_color, fill_alpha) = fill.unwrap_or((Color32::TRANSPARENT, 0.0));
+            let (outline_color, outline_alpha, outline_pt) = outline.unwrap_or((Color32::TRANSPARENT, 0.0, 0.0));
+            disc_draws.push(GpuDiscDraw {
+                center: local_nodes[idx] + disc_off,
+                radius_pt,
+                outline_pt,
+                fill_color,
+                fill_alpha,
+                outline_color,
+                outline_alpha,
+                shaded_3d: false,
+            });
+        }
+        if hovered {
+            hover_ring = Some((nodes[idx].0, radius_pt));
+        }
+    });
+
+    let (instance_id, draw_gen) = cx.ds.draw_cache_key();
+    let texture_id = gpu.render(
+        cx.rect,
+        cx.painter.pixels_per_point(),
+        cx.pal.chrome.viewport_bg,
+        cx.camera,
+        cx.frame.to_local_matrix(),
+        instance_id,
+        draw_gen,
+        rendering.transparency,
+        rendering.depth_peel_layers,
+        &[],
+        &poly_draws,
+        &line_draws,
+        &disc_draws,
+    )?;
+    let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+    cx.painter.image(texture_id, cx.rect, uv, Color32::WHITE);
+    Some(hover_ring)
+}
+
+fn paint_cpu_scene(cx: &Ctx, selection: &Selection, nodes: &[(Pos2, f32)]) -> Option<(Pos2, f32)> {
+    grid::paint(cx.painter, cx.rect, cx.camera, cx.grid, cx.grid_color);
+    if let Some(([a, b], color, width)) = hinge_segment(cx) {
+        let (pa, _) = cx.camera.project(a, cx.rect);
+        let (pb, _) = cx.camera.project(b, cx.rect);
+        cx.painter.line_segment([pa, pb], Stroke::new(width, color));
+    }
+
+    let mut list = DrawList::default();
+    if cx.s.show_backbone {
+        for_each_backbone_chain(cx, |pts, color, alpha, width| {
+            let stroke = Stroke::new(width, palette::with_alpha(color, alpha));
+            let projected: Vec<(Pos2, f32)> = pts.iter().map(|&p| cx.camera.project(p, cx.rect)).collect();
+            for w in projected.windows(2) {
+                list.segment(w[0].0, w[1].0, 0.5 * (w[0].1 + w[1].1), stroke);
+            }
+        });
+    }
+    if cx.s.territories.visible {
+        for_each_territory(cx, selection, |terr, pts, fill, border, _| {
+            let projected: Vec<(Pos2, f32)> = pts.iter().map(|&p| cx.camera.project(p, cx.rect)).collect();
+            if let Some((color, alpha)) = fill {
+                let c = palette::with_alpha(color, alpha);
+                for tri in &terr.contour_triangles {
+                    let [i0, i1, i2] = tri.map(|i| i as usize);
+                    let depth = (projected[i0].1 + projected[i1].1 + projected[i2].1) / 3.0;
+                    list.triangle([projected[i0].0, projected[i1].0, projected[i2].0], depth, c, Stroke::NONE);
+                }
+            }
+            if let Some((color, alpha, width)) = border {
+                let stroke = Stroke::new(width, palette::with_alpha(color, alpha));
+                let n = projected.len();
+                for i in 0..n {
+                    let (a, b) = (projected[i], projected[(i + 1) % n]);
+                    list.segment(a.0, b.0, 0.5 * (a.1 + b.1), stroke);
+                }
+            }
+        });
+    }
+    for_each_edge(cx, |e, color, alpha, width| {
+        let stroke = Stroke::new(width, palette::with_alpha(color, alpha));
+        let (a, b) = (nodes[e.a.0 as usize], nodes[e.b.0 as usize]);
+        list.segment(a.0, b.0, 0.5 * (a.1 + b.1), stroke);
+    });
+    let mut hover_ring = None;
+    for_each_atom(cx, selection, |idx, radius, fill, outline, hovered| {
+        let (pos, depth) = nodes[idx];
+        let fill_color = fill.map_or(Color32::TRANSPARENT, |(c, a)| palette::with_alpha(c, a));
+        let stroke = outline.map_or(Stroke::NONE, |(c, a, w)| Stroke::new(w, palette::with_alpha(c, a)));
+        if fill_color != Color32::TRANSPARENT || stroke != Stroke::NONE {
+            list.disc(pos, radius, depth, fill_color, stroke);
+        }
+        if hovered {
+            hover_ring = Some((pos, radius));
+        }
+    });
+    list.paint(cx.painter);
+    hover_ring
+}
+
 /// Hinge line for the open-book butterfly, shown once the map is mostly flat and opened.
-fn paint_hinge(cx: &Ctx) {
+fn hinge_segment(cx: &Ctx) -> Option<([Vec3; 2], Color32, f32)> {
     if cx.s.book.value <= 0.01 || cx.s.flatten.value <= 0.1 {
-        return;
+        return None;
     }
     let h = cx.frame.hinge_u;
-    let (a, _) = cx.camera.project(glam::Vec3::new(h, -HINGE_HALF_LEN_A, 0.0), cx.rect);
-    let (b, _) = cx.camera.project(glam::Vec3::new(h, HINGE_HALF_LEN_A, 0.0), cx.rect);
-    cx.painter.line_segment([a, b], Stroke::new(HINGE_WIDTH_PX, cx.pal.chrome.hinge()));
+    Some((
+        [Vec3::new(h, -HINGE_HALF_LEN_A, 0.0), Vec3::new(h, HINGE_HALF_LEN_A, 0.0)],
+        cx.pal.chrome.hinge(),
+        HINGE_WIDTH_PX,
+    ))
 }
 
 /// Faint Cα trace of both groups, fading out as the map flattens.
-fn paint_backbone(cx: &Ctx, list: &mut DrawList) {
+fn for_each_backbone_chain(cx: &Ctx, mut emit: impl FnMut(&[Vec3], Color32, f32, f32)) {
     let t = cx.s.flatten.value;
     if t >= 0.98 {
         return;
@@ -189,37 +445,42 @@ fn paint_backbone(cx: &Ctx, list: &mut DrawList) {
         if alpha <= MIN_DRAW_ALPHA {
             continue;
         }
-        let stroke = Stroke::new(width, palette::with_alpha(cx.pal.sides.side_dark(side), fade * alpha * BACKBONE_ALPHA_SCALE));
         // Use each Cα's own tangent-plane (u, v) so the trace follows the butterfly hinge.
-        let pts: Vec<(Pos2, f32)> = ch
+        let pts: Vec<Vec3> = ch
             .ca_positions
             .iter()
             .map(|&p| {
                 let local = cx.frame.to_local(p);
-                cx.morph(p, [local.x, local.y], side)
+                cx.morph_local(p, [local.x, local.y], side)
             })
             .collect();
-        for w in pts.windows(2) {
-            list.segment(w[0].0, w[1].0, 0.5 * (w[0].1 + w[1].1), stroke);
-        }
+        emit(&pts, cx.pal.sides.side_dark(side), fade * alpha * BACKBONE_ALPHA_SCALE, width);
     }
 }
 
-/// Residue territory polygons; painted back-to-front per `CartographyViewSettings::side_paint_order`.
-fn paint_territories(cx: &Ctx, selection: &Selection, list: &mut DrawList) {
+/// Residue territory polygons styled by fill/stroke lenses; iterates per `side_paint_order`.
+fn for_each_territory(
+    cx: &Ctx,
+    selection: &Selection,
+    mut emit: impl FnMut(&ResidueTerritory, &[Vec3], Option<(Color32, f32)>, Option<(Color32, f32, f32)>, usize),
+) {
     let color_lens = cx.s.territories.fill.lens;
     let stroke_lens = cx.s.territories.stroke_width.lens;
     let fixed_stroke_w = cx.s.territories.stroke_width.fixed;
 
-    for side in cx.s.side_paint_order() {
+    for (side_idx, side) in cx.s.side_paint_order().into_iter().enumerate() {
         let alpha = cx.s.side_alpha(side);
         if alpha <= MIN_DRAW_ALPHA {
             continue;
         }
         for terr in cx.iface.map.territories.iter().filter(|t| t.side == side && !t.contour_uv.is_empty()) {
             // Contours exist only for relaxed (u, v), so they ignore the raw-UV toggle.
-            let pts: Vec<(Pos2, f32)> =
-                terr.contour_uv.iter().zip(&terr.contour_3d).map(|(&uv, &p)| cx.morph(p, uv, side)).collect();
+            let pts: Vec<Vec3> = terr
+                .contour_uv
+                .iter()
+                .zip(&terr.contour_3d)
+                .map(|(&uv, &p)| cx.morph_local(p, uv, side))
+                .collect();
 
             let selected = selection.selected_residue == Some(terr.global_residue);
             let base_color = lenses::territory_fill_color(
@@ -232,8 +493,7 @@ fn paint_territories(cx: &Ctx, selection: &Selection, list: &mut DrawList) {
                 cx.lenses,
                 cx.pal,
             );
-            // Selection is a derived highlight tint of the base color (`palette::highlight`, the
-            // same kind of derived-color primitive `complex_scene` uses for Lambert shading), not
+            // Selection is a derived highlight tint of the base color (`palette::highlight`), not
             // a second hardcoded alpha tier.
             let base_color = if selected { palette::highlight(base_color) } else { base_color };
             let width = sizing::territory_stroke_width_px(
@@ -245,49 +505,21 @@ fn paint_territories(cx: &Ctx, selection: &Selection, list: &mut DrawList) {
                 selected,
                 cx.lenses,
             );
-            let fill = if color_lens == TerritoryColorLens::Off {
-                Color32::TRANSPARENT
-            } else {
-                palette::with_alpha(base_color, alpha * TERRITORY_FILL_ALPHA)
-            };
+            let fill = (color_lens != TerritoryColorLens::Off).then_some((base_color, alpha * TERRITORY_FILL_ALPHA));
             let border_base = if color_lens == TerritoryColorLens::Off {
                 let side_color = cx.pal.sides.side(terr.side);
                 if selected { palette::highlight(side_color) } else { side_color }
             } else {
                 base_color
             };
-            let stroke = if width <= 0.0 {
-                Stroke::NONE
-            } else {
-                Stroke::new(width, palette::with_alpha(palette::edge_color(border_base), alpha * TERRITORY_BORDER_ALPHA_SCALE))
-            };
-            // `contour_triangles` is a one-time ear-clipping triangulation computed in
-            // `contour::compute_territory_contours`, not redone here every frame — depth per
-            // triangle, no per-triangle edge (the boundary below carries the stroke).
-            if fill != Color32::TRANSPARENT {
-                for tri in &terr.contour_triangles {
-                    let [i0, i1, i2] = tri.map(|i| i as usize);
-                    let depth = (pts[i0].1 + pts[i1].1 + pts[i2].1) / 3.0;
-                    list.triangle([pts[i0].0, pts[i1].0, pts[i2].0], depth, fill, Stroke::NONE);
-                }
-            }
-            if stroke != Stroke::NONE {
-                let n = pts.len();
-                for i in 0..n {
-                    let (a, b) = (pts[i], pts[(i + 1) % n]);
-                    list.segment(a.0, b.0, 0.5 * (a.1 + b.1), stroke);
-                }
-            }
+            let border = (width > 0.0).then(|| (palette::edge_color(border_base), alpha * TERRITORY_BORDER_ALPHA_SCALE, width));
+            emit(terr, &pts, fill, border, side_idx);
         }
     }
 }
 
-/// Contact edges — first-shell springs within a side, and cross-interface contacts — styled by
-/// the active color/width lenses (which already read `EdgeKind` for the "Interaction Kind"
-/// lenses). "Intra vs. cross" is `is_cross_interface`, a derived positional fact about an edge,
-/// not a kind of edge — so it's handled as one of several per-edge parameters here (its own
-/// alpha/width scale and visibility toggle), not a split into separate painter functions.
-fn paint_edges(cx: &Ctx, nodes: &[(Pos2, f32)], list: &mut DrawList) {
+/// Contact edges — first-shell springs within a side, and cross-interface contacts.
+fn for_each_edge(cx: &Ctx, mut emit: impl FnMut(&InterfaceEdge, Color32, f32, f32)) {
     let color_lens = cx.s.edges.color.lens;
     let width_lens = cx.s.edges.width.lens;
     if color_lens == EdgeColorLens::Off || width_lens == EdgeWidthLens::Off {
@@ -337,24 +569,23 @@ fn paint_edges(cx: &Ctx, nodes: &[(Pos2, f32)], list: &mut DrawList) {
         }
         let (width_scale, alpha_scale) =
             if e.is_cross_interface { (1.0, CROSS_ARC_ALPHA_SCALE) } else { (INTRA_EDGE_WIDTH_SCALE, INTRA_EDGE_ALPHA_SCALE) };
-        let stroke = Stroke::new(width * width_scale, palette::with_alpha(color, alpha * alpha_scale));
-        let (a, b) = (nodes[e.a.0 as usize], nodes[e.b.0 as usize]);
-        list.segment(a.0, b.0, 0.5 * (a.1 + b.1), stroke);
+        emit(e, color, alpha * alpha_scale, width * width_scale);
     }
 }
 
-/// Atom discs colored and sized by the active node fill, radius, stroke color, and stroke width
-/// channels. Returns the hovered atom's `(center, radius)`, if any, so the caller can draw its
-/// ring after `list` is painted — a UI affordance, not molecular content, so always on top.
-fn paint_atoms(cx: &Ctx, selection: &Selection, nodes: &[(Pos2, f32)], list: &mut DrawList) -> Option<(Pos2, f32)> {
+/// Atom discs colored and sized by the active node fill, radius, stroke color, and stroke width lenses.
+fn for_each_atom(
+    cx: &Ctx,
+    selection: &Selection,
+    mut emit: impl FnMut(usize, f32, Option<(Color32, f32)>, Option<(Color32, f32, f32)>, bool),
+) {
     let fill_lens = cx.s.atoms.fill.lens;
     let size_mode = cx.s.atoms.radius.lens;
     let stroke_color_lens = cx.s.atoms.stroke_color.lens;
     let stroke_width_lens = cx.s.atoms.stroke_width.lens;
     let fixed_stroke_w = cx.s.atoms.stroke_width.fixed;
-    let mut hover_ring = None;
 
-    for ((node, meta), &(pos, depth)) in cx.iface.map.nodes.iter().zip(&cx.iface.atom_meta).zip(nodes) {
+    for (idx, (node, meta)) in cx.iface.map.nodes.iter().zip(&cx.iface.atom_meta).enumerate() {
         let alpha = cx.s.side_alpha(node.side);
         if alpha <= MIN_DRAW_ALPHA {
             continue;
@@ -368,58 +599,50 @@ fn paint_atoms(cx: &Ctx, selection: &Selection, nodes: &[(Pos2, f32)], list: &mu
             cx.atom_draw,
             cx.lenses,
         );
-        let hovered = selection.hovered_atom == Some(node.global_atom);
-
-        if size_mode != AtomSizeMode::Off && radius > 0.0 {
-            let fill = if fill_lens == ColorLens::Off {
-                Color32::TRANSPARENT
-            } else {
-                palette::with_alpha(
-                    lenses::atom_fill_color(
-                        node,
-                        meta,
-                        fill_lens,
-                        cx.s.atoms.fill.fixed,
-                        cx.s.bfactor_mode,
-                        cx.lenses,
-                        cx.pal,
-                    ),
-                    alpha,
-                )
-            };
-
-            let stroke_color = lenses::atom_stroke_color(
-                node,
-                meta,
-                stroke_color_lens,
-                cx.s.atoms.stroke_color.fixed,
-                cx.s.bfactor_mode,
-                hovered,
-                cx.lenses,
-                cx.pal,
-            );
-            let stroke_width = sizing::atom_stroke_width_px(
-                node,
-                stroke_width_lens,
-                fixed_stroke_w,
-                cx.s.bfactor_mode,
-                hovered,
-                cx.lenses,
-            );
-            let outline = if stroke_color_lens == NodeStrokeColorLens::Off || stroke_width <= 0.0 {
-                Stroke::NONE
-            } else {
-                Stroke::new(stroke_width, palette::with_alpha(stroke_color, alpha))
-            };
-            if fill != Color32::TRANSPARENT || outline != Stroke::NONE {
-                list.disc(pos, radius, depth, fill, outline);
-            }
-            if hovered {
-                hover_ring = Some((pos, radius));
-            }
+        if size_mode == AtomSizeMode::Off || radius <= 0.0 {
+            continue;
         }
+        let hovered = selection.hovered_atom == Some(node.global_atom);
+        let fill = (fill_lens != ColorLens::Off).then(|| {
+            (
+                lenses::atom_fill_color(
+                    node,
+                    meta,
+                    fill_lens,
+                    cx.s.atoms.fill.fixed,
+                    cx.s.bfactor_mode,
+                    cx.lenses,
+                    cx.pal,
+                ),
+                alpha,
+            )
+        });
+        let stroke_width = sizing::atom_stroke_width_px(
+            node,
+            stroke_width_lens,
+            fixed_stroke_w,
+            cx.s.bfactor_mode,
+            hovered,
+            cx.lenses,
+        );
+        let outline = (stroke_color_lens != NodeStrokeColorLens::Off && stroke_width > 0.0).then(|| {
+            (
+                lenses::atom_stroke_color(
+                    node,
+                    meta,
+                    stroke_color_lens,
+                    cx.s.atoms.stroke_color.fixed,
+                    cx.s.bfactor_mode,
+                    hovered,
+                    cx.lenses,
+                    cx.pal,
+                ),
+                alpha,
+                stroke_width,
+            )
+        });
+        emit(idx, radius, fill, outline, hovered);
     }
-    hover_ring
 }
 
 /// Topmost z-layer: territory and atom text labels painted above all polygons, edges, and atom discs.

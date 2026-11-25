@@ -39,6 +39,13 @@ crate::param_group! {
 ///
 /// In the `Complex` tab, this mesh floats directly between the interacting chains when
 /// `Display Interface` is set to `Smoothed SDF Sheet`.
+/// 
+/// TODO:
+/// Params: Shaped by 'interface atoms' or 'interaction midpoints': Enum. Weight by contact strength: bool.
+/// Algorithm goes like this:
+/// 1. Approximate initial 2d plane in 3d space
+/// 2. Points are pulled along the plane normal by 'shape_by'
+/// 
 pub fn build_interface_sheet_mesh(
     plane: &ProjectionPlane,
     nodes: &[AtomNode],

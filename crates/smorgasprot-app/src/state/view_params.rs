@@ -2,6 +2,7 @@
 //! Feature-scoped groups keep domain tunables separate from unrelated rendering settings.
 
 use super::Choice;
+use egui::Color32;
 use serde::{Deserialize, Serialize};
 use smorgasprot_core::param_group;
 use smorgasprot_core::params::ParamGroup;
@@ -30,7 +31,31 @@ impl Choice for RenderBackend {
     }
 }
 
-/// App-wide graphics backend and MSAA settings.
+/// How `wgpu` resolves overlapping translucent surfaces (`alpha < 1`).
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum TransparencyMode {
+    /// Weighted Blended Order-Independent Transparency (1 pass, zero snapping).
+    #[default]
+    Wboit,
+    /// Multi-layer front-to-back depth peeling (exact layering, higher pass count).
+    DepthPeeling,
+    /// Legacy per-object centroid depth sorting (kept for A/B comparison).
+    CentroidSorted,
+}
+
+impl Choice for TransparencyMode {
+    const ALL: &'static [Self] = &[Self::Wboit, Self::DepthPeeling, Self::CentroidSorted];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Wboit => "WBOIT (1-pass OIT)",
+            Self::DepthPeeling => "Depth peeling (exact layers)",
+            Self::CentroidSorted => "Centroid sorted (legacy)",
+        }
+    }
+}
+
+/// App-wide graphics backend, transparency, and MSAA settings.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(default)]
 pub struct RenderingSettings {
@@ -38,27 +63,73 @@ pub struct RenderingSettings {
     pub backend: RenderBackend,
     /// Viewport MSAA sample count applied at window startup (`1`, `2`, `4`, `8`).
     pub multisampling: u16,
+    /// Translucent surface compositing strategy on `wgpu`.
+    pub transparency: TransparencyMode,
+    /// Number of front-to-back depth peels when `transparency == TransparencyMode::DepthPeeling`.
+    pub depth_peel_layers: u8,
 }
 
 impl Default for RenderingSettings {
     fn default() -> Self {
-        Self { backend: RenderBackend::Auto, multisampling: 4 }
+        Self {
+            backend: RenderBackend::Auto,
+            multisampling: 4,
+            transparency: TransparencyMode::Wboit,
+            depth_peel_layers: 4,
+        }
     }
 }
 
+/// Default viewport background color (light mode).
+pub fn default_viewport_bg() -> Color32 {
+    Color32::from_rgb(248, 250, 252)
+}
+
+/// Default viewport background color (dark mode).
+pub fn default_dark_viewport_bg() -> Color32 {
+    Color32::from_rgb(15, 23, 42)
+}
+
+/// Default slate color for the tangent-plane reference grid.
+pub fn default_grid_color() -> Color32 {
+    Color32::from_rgb(100, 116, 139)
+}
+
 /// All app-side parameter groups; saved in config files.
-#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct ViewParams {
     pub explode: ExplodeParams,
     pub morph: MorphParams,
     pub grid: GridParams,
+    pub viewport_bg: Color32,
+    pub dark_viewport_bg: Color32,
+    pub grid_color: Color32,
     pub opacity: OpacityParams,
     pub atom_draw: AtomDrawParams,
     pub lenses: LensParams,
     pub navigation: NavigationParams,
     pub status: StatusParams,
     pub config: ConfigParams,
+}
+
+impl Default for ViewParams {
+    fn default() -> Self {
+        Self {
+            explode: ExplodeParams::default(),
+            morph: MorphParams::default(),
+            grid: GridParams::default(),
+            viewport_bg: default_viewport_bg(),
+            dark_viewport_bg: default_dark_viewport_bg(),
+            grid_color: default_grid_color(),
+            opacity: OpacityParams::default(),
+            atom_draw: AtomDrawParams::default(),
+            lenses: LensParams::default(),
+            navigation: NavigationParams::default(),
+            status: StatusParams::default(),
+            config: ConfigParams::default(),
+        }
+    }
 }
 
 impl ViewParams {
@@ -101,12 +172,14 @@ param_group! {
 }
 
 param_group! {
-    /// Dimensions of the tangent-plane reference grid.
+    /// Dimensions and appearance of the tangent-plane reference grid.
     pub struct GridParams("grid", "Reference Grid") {
         /// Half-width of the tangent-plane reference grid (Å).
         grid_extent_a: f32 = 40.0, 0.0..=200.0, "Reference grid extent", "Å";
         /// Reference grid spacing (Å).
         grid_step_a: f32 = 5.0, 1.0..=50.0, "Reference grid spacing", "Å";
+        /// Opacity of the tangent-plane reference grid (`0` hides the grid).
+        alpha: f32 = 0.28, 0.0..=1.0, "Reference grid alpha", "";
     }
 }
 

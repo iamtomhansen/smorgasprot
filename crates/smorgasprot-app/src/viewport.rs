@@ -10,12 +10,18 @@ mod plane_space;
 
 use crate::dataset::ViewerDataset;
 use crate::render::GpuSurfaceRenderer;
-use crate::state::{UiState, WorkspaceTab};
+use crate::state::{RenderingSettings, UiState, WorkspaceTab};
 use egui::{CursorIcon, PointerButton, Sense, Ui};
 
 /// Allocates the remaining space in `ui` and renders the active tab's scene.
 /// `gpu_surfaces` is `None` on the CPU-only fallback path (see `GpuSurfaceRenderer::new`).
-pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState, gpu_surfaces: Option<&mut GpuSurfaceRenderer>) {
+pub fn show(
+    ui: &mut Ui,
+    ds: &ViewerDataset,
+    state: &mut UiState,
+    rendering: &RenderingSettings,
+    gpu_surfaces: Option<&mut GpuSurfaceRenderer>,
+) {
     let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, state.palette.chrome.viewport_bg);
@@ -43,12 +49,10 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState, gpu_surfaces: 
         state.active_camera_mut().handle_input(ui, &response, flat, &nav);
     }
 
-    grid::paint(&painter, rect, state.active_camera(), &state.view_params.grid, &state.palette.chrome);
-
     match state.active_tab {
-        WorkspaceTab::Complex => {
+        WorkspaceTab::Slice => {
             state.selection.hovered_atom = None;
-            complex_scene::paint(&painter, rect, ds, state, gpu_surfaces);
+            complex_scene::paint(&painter, rect, ds, state, rendering, gpu_surfaces);
         }
         WorkspaceTab::Cartography => {
             let nodes = cartography_scene::project_nodes(ds, rect, &state.cartography);
@@ -67,7 +71,11 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState, gpu_surfaces: 
                     .and_then(|n| ds.territory(n.territory))
                     .map(|t| t.global_residue);
             }
-            cartography_scene::paint(&painter, rect, ds, state, &nodes);
+            cartography_scene::paint(&painter, rect, ds, state, rendering, &nodes, gpu_surfaces);
+        }
+        WorkspaceTab::Garnish => {
+            state.selection.hovered_atom = None;
+            complex_scene::paint_garnish(&painter, rect, ds, state, rendering, gpu_surfaces);
         }
     }
 
