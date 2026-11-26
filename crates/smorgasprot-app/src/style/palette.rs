@@ -239,6 +239,8 @@ pub struct InterfaceSidePalette {
     pub envelope_a: Color32,
     pub envelope_b: Color32,
     pub void: Color32,
+    pub cavity_buried: Color32,
+    pub cavity_channel: Color32,
 }
 
 impl Default for InterfaceSidePalette {
@@ -251,6 +253,8 @@ impl Default for InterfaceSidePalette {
             envelope_a: Color32::from_rgb(250, 204, 21),
             envelope_b: Color32::from_rgb(168, 85, 247),
             void: Color32::from_rgb(6, 182, 212),
+            cavity_buried: Color32::from_rgb(236, 72, 153),
+            cavity_channel: Color32::from_rgb(45, 212, 191),
         }
     }
 }

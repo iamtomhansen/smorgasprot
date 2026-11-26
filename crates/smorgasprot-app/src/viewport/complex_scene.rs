@@ -44,7 +44,7 @@ struct SceneInputs<'a> {
     cartoon: &'a CartoonRepStyle,
     ball_stick: &'a BallStickRepStyle,
     complex_spheres: &'a SphereRepStyle,
-    boundary: Option<&'a BoundaryLayerStyle>,
+    boundaries: Option<[(InterfaceDisplayMode, &'a BoundaryLayerStyle); 5]>,
     interface_spheres: Option<(LayerAlpha, &'a SphereRepStyle)>,
 }
 
@@ -74,7 +74,7 @@ pub fn paint(
         cartoon: &g.cartoon,
         ball_stick: &g.ball_stick,
         complex_spheres: &g.spheres,
-        boundary: Some(&cx.boundary),
+        boundaries: Some(cx.boundary_layers()),
         interface_spheres: Some((
             LayerAlpha { visible: cx.interface_spheres_visible, master: cx.interface_spheres_alpha.value },
             &cx.interface_spheres,
@@ -126,9 +126,9 @@ pub fn paint_garnish(
             LayerAlpha { visible: g.spheres_visible, master: g.spheres_alpha.value },
         )
     };
-    let (boundary, interface_spheres) = if g.show_interface {
+    let (boundaries, interface_spheres) = if g.show_interface {
         (
-            Some(&cx.boundary),
+            Some(cx.boundary_layers()),
             Some((
                 LayerAlpha { visible: cx.interface_spheres_visible, master: cx.interface_spheres_alpha.value },
                 &cx.interface_spheres,
@@ -152,7 +152,7 @@ pub fn paint_garnish(
         cartoon: &g.cartoon,
         ball_stick: &g.ball_stick,
         complex_spheres: &g.spheres,
-        boundary,
+        boundaries,
         interface_spheres,
     };
     paint_scene(painter, rect, ds, state, &inputs, rendering, gpu_surfaces);
@@ -199,8 +199,10 @@ fn paint_scene(
         && inputs.surface.color.lens != ChainColorLens::Off
         && presentation_active(&inputs.surface.presentation, inputs.surfaces_gate.master, min_alpha);
     let draw_boundary = iface.is_some()
-        && inputs.boundary.is_some_and(|b| {
-            b.mode != InterfaceDisplayMode::Off && presentation_active(&b.presentation, b.alpha.value, min_alpha)
+        && inputs.boundaries.is_some_and(|layers| {
+            layers
+                .iter()
+                .any(|(_, b)| b.visible && presentation_active(&b.presentation, b.alpha.value, min_alpha))
         });
     let draw_ribbon = inputs.ribbon_gate.visible
         && inputs.ribbon.color.lens != ChainColorLens::Off
@@ -252,9 +254,13 @@ fn paint_scene(
         if let Some(iface_idx) = ds.active_interface
             && let Some(iface) = ds.interfaces.get(iface_idx)
             && draw_boundary
-            && let Some(boundary) = inputs.boundary
+            && let Some(layers) = inputs.boundaries
         {
-            add_interface_geometry(&mut list, &view, ds, iface, boundary);
+            for (mode, boundary) in layers {
+                if boundary.visible && presentation_active(&boundary.presentation, boundary.alpha.value, min_alpha) {
+                    add_interface_geometry(&mut list, &view, ds, iface, mode, boundary);
+                }
+            }
         }
         if draw_ribbon {
             add_ribbon(&mut list, &view, ds, inputs);
@@ -1076,81 +1082,130 @@ fn paint_gpu_scene(
     }
 
     if draw_boundary
-        && let Some(boundary) = inputs.boundary
+        && let Some(layers) = inputs.boundaries
         && let Some(iface_idx) = ds.active_interface
         && let Some(iface) = ds.interfaces.get(iface_idx)
     {
-        let a = boundary.alpha.value;
         let geo = &iface.draw_geometry;
         let sides = &view.pal.sides;
         let offset = interface_complex_offset(view, ds);
-        let pres = &boundary.presentation;
-        match boundary.mode {
-            InterfaceDisplayMode::SmoothedSdf => {
-                push_mesh_draw(
-                    &mut mesh_draws,
-                    GpuMeshKey::Boundary(iface_idx, InterfaceDisplayMode::SmoothedSdf),
-                    &geo.sheet_mesh,
-                    None,
-                    0,
-                    offset,
-                    sides.sheet,
-                    palette::edge_color(sides.sheet),
-                    a * 0.78,
-                    0.86 * a,
-                    pres.culling,
-                    pres,
-                    min_alpha,
-                    view.camera.zoom,
-                );
+        let has_envelope = layers.iter().any(|(m, b)| {
+            *m == InterfaceDisplayMode::ContactEnvelope
+                && b.visible
+                && presentation_active(&b.presentation, b.alpha.value, min_alpha)
+        });
+        if has_envelope {
+            envelope_colors = geo
+                .envelope_mesh
+                .vertices
+                .iter()
+                .enumerate()
+                .map(|(v, _)| {
+                    let side = iface.draw_envelope_sides.get(v).copied().unwrap_or(InterfaceSide::None);
+                    sides.envelope(side)
+                })
+                .collect();
+        } else {
+            envelope_colors = Vec::new();
+        }
+        for (mode, boundary) in layers {
+            if !boundary.visible || !presentation_active(&boundary.presentation, boundary.alpha.value, min_alpha) {
+                continue;
             }
-            InterfaceDisplayMode::ContactEnvelope => {
-                envelope_colors = geo
-                    .envelope_mesh
-                    .vertices
-                    .iter()
-                    .enumerate()
-                    .map(|(v, _)| {
-                        let side = iface.draw_envelope_sides.get(v).copied().unwrap_or(InterfaceSide::None);
-                        sides.envelope(side)
-                    })
-                    .collect();
-                push_mesh_draw(
-                    &mut mesh_draws,
-                    GpuMeshKey::Boundary(iface_idx, InterfaceDisplayMode::ContactEnvelope),
-                    &geo.envelope_mesh,
-                    Some(&envelope_colors),
-                    sides_color_sig(view.pal),
-                    offset,
-                    Color32::WHITE,
-                    Color32::WHITE,
-                    a,
-                    0.63 * a,
-                    pres.culling,
-                    pres,
-                    min_alpha,
-                    view.camera.zoom,
-                );
+            let a = boundary.alpha.value;
+            let pres = &boundary.presentation;
+            match mode {
+                InterfaceDisplayMode::SmoothedSdf => {
+                    push_mesh_draw(
+                        &mut mesh_draws,
+                        GpuMeshKey::Boundary(iface_idx, InterfaceDisplayMode::SmoothedSdf),
+                        &geo.sheet_mesh,
+                        None,
+                        0,
+                        offset,
+                        sides.sheet,
+                        palette::edge_color(sides.sheet),
+                        a * 0.78,
+                        0.86 * a,
+                        pres.culling,
+                        pres,
+                        min_alpha,
+                        view.camera.zoom,
+                    );
+                }
+                InterfaceDisplayMode::ContactEnvelope => {
+                    push_mesh_draw(
+                        &mut mesh_draws,
+                        GpuMeshKey::Boundary(iface_idx, InterfaceDisplayMode::ContactEnvelope),
+                        &geo.envelope_mesh,
+                        Some(&envelope_colors),
+                        sides_color_sig(view.pal),
+                        offset,
+                        Color32::WHITE,
+                        Color32::WHITE,
+                        a,
+                        0.63 * a,
+                        pres.culling,
+                        pres,
+                        min_alpha,
+                        view.camera.zoom,
+                    );
+                }
+                InterfaceDisplayMode::NegativeSpace => {
+                    push_mesh_draw(
+                        &mut mesh_draws,
+                        GpuMeshKey::Boundary(iface_idx, InterfaceDisplayMode::NegativeSpace),
+                        &geo.negative_mesh,
+                        None,
+                        0,
+                        offset,
+                        sides.void,
+                        palette::edge_color(sides.void),
+                        a,
+                        0.78 * a,
+                        pres.culling,
+                        pres,
+                        min_alpha,
+                        view.camera.zoom,
+                    );
+                }
+                InterfaceDisplayMode::CavitiesBuried => {
+                    push_mesh_draw(
+                        &mut mesh_draws,
+                        GpuMeshKey::Boundary(iface_idx, InterfaceDisplayMode::CavitiesBuried),
+                        &geo.cavities.buried_mesh,
+                        None,
+                        0,
+                        offset,
+                        sides.cavity_buried,
+                        palette::edge_color(sides.cavity_buried),
+                        a,
+                        0.78 * a,
+                        pres.culling,
+                        pres,
+                        min_alpha,
+                        view.camera.zoom,
+                    );
+                }
+                InterfaceDisplayMode::CavitiesChannel => {
+                    push_mesh_draw(
+                        &mut mesh_draws,
+                        GpuMeshKey::Boundary(iface_idx, InterfaceDisplayMode::CavitiesChannel),
+                        &geo.cavities.channel_mesh,
+                        None,
+                        0,
+                        offset,
+                        sides.cavity_channel,
+                        palette::edge_color(sides.cavity_channel),
+                        a,
+                        0.78 * a,
+                        pres.culling,
+                        pres,
+                        min_alpha,
+                        view.camera.zoom,
+                    );
+                }
             }
-            InterfaceDisplayMode::NegativeSpace => {
-                push_mesh_draw(
-                    &mut mesh_draws,
-                    GpuMeshKey::Boundary(iface_idx, InterfaceDisplayMode::NegativeSpace),
-                    &geo.negative_mesh,
-                    None,
-                    0,
-                    offset,
-                    sides.void,
-                    palette::edge_color(sides.void),
-                    a,
-                    0.78 * a,
-                    pres.culling,
-                    pres,
-                    min_alpha,
-                    view.camera.zoom,
-                );
-            }
-            InterfaceDisplayMode::Off => {}
         }
     }
 
@@ -1459,6 +1514,7 @@ fn add_interface_geometry(
     view: &View,
     ds: &ViewerDataset,
     iface: &crate::dataset::InterfaceViewData,
+    mode: InterfaceDisplayMode,
     boundary: &BoundaryLayerStyle,
 ) {
     let a = boundary.alpha.value;
@@ -1468,7 +1524,7 @@ fn add_interface_geometry(
     let pres = &boundary.presentation;
     let show_faces = pres.alphas.fill > view.opacity.min_draw_alpha;
     let wf_width = if pres.wireframe.enabled { pres.wireframe.width_px } else { 0.0 };
-    match boundary.mode {
+    match mode {
         InterfaceDisplayMode::SmoothedSdf => {
             let edge = mesh_wireframe_stroke(wf_width, sides.sheet, 0.86 * a * pres.alphas.wireframe);
             add_mesh(list, view, &geo.sheet_mesh, offset, pres.culling, pres.shading, |_, shade| {
@@ -1510,7 +1566,28 @@ fn add_interface_geometry(
                 (fill, edge)
             });
         }
-        InterfaceDisplayMode::Off => {}
+        InterfaceDisplayMode::CavitiesBuried => {
+            let edge = mesh_wireframe_stroke(wf_width, sides.cavity_buried, 0.78 * a * pres.alphas.wireframe);
+            add_mesh(list, view, &geo.cavities.buried_mesh, offset, pres.culling, pres.shading, |_, shade| {
+                let fill = if show_faces {
+                    palette::shaded(sides.cavity_buried, shade, a * pres.alphas.fill)
+                } else {
+                    Color32::TRANSPARENT
+                };
+                (fill, edge)
+            });
+        }
+        InterfaceDisplayMode::CavitiesChannel => {
+            let edge = mesh_wireframe_stroke(wf_width, sides.cavity_channel, 0.78 * a * pres.alphas.wireframe);
+            add_mesh(list, view, &geo.cavities.channel_mesh, offset, pres.culling, pres.shading, |_, shade| {
+                let fill = if show_faces {
+                    palette::shaded(sides.cavity_channel, shade, a * pres.alphas.fill)
+                } else {
+                    Color32::TRANSPARENT
+                };
+                (fill, edge)
+            });
+        }
     }
 }
 

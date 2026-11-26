@@ -1,15 +1,15 @@
 //! Complex tab controls: group names, color palette, 3D representations with customization popovers, and explode separation.
 
 use super::widgets::{
-    UNIT_RANGE, choice_combo, max_text_width, presentation_popover, row_height, section, slider, sphere_popovers,
-    tween_presets, tween_slider,
+    UNIT_RANGE, max_text_width, param_group_controls, presentation_popover, row_height, section, slider,
+    sphere_popovers, tween_presets, tween_slider,
 };
 use crate::dataset::ViewerDataset;
-use crate::state::{
-    BoundaryLayerStyle, InterfaceDisplayMode, PresentationCaps, UiState, WorkspaceTab,
-};
+use crate::state::{BoundaryLayerStyle, PresentationCaps, UiState, WorkspaceTab};
 use egui::{Color32, RichText, ScrollArea, Ui};
 use smorgasprot_core::InterfaceSide;
+
+const INTERFACE_MESH_REMESH_DEBOUNCE_S: f64 = 0.2;
 
 /// Renders the Slice tab's side panel.
 pub fn show(ui: &mut Ui, ds: &mut ViewerDataset, state: &mut UiState) {
@@ -101,37 +101,89 @@ pub fn show(ui: &mut Ui, ds: &mut ViewerDataset, state: &mut UiState) {
     });
 
     section(ui, "3. Interface analysis", |ui| {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("3D interface boundary:").strong());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if s.boundary.mode != InterfaceDisplayMode::Off {
-                    presentation_popover(
-                        ui,
-                        "cx_boundary_pres",
-                        "Boundary presentation",
-                        &mut s.boundary.presentation,
-                        &BoundaryLayerStyle::default_presentation(),
-                        PresentationCaps {
-                            shading: true,
-                            culling: true,
-                            border: true,
-                            wireframe: true,
-                            fill_alpha: true,
-                        },
-                        false,
-                        |_, _| {},
-                    );
+        let now = ui.input(|i| i.time);
+        let sheet_dirty = !ds.is_default_draw_interface_mesh();
+        let mut sheet_changed = false;
+        let mut sheet_reset = false;
+        boundary_layer_row(
+            ui,
+            &mut s.interface_sheet,
+            "Smoothed interface sheet",
+            "cx_sheet_pres",
+            "Interface sheet presentation",
+            sheet_dirty,
+            |ui| {
+                if param_group_controls(ui, &mut ds.draw_interface_mesh, None) {
+                    sheet_changed = true;
                 }
-            });
-        });
-        choice_combo(ui, "cx_interface_mode", &mut s.boundary.mode);
-        if s.boundary.mode != InterfaceDisplayMode::Off {
-            slider(ui, "Alpha:", &mut s.boundary.alpha, UNIT_RANGE);
+                ui.separator();
+            },
+            || sheet_reset = true,
+        );
+        if sheet_reset {
+            ds.reset_draw_interface_mesh();
+        } else if sheet_changed {
+            ds.schedule_interface_sheet_remesh(now, INTERFACE_MESH_REMESH_DEBOUNCE_S);
         }
-        if s.boundary.mode == InterfaceDisplayMode::NegativeSpace
+
+        boundary_layer_row(
+            ui,
+            &mut s.contact_envelope,
+            "Midpoint contact envelope",
+            "cx_envelope_pres",
+            "Contact envelope presentation",
+            false,
+            |_| {},
+            || {},
+        );
+
+        boundary_layer_row(
+            ui,
+            &mut s.negative_space,
+            "Negative space (sub-solvent voids)",
+            "cx_void_pres",
+            "Negative space presentation",
+            false,
+            |_| {},
+            || {},
+        );
+        if s.negative_space.visible
             && let Some(iface) = ds.active_interface()
         {
             ui.colored_label(void_color, format!("Sub-solvent void volume: {:.1} Å³", iface.analysis_void_volume_a3));
+        }
+
+        let cav_dirty = !ds.is_default_draw_cavities();
+        let mut cav_changed = false;
+        let mut cav_reset = false;
+        boundary_layer_row(
+            ui,
+            &mut s.cavities,
+            "Probe cavities",
+            "cx_cavities_pres",
+            "Probe cavities presentation",
+            cav_dirty,
+            |ui| {
+                if param_group_controls(ui, &mut ds.draw_cavities, None) {
+                    cav_changed = true;
+                }
+                ui.separator();
+            },
+            || cav_reset = true,
+        );
+        if cav_reset {
+            ds.reset_draw_cavities();
+        } else if cav_changed {
+            ds.schedule_cavity_remesh(now, INTERFACE_MESH_REMESH_DEBOUNCE_S);
+        }
+        if s.cavities.visible
+            && let Some(iface) = ds.active_interface()
+        {
+            let cav = &iface.draw_geometry.cavities;
+            ui.weak(format!(
+                "Buried: {} ({:.1} Å³) · Channels: {} ({:.1} Å³)",
+                cav.buried_count, cav.buried_volume_a3, cav.channel_count, cav.channel_volume_a3
+            ));
         }
 
         ui.separator();
@@ -400,4 +452,45 @@ fn confirm_delete_dialog(
                 }
             });
         });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn boundary_layer_row(
+    ui: &mut Ui,
+    layer: &mut BoundaryLayerStyle,
+    label: &str,
+    id_salt: &str,
+    popover_title: &str,
+    extra_dirty: bool,
+    extra_ui: impl FnOnce(&mut Ui),
+    on_reset: impl FnOnce(),
+) {
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut layer.visible, RichText::new(label).strong());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if layer.visible
+                && presentation_popover(
+                    ui,
+                    id_salt,
+                    popover_title,
+                    &mut layer.presentation,
+                    &BoundaryLayerStyle::default_presentation(),
+                    PresentationCaps {
+                        shading: true,
+                        culling: true,
+                        border: true,
+                        wireframe: true,
+                        fill_alpha: true,
+                    },
+                    extra_dirty,
+                    |ui, _| extra_ui(ui),
+                )
+            {
+                on_reset();
+            }
+        });
+    });
+    if layer.visible {
+        slider(ui, "Alpha:", &mut layer.alpha, UNIT_RANGE);
+    }
 }

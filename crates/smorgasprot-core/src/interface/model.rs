@@ -44,6 +44,8 @@ pub struct InterfaceGeometry {
     pub negative_mesh: SurfaceMesh,
     /// Total enclosed physical volume of the sub-solvent interfacial voids in cubic Angstroms (Å³).
     pub void_volume_a3: f32,
+    /// Probe-accessible buried pockets and solvent-connected channels.
+    pub cavities: super::cavities::CavityAnalysis,
 }
 
 /// The bounded 2D/3D territory on the interface map corresponding to a single residue.

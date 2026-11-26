@@ -6,7 +6,7 @@ use crate::style::palette;
 use crate::workspace::LoadedStructure;
 use egui::{CollapsingHeader, Context, DragValue, Grid, RichText, Ui, Window};
 use smorgasprot_core::AnalysisParams;
-use smorgasprot_core::params::{ParamGroup, ParamMeta, ParamVisitor};
+use smorgasprot_core::params::{ChoiceOption, ParamDefault, ParamGroup, ParamMeta, ParamVisitor};
 
 /// Renders the window while `open` is true.
 pub fn show(
@@ -121,6 +121,29 @@ impl ParamVisitor for GridEditor<'_> {
             ui.checkbox(value, "");
             if !meta.is_default_bool(*value) && ui.small_button("↺").on_hover_text("Reset to default").clicked() {
                 meta.reset_bool(value);
+            }
+        });
+        self.ui.end_row();
+    }
+
+    fn visit_choice(&mut self, meta: &ParamMeta, options: &'static [ChoiceOption], selected: &mut usize) {
+        self.label(meta);
+        self.ui.horizontal(|ui| {
+            let current_name = options.get(*selected).map(|o| o.name).unwrap_or("Unknown");
+            egui::ComboBox::from_id_salt(meta.key)
+                .selected_text(current_name)
+                .show_ui(ui, |ui| {
+                    for (idx, opt) in options.iter().enumerate() {
+                        let resp = ui.selectable_value(selected, idx, opt.name);
+                        if !opt.description.is_empty() {
+                            resp.on_hover_text(opt.description);
+                        }
+                    }
+                });
+            if let ParamDefault::Choice(d) = meta.default {
+                if *selected != d && ui.small_button("↺").on_hover_text("Reset to default").clicked() {
+                    *selected = d;
+                }
             }
         });
         self.ui.end_row();

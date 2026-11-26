@@ -279,9 +279,11 @@ impl eframe::App for SmorgasprotApp {
             ctx.request_repaint();
         }
 
-        // Apply any debounced presentation surface remesh whose timer has elapsed before rendering.
+        // Apply any debounced presentation surface or interface sheet remesh whose timer has elapsed before rendering.
         for ds in &mut self.datasets {
             ds.poll_draw_surface_remesh(now);
+            ds.poll_interface_sheet_remesh(now);
+            ds.poll_cavity_remesh(now);
         }
 
         // Poll app config for external edits at the configured cadence.
@@ -417,9 +419,15 @@ impl eframe::App for SmorgasprotApp {
             self.apply(action, ctx, now);
         }
 
-        // Schedule wake-up if a panel scheduled a debounced presentation surface remesh during this frame.
+        // Schedule wake-up if a panel scheduled a debounced remesh during this frame.
         for ds in &mut self.datasets {
             if let Some(rem) = ds.poll_draw_surface_remesh(now) {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(rem));
+            }
+            if let Some(rem) = ds.poll_interface_sheet_remesh(now) {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(rem));
+            }
+            if let Some(rem) = ds.poll_cavity_remesh(now) {
                 ctx.request_repaint_after(std::time::Duration::from_secs_f64(rem));
             }
         }

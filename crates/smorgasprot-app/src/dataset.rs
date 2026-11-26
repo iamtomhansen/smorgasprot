@@ -7,6 +7,7 @@ use smorgasprot_core::{
     GlobalResidueIdx, InterfaceGeometry, InterfaceMap, InterfacePartition, InterfaceSide, ResidueTerritory,
     SurfaceMesh, TerritoryIdx,
     flatten::FlatteningStats,
+    interface::{CavityParams, InterfaceMeshParams, build_interface_cavities, build_interface_sheet_mesh},
     interface_geometry::{
         GeometryParams, build_interface_geometry, build_interface_negative_mesh, compute_mesh_volume_a3,
         extract_interface_envelope_mesh,
@@ -117,8 +118,15 @@ impl InterfaceViewData {
     ) -> Result<Self, String> {
         partition.recompute_membership(complex);
         let (map, stats) = smorgasprot_core::flatten::build_interface_map(complex, &partition, analysis_params)?;
-        let draw_geometry =
-            build_interface_geometry(complex, &partition, &map, draw_chain_meshes, &analysis_params.geometry);
+        let draw_geometry = build_interface_geometry(
+            complex,
+            &partition,
+            &map,
+            draw_chain_meshes,
+            &analysis_params.geometry,
+            &analysis_params.interface_mesh,
+            &analysis_params.cavities,
+        );
         let analysis_void_volume_a3 = draw_geometry.void_volume_a3;
         let draw_envelope_sides = Self::envelope_sides_for(&partition, complex, &draw_geometry.envelope_mesh);
         let atom_meta = map.nodes.iter().map(|n| atom_meta(complex, n)).collect();
@@ -148,9 +156,18 @@ impl InterfaceViewData {
         complex: &ComplexStructure,
         draw_chain_meshes: &[SurfaceMesh],
         draw_params: &GeometryParams,
+        sheet_params: &InterfaceMeshParams,
+        cavity_params: &CavityParams,
     ) {
-        let mut draw_geometry =
-            build_interface_geometry(complex, &self.partition, &self.map, draw_chain_meshes, draw_params);
+        let mut draw_geometry = build_interface_geometry(
+            complex,
+            &self.partition,
+            &self.map,
+            draw_chain_meshes,
+            draw_params,
+            sheet_params,
+            cavity_params,
+        );
         draw_geometry.void_volume_a3 = self.analysis_void_volume_a3;
         self.draw_envelope_sides = Self::envelope_sides_for(&self.partition, complex, &draw_geometry.envelope_mesh);
         self.draw_geometry = draw_geometry;
@@ -170,7 +187,13 @@ impl InterfaceViewData {
         self.atom_meta = map.nodes.iter().map(|n| atom_meta(complex, n)).collect();
         self.map = map;
         self.stats = stats;
-        self.recompute_draw_geometry(complex, draw_chain_meshes, &analysis_params.geometry);
+        self.recompute_draw_geometry(
+            complex,
+            draw_chain_meshes,
+            &analysis_params.geometry,
+            &analysis_params.interface_mesh,
+            &analysis_params.cavities,
+        );
         Ok(())
     }
 }
@@ -208,6 +231,12 @@ pub struct ViewerDataset {
     /// Presentation meshing parameters, same debounce as above.
     #[serde(skip)]
     pub draw_mesh: SurfaceParams,
+    /// Presentation parameters for the 2D/3D interface sheet mesh.
+    #[serde(skip)]
+    pub draw_interface_mesh: InterfaceMeshParams,
+    /// Presentation parameters for probe-accessible cavity detection.
+    #[serde(skip)]
+    pub draw_cavities: CavityParams,
     /// Face-culling mode; decided at construction by `display_defaults_for`.
     #[serde(skip)]
     pub culling: SurfaceCulling,
@@ -220,6 +249,12 @@ pub struct ViewerDataset {
     /// Pending debounced presentation surface remesh deadline (`egui` time in seconds).
     #[serde(skip)]
     draw_remesh_due: Option<f64>,
+    /// Pending debounced interface sheet remesh deadline (`egui` time in seconds).
+    #[serde(skip)]
+    sheet_remesh_due: Option<f64>,
+    /// Pending debounced cavity remesh deadline (`egui` time in seconds).
+    #[serde(skip)]
+    cavity_remesh_due: Option<f64>,
     /// Unique per-instance key for GPU buffer caching (survives file reloads with the same `id`).
     #[serde(skip)]
     draw_instance_id: u64,
@@ -295,10 +330,14 @@ impl ViewerDataset {
             analysis_params: analysis_params.clone(),
             draw_preset: initial_preset,
             draw_mesh: initial_draw_surface.clone(),
+            draw_interface_mesh: analysis_params.interface_mesh.clone(),
+            draw_cavities: analysis_params.cavities.clone(),
             culling: defaults.culling,
             applied_draw_preset: initial_preset,
             applied_draw_surface: initial_draw_surface,
             draw_remesh_due: None,
+            sheet_remesh_due: None,
+            cavity_remesh_due: None,
             draw_instance_id: NEXT_DATASET_INSTANCE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             draw_mesh_gen: 1,
         })
@@ -454,6 +493,8 @@ impl ViewerDataset {
 
     /// Re-runs analytical flattening and geometry for the active interface using `analysis_params`.
     pub fn recompute_analysis_interface(&mut self, analysis_params: &AnalysisParams) -> Result<(), String> {
+        self.sheet_remesh_due = None;
+        self.cavity_remesh_due = None;
         self.analysis_params = analysis_params.clone();
         let Some(complex) = &self.complex else { return Ok(()) };
         let Some(active_idx) = self.active_interface else { return Ok(()) };
@@ -463,6 +504,98 @@ impl ViewerDataset {
         }
         self.draw_mesh_gen = self.draw_mesh_gen.wrapping_add(1);
         Ok(())
+    }
+
+    /// Schedules a debounced interface sheet remesh `delay_s` seconds after `now`.
+    pub fn schedule_interface_sheet_remesh(&mut self, now: f64, delay_s: f64) {
+        self.sheet_remesh_due = Some(now + delay_s);
+    }
+
+    /// Runs any pending interface sheet remesh whose deadline has arrived, or returns remaining wait seconds.
+    pub fn poll_interface_sheet_remesh(&mut self, now: f64) -> Option<f64> {
+        let due = self.sheet_remesh_due?;
+        if now >= due {
+            self.sheet_remesh_due = None;
+            self.recompute_active_interface_sheet();
+            None
+        } else {
+            Some(due - now)
+        }
+    }
+
+    /// Recomputes the active interface's 2D/3D sheet mesh from `draw_interface_mesh`.
+    pub fn recompute_active_interface_sheet(&mut self) {
+        self.sheet_remesh_due = None;
+        let Some(complex) = &self.complex else { return };
+        let Some(active_idx) = self.active_interface else { return };
+        if let Some(iface) = self.interfaces.get_mut(active_idx) {
+            iface.draw_geometry.sheet_mesh = build_interface_sheet_mesh(
+                complex,
+                &iface.map.nodes,
+                &iface.map.plane,
+                &self.draw_interface_mesh,
+            );
+        }
+        self.draw_mesh_gen = self.draw_mesh_gen.wrapping_add(1);
+    }
+
+    /// Returns whether `draw_interface_mesh` matches the dataset's `analysis_params`.
+    pub fn is_default_draw_interface_mesh(&self) -> bool {
+        self.draw_interface_mesh == self.analysis_params.interface_mesh
+    }
+
+    /// Resets `draw_interface_mesh` to `analysis_params.interface_mesh` and recomputes the active sheet mesh.
+    pub fn reset_draw_interface_mesh(&mut self) {
+        if !self.is_default_draw_interface_mesh() {
+            self.draw_interface_mesh = self.analysis_params.interface_mesh.clone();
+            self.recompute_active_interface_sheet();
+        }
+    }
+
+    /// Schedules a debounced cavity remesh `delay_s` seconds after `now`.
+    pub fn schedule_cavity_remesh(&mut self, now: f64, delay_s: f64) {
+        self.cavity_remesh_due = Some(now + delay_s);
+    }
+
+    /// Runs any pending cavity remesh whose deadline has arrived, or returns remaining wait seconds.
+    pub fn poll_cavity_remesh(&mut self, now: f64) -> Option<f64> {
+        let due = self.cavity_remesh_due?;
+        if now >= due {
+            self.cavity_remesh_due = None;
+            self.recompute_active_interface_cavities();
+            None
+        } else {
+            Some(due - now)
+        }
+    }
+
+    /// Recomputes the active interface's probe-accessible cavities from `draw_cavities`.
+    pub fn recompute_active_interface_cavities(&mut self) {
+        self.cavity_remesh_due = None;
+        let Some(complex) = &self.complex else { return };
+        let Some(active_idx) = self.active_interface else { return };
+        if let Some(iface) = self.interfaces.get_mut(active_idx) {
+            iface.draw_geometry.cavities = build_interface_cavities(
+                complex,
+                &iface.map.nodes,
+                &self.analysis_params.geometry,
+                &self.draw_cavities,
+            );
+        }
+        self.draw_mesh_gen = self.draw_mesh_gen.wrapping_add(1);
+    }
+
+    /// Returns whether `draw_cavities` matches the dataset's `analysis_params`.
+    pub fn is_default_draw_cavities(&self) -> bool {
+        self.draw_cavities == self.analysis_params.cavities
+    }
+
+    /// Resets `draw_cavities` to `analysis_params.cavities` and recomputes the active cavities.
+    pub fn reset_draw_cavities(&mut self) {
+        if !self.is_default_draw_cavities() {
+            self.draw_cavities = self.analysis_params.cavities.clone();
+            self.recompute_active_interface_cavities();
+        }
     }
 
     /// Returns the active interface's presentation-level data, if it exists.

@@ -95,17 +95,27 @@ fn render_interface_legend(
             pal,
         );
     }
-    if ds.active_interface().is_some() && cx.boundary.mode != InterfaceDisplayMode::Off {
+    if ds.active_interface().is_some() && cx.boundary_layers().iter().any(|(_, b)| b.visible) {
         any = true;
         ui.label(RichText::new("Interface boundary").strong());
-        match cx.boundary.mode {
-            InterfaceDisplayMode::SmoothedSdf => legend_swatch(ui, pal.sides.sheet, "Smoothed separator sheet"),
-            InterfaceDisplayMode::ContactEnvelope => {
-                legend_swatch(ui, pal.sides.envelope_a, &format!("{} envelope", ds.group_name(InterfaceSide::SideA)));
-                legend_swatch(ui, pal.sides.envelope_b, &format!("{} envelope", ds.group_name(InterfaceSide::SideB)));
+        for (mode, layer) in cx.boundary_layers() {
+            if !layer.visible {
+                continue;
             }
-            InterfaceDisplayMode::NegativeSpace => legend_swatch(ui, pal.sides.void, "Sub-solvent void"),
-            InterfaceDisplayMode::Off => {}
+            match mode {
+                InterfaceDisplayMode::SmoothedSdf => legend_swatch(ui, pal.sides.sheet, "Smoothed separator sheet"),
+                InterfaceDisplayMode::ContactEnvelope => {
+                    legend_swatch(ui, pal.sides.envelope_a, &format!("{} envelope", ds.group_name(InterfaceSide::SideA)));
+                    legend_swatch(ui, pal.sides.envelope_b, &format!("{} envelope", ds.group_name(InterfaceSide::SideB)));
+                }
+                InterfaceDisplayMode::NegativeSpace => legend_swatch(ui, pal.sides.void, "Sub-solvent void"),
+                InterfaceDisplayMode::CavitiesBuried => {
+                    legend_swatch(ui, pal.sides.cavity_buried, "Buried probe cavity")
+                }
+                InterfaceDisplayMode::CavitiesChannel => {
+                    legend_swatch(ui, pal.sides.cavity_channel, "Solvent-connected channel")
+                }
+            }
         }
     }
     any
@@ -547,4 +557,20 @@ fn diagnostics(ui: &mut Ui, ds: &ViewerDataset, sides: &InterfaceSidePalette) {
     ui.label(format!("Edge RMSE (Raw → Relaxed): {:.2} → {:.2} Å", s.edge_rmse_before_a, s.edge_rmse_after_a));
     ui.label(format!("2D Overlaps (Raw → Relaxed): {} → {}", s.overlaps_before, s.overlaps_after));
     ui.colored_label(sides.void, format!("Sub-Solvent Void Volume: {:.1} Å³", iface.analysis_void_volume_a3));
+    let cav = &iface.draw_geometry.cavities;
+    ui.colored_label(
+        sides.cavity_buried,
+        format!(
+            "Probe Cavities (R = {:.2} Å): {} buried ({:.1} Å³), {} channels ({:.1} Å³)",
+            ds.draw_cavities.probe_radius_a,
+            cav.buried_count,
+            cav.buried_volume_a3,
+            cav.channel_count,
+            cav.channel_volume_a3,
+        ),
+    );
+    ui.weak(format!(
+        "Implicit H skin: +{:.2} Å on heavy-atom vdW radii",
+        ds.analysis_params().geometry.implicit_h_skin_a
+    ));
 }

@@ -6,7 +6,7 @@ use crate::state::{
 };
 use crate::style::ChromePalette;
 use egui::{Color32, ComboBox, RichText, Slider, Ui, vec2};
-use smorgasprot_core::params::{ParamDefault, ParamGroup, ParamMeta, ParamVisitor};
+use smorgasprot_core::params::{ChoiceOption, ParamDefault, ParamGroup, ParamMeta, ParamVisitor};
 
 /// Range for normalized `[0, 1]` sliders (opacity, flattening, book opening, explode).
 pub const UNIT_RANGE: std::ops::RangeInclusive<f32> = 0.0..=1.0;
@@ -480,6 +480,10 @@ impl ParamVisitor for DefaultCollector {
     fn visit_bool(&mut self, _meta: &ParamMeta, value: &mut bool) {
         self.0.push(ParamDefault::Bool(*value));
     }
+
+    fn visit_choice(&mut self, _meta: &ParamMeta, _options: &'static [ChoiceOption], selected: &mut usize) {
+        self.0.push(ParamDefault::Choice(*selected));
+    }
 }
 
 struct PopoverParamEditor<'a> {
@@ -584,5 +588,35 @@ impl ParamVisitor for PopoverParamEditor<'_> {
         }
         let resp = self.ui.checkbox(value, "");
         self.finish_field(resp);
+    }
+
+    fn visit_choice(&mut self, meta: &ParamMeta, options: &'static [ChoiceOption], selected: &mut usize) {
+        let default = self.next_default(meta);
+        let is_default = matches!(default, ParamDefault::Choice(d) if *selected == d);
+        if self.field_header(meta, is_default) {
+            if let ParamDefault::Choice(d) = default {
+                *selected = d;
+                self.changed = true;
+            }
+        }
+        let current_name = options.get(*selected).map(|o| o.name).unwrap_or("Unknown");
+        let mut inner_changed = false;
+        let resp = ComboBox::from_id_salt(meta.key)
+            .selected_text(current_name)
+            .show_ui(self.ui, |ui| {
+                for (idx, opt) in options.iter().enumerate() {
+                    let r = ui.selectable_value(selected, idx, opt.name);
+                    if !opt.description.is_empty() {
+                        r.clone().on_hover_text(opt.description);
+                    }
+                    if r.changed() {
+                        inner_changed = true;
+                    }
+                }
+            });
+        if inner_changed {
+            self.changed = true;
+        }
+        self.finish_field(resp.response);
     }
 }

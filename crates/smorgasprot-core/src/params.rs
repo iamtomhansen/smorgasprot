@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 
 pub use crate::contour::ContourParams;
 pub use crate::flatten::RelaxParams;
+pub use crate::interface::cavities::CavityParams;
+pub use crate::interface::uv_mesh::InterfaceMeshParams;
 pub use crate::interface_geometry::GeometryParams;
 pub use crate::physics::ContactParams;
 pub use crate::sasa::SasaParams;
@@ -16,6 +18,8 @@ pub enum ParamDefault {
     F32(f32),
     Usize(usize),
     Bool(bool),
+    /// Index into a list of choices e.g. an Enum or Vec
+    Choice(usize),
 }
 
 /// Conversion of a value into a [`ParamDefault`].
@@ -39,6 +43,31 @@ impl IntoParamDefault for bool {
     fn into_param_default(self) -> ParamDefault {
         ParamDefault::Bool(self)
     }
+}
+
+impl<T: ParamChoice> IntoParamDefault for T {
+    fn into_param_default(self) -> ParamDefault {
+        ParamDefault::Choice(self.index())
+    }
+}
+
+/// An enum usable as a parameter choice, with stable index. Declared with [`param_choice!`].
+pub trait ParamChoice: Copy + PartialEq + 'static {
+    /// Options in declaration order (index 0..N).
+    const OPTIONS: &'static [ChoiceOption];
+    fn index(self) -> usize;
+    fn from_index(i: usize) -> Option<Self>;
+}
+
+/// One selectable option of a [`ParamChoice`] enum.
+#[derive(Clone, Copy, Debug)]
+pub struct ChoiceOption {
+    /// Serialized key, e.g. "atom_surfaces".
+    pub key: &'static str,
+    /// Human-facing display name, e.g. "Atom surfaces".
+    pub name: &'static str,
+    /// Didactic user-facing description of this option.
+    pub description: &'static str,
 }
 
 /// Static description of a single tunable value, passed to a [`ParamVisitor`].
@@ -106,6 +135,8 @@ pub trait ParamVisitor {
     fn visit_f32(&mut self, meta: &ParamMeta, value: &mut f32);
     fn visit_usize(&mut self, meta: &ParamMeta, value: &mut usize);
     fn visit_bool(&mut self, meta: &ParamMeta, value: &mut bool);
+    /// Receives a choice parameter, allowing the visitor to select an index from the options.
+    fn visit_choice(&mut self, meta: &ParamMeta, options: &'static [ChoiceOption], selected: &mut usize);
 }
 
 /// Scalar types allowed in a [`ParamGroup`].
@@ -148,6 +179,28 @@ impl ParamValue for bool {
     }
     fn is_default(&self, meta: &ParamMeta) -> bool {
         meta.is_default_bool(*self)
+    }
+}
+
+impl<T: ParamChoice> ParamValue for T {
+    fn accept(&mut self, meta: &ParamMeta, visitor: &mut dyn ParamVisitor) {
+        let mut selected = self.index();
+        visitor.visit_choice(meta, T::OPTIONS, &mut selected);
+        if let Some(choice) = T::from_index(selected) {
+            *self = choice;
+        }
+    }
+    fn reset(&mut self, meta: &ParamMeta) {
+        let default = match meta.default {
+            ParamDefault::Choice(i) => T::from_index(i),
+            _ => None,
+        };
+        if let Some(choice) = default {
+            *self = choice;
+        }
+    }
+    fn is_default(&self, meta: &ParamMeta) -> bool {
+        meta.default == ParamDefault::Choice(self.index())
     }
 }
 
@@ -347,6 +400,71 @@ macro_rules! param_group {
     };
 }
 
+/// Declares an enum usable as a parameter: derives `Serialize`/`Deserialize`
+/// (each variant serialized as its key), `Default` (the first variant), and [`ParamChoice`].
+///
+/// # Example
+/// ```ignore
+/// param_choice! {
+///     /// How to shape the interface mesh.
+///     pub enum ShapeBy {
+///         #[desc = "Bisector between the partners' vdW surfaces."]
+///         AtomSurfaces("atom_surfaces", "Atom surfaces"),
+///         /// Doc comments work as descriptions too, as in `param_group!`.
+///         InteractionMidpoints("interaction_midpoints", "Interaction midpoints"),
+///     }
+/// }
+/// ```
+#[macro_export]
+macro_rules! param_choice {
+    (
+        $(#[doc = $edoc:literal])*
+        pub enum $name:ident {
+            $(
+                $(#[doc = $doc:literal])*
+                $(#[desc = $desc:literal])?
+                $variant:ident($key:literal, $title:literal)
+            ),+ $(,)?
+        }
+    ) => {
+        $(#[doc = $edoc])*
+        #[derive(::serde::Serialize, ::serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum $name {
+            $( $(#[doc = $doc])* #[serde(rename = $key)] $variant, )+
+        }
+
+        impl $name {
+            const VARIANTS: &'static [Self] = &[ $( Self::$variant ),+ ];
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self::VARIANTS[0]
+            }
+        }
+
+        impl $crate::params::ParamChoice for $name {
+            const OPTIONS: &'static [$crate::params::ChoiceOption] = &[
+                $(
+                    $crate::params::ChoiceOption {
+                        key: $key,
+                        name: $title,
+                        description: $crate::__param_desc!($(#[desc = $desc])? $(#[doc = $doc])*),
+                    },
+                )+
+            ];
+
+            fn index(self) -> usize {
+                Self::VARIANTS.iter().position(|v| *v == self).expect("every variant is listed")
+            }
+
+            fn from_index(index: usize) -> Option<Self> {
+                Self::VARIANTS.get(index).copied()
+            }
+        }
+    };
+}
+
 /// Every tunable used by `build_interface_map`, surface meshing, and interface geometry.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(default)]
@@ -356,12 +474,23 @@ pub struct AnalysisParams {
     pub relax: RelaxParams,
     pub contour: ContourParams,
     pub surface: SurfaceParams,
+    pub interface_mesh: InterfaceMeshParams,
     pub geometry: GeometryParams,
+    pub cavities: CavityParams,
 }
 
 impl AnalysisParams {
     /// All groups in pipeline order, for generic editors.
-    pub fn groups_mut(&mut self) -> [&mut dyn ParamGroup; 6] {
-        [&mut self.sasa, &mut self.contacts, &mut self.relax, &mut self.contour, &mut self.surface, &mut self.geometry]
+    pub fn groups_mut(&mut self) -> [&mut dyn ParamGroup; 8] {
+        [
+            &mut self.sasa,
+            &mut self.contacts,
+            &mut self.relax,
+            &mut self.contour,
+            &mut self.surface,
+            &mut self.interface_mesh,
+            &mut self.geometry,
+            &mut self.cavities,
+        ]
     }
 }
