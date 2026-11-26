@@ -411,22 +411,32 @@ impl ViewerDataset {
         self.draw_mesh = SurfaceParams::display();
     }
 
-    /// Adds a new interface partition, precomputing its analytical map and presentation geometry.
-    pub fn add_interface(
-        &mut self,
-        partition: InterfacePartition,
-        analysis_params: &AnalysisParams,
-    ) -> Result<usize, String> {
+    /// Evaluates `partition` against this dataset's complex and `analysis_params`.
+    fn compute_interface(&self, partition: InterfacePartition) -> Result<InterfaceViewData, String> {
         let Some(complex) = &self.complex else {
             return Err("No complex structure available for interface computation".into());
         };
-        let draw_chain_meshes = self.draw_chain_meshes();
-        let iface = InterfaceViewData::compute(complex, partition, &draw_chain_meshes, analysis_params)?;
+        InterfaceViewData::compute(complex, partition, &self.draw_chain_meshes(), &self.analysis_params)
+    }
+
+    /// Adds a new interface partition, precomputing its analytical map and presentation geometry.
+    pub fn add_interface(&mut self, partition: InterfacePartition) -> Result<usize, String> {
+        let iface = self.compute_interface(partition)?;
         self.interfaces.push(iface);
         let idx = self.interfaces.len() - 1;
         self.active_interface = Some(idx);
         self.draw_mesh_gen = self.draw_mesh_gen.wrapping_add(1);
         Ok(idx)
+    }
+
+    /// Replaces the interface at `idx` with a recomputed `partition`; leaves it untouched on error.
+    pub fn replace_interface(&mut self, idx: usize, partition: InterfacePartition) -> Result<(), String> {
+        if idx >= self.interfaces.len() {
+            return Err(format!("No interface at index {idx}"));
+        }
+        self.interfaces[idx] = self.compute_interface(partition)?;
+        self.draw_mesh_gen = self.draw_mesh_gen.wrapping_add(1);
+        Ok(())
     }
 
     /// Removes the interface at `idx` and keeps `active_interface` valid.

@@ -13,13 +13,13 @@
 //!    Lattices. *Mathematical Geosciences*, 42(1), 49–64; Mitternacht, S. (2016). FreeSASA: An open
 //!    source C library for solvent accessible surface area calculations. *BMC Bioinformatics*, 17, 18.
 
-use crate::interface::definition::{InterfacePartition, InterfaceSide};
+use crate::interface::definition::InterfacePartition;
 use crate::model::ComplexStructure;
 use crate::spatial::SpatialGrid;
 use glam::Vec3;
 
 crate::param_group! {
-    /// Shrake-Rupley ΔSASA and the interface inclusion criterion.
+    /// Shrake-Rupley ΔSASA.
     #[desc = "Calculates solvent-accessible surface area loss upon complex formation via Shrake-Rupley sphere quadrature."]
     pub struct SasaParams("sasa", "Solvent Accessibility (ΔSASA)") {
         /// Water probe radius added to each van der Waals radius (Å).
@@ -31,12 +31,6 @@ crate::param_group! {
         /// Spatial hash bucket width (Å); affects speed only.
         #[desc = "Bucket width for the uniform voxel grid used to accelerate neighbor search. Affects calculation speed, not results."]
         grid_resolution_a: f32 = 6.4, 2.0..=12.0, "Spatial grid cell size", "Å";
-        /// An atom is interfacial if it buries more than this area (Å²) ...
-        #[desc = "Minimum ΔSASA lost upon binding required for a heavy atom to be included in the interface graph."]
-        interface_min_buried_a2: f32 = 0.15, 0.0..=10.0, "Min buried area", "Å²";
-        /// ... or lies within this distance of the opposite side (Å).
-        #[desc = "Distance threshold to opposite-chain heavy atoms ensuring boundary contact atoms are retained even if burial is low."]
-        interface_max_cross_dist_a: f32 = 4.5, 2.0..=8.0, "Max cross distance", "Å";
     }
 }
 
@@ -197,9 +191,4 @@ pub fn compute_complex_sasa(
     }
 
     results
-}
-
-/// Returns true if an atom qualifies as part of the interface patch.
-pub fn is_interfacial_atom(_side: InterfaceSide, sasa: &AtomSasa, p: &SasaParams) -> bool {
-    sasa.buried_sasa_a2 > p.interface_min_buried_a2 || sasa.min_cross_dist_a <= p.interface_max_cross_dist_a
 }

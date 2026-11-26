@@ -134,19 +134,26 @@ pub fn named_popover(
     modified: bool,
     add_contents: impl FnOnce(&mut Ui),
 ) {
-    let state_key = egui::Id::new("active_customize_popover");
-    let this_id = ui.make_persistent_id(id_salt);
     let label = if modified {
         format!("{base_label}*")
     } else {
         base_label.to_string()
     };
     let resp = ui.button(label);
-    let toggled_this_frame = resp.clicked();
+    button_popover(ui, id_salt, &resp, add_contents);
+}
+
+/// Floating popover toggled by an already-drawn `button`; returns `true` on the frame it opens.
+pub fn button_popover(ui: &mut Ui, id_salt: &str, button: &egui::Response, add_contents: impl FnOnce(&mut Ui)) -> bool {
+    let state_key = egui::Id::new(ACTIVE_POPOVER_KEY);
+    let this_id = ui.make_persistent_id(id_salt);
+    let toggled_this_frame = button.clicked();
+    let mut opened = false;
     if toggled_this_frame {
         ui.ctx().data_mut(|d| {
             let cur = d.get_temp::<Option<egui::Id>>(state_key).flatten();
             let next = if cur == Some(this_id) { None } else { Some(this_id) };
+            opened = next.is_some();
             d.insert_temp(state_key, next);
         });
     }
@@ -155,7 +162,7 @@ pub fn named_popover(
     if is_open {
         // Snapshot nested popup state before drawing so ComboBox selection doesn't close the outer popover.
         let nested_popup_was_open = ui.ctx().memory(|m| m.any_popup_open());
-        let pos = resp.rect.left_bottom() + vec2(0.0, 4.0);
+        let pos = button.rect.left_bottom() + vec2(0.0, 4.0);
         let area_resp = egui::Area::new(this_id)
             .order(egui::Order::Foreground)
             .fixed_pos(pos)
@@ -172,14 +179,23 @@ pub fn named_popover(
                 i.pointer.any_pressed()
                     && i.pointer
                         .interact_pos()
-                        .is_some_and(|p| !area_resp.response.rect.contains(p) && !resp.rect.contains(p))
+                        .is_some_and(|p| !area_resp.response.rect.contains(p) && !button.rect.contains(p))
             });
             let escaped = ui.input(|i| i.key_pressed(egui::Key::Escape));
             if pressed_outside || escaped {
-                ui.ctx().data_mut(|d| d.insert_temp::<Option<egui::Id>>(state_key, None));
+                close_popover(ui.ctx());
             }
         }
     }
+    opened
+}
+
+/// Only one popover is open at a time; this holds its id.
+const ACTIVE_POPOVER_KEY: &str = "active_customize_popover";
+
+/// Closes whichever popover is currently open.
+pub fn close_popover(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.insert_temp::<Option<egui::Id>>(egui::Id::new(ACTIVE_POPOVER_KEY), None));
 }
 
 /// Legacy single-drawer popover wrapper retained for Cartography controls.
@@ -344,12 +360,11 @@ pub fn sphere_popovers(ui: &mut Ui, id_prefix: &str, title: &str, rep: &mut Sphe
 
 /// Title row inside a layer customization popover with a layer-wide reset button and optional close button.
 pub fn popover_header(ui: &mut Ui, show_close: bool, title: &str, modified: bool, on_reset: impl FnOnce()) {
-    let state_key = egui::Id::new("active_customize_popover");
     ui.horizontal(|ui| {
         ui.label(RichText::new(title).strong());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if show_close && ui.small_button("×").on_hover_text("Close").clicked() {
-                ui.ctx().data_mut(|d| d.insert_temp::<Option<egui::Id>>(state_key, None));
+                close_popover(ui.ctx());
             }
             if modified && ui.small_button("Reset Layer").clicked() {
                 on_reset();

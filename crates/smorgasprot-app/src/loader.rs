@@ -9,8 +9,8 @@ use smorgasprot_core::{
 use std::path::Path;
 
 /// Default display names for the two interface groups.
-const GROUP_A_NAME: &str = "Group A";
-const GROUP_B_NAME: &str = "Group B";
+pub const GROUP_A_NAME: &str = "Group A";
+pub const GROUP_B_NAME: &str = "Group B";
 
 /// What to load: a structure file and which chains form each side of the interface.
 #[derive(Clone, Debug)]

@@ -32,7 +32,7 @@ use crate::interface::model::{
 use crate::model::{
     AtomRecord, BondKind, ComplexStructure, Element, GlobalResidueIdx, ResidueRecord, SecStruct,
 };
-use crate::sasa::{SasaParams, compute_complex_sasa, is_interfacial_atom};
+use crate::sasa::{SasaParams, compute_complex_sasa};
 use crate::spatial::SpatialGrid;
 use glam::Vec3;
 use std::collections::HashMap;
@@ -387,6 +387,35 @@ pub fn compute_aliphatic_packing_scores(
     scores
 }
 
+/// Distance from each assigned atom to its nearest opposite-side atom, or `INFINITY` beyond `reach_a`.
+/// Searched independently of SASA, whose neighbor query stops near 5 Å.
+fn min_cross_distances(complex: &ComplexStructure, atom_sides: &[InterfaceSide], reach_a: Option<f32>) -> Vec<f32> {
+    let mut dists = vec![f32::INFINITY; complex.atoms.len()];
+    let Some(reach_a) = reach_a.filter(|r| *r > 0.0) else {
+        return dists;
+    };
+    let mut grid = SpatialGrid::new(reach_a);
+    for (i, atom) in complex.atoms.iter().enumerate() {
+        if atom_sides[i].is_assigned() {
+            grid.insert(i as u32, atom.pos_3d);
+        }
+    }
+    for (i, atom) in complex.atoms.iter().enumerate() {
+        let side = atom_sides[i];
+        if !side.is_assigned() {
+            continue;
+        }
+        let mut min_d2 = f32::INFINITY;
+        grid.query_radius(atom.pos_3d, reach_a, |j, _, d2| {
+            if atom_sides[j as usize] == side.opposite() && d2 < min_d2 {
+                min_d2 = d2;
+            }
+        });
+        dists[i] = min_d2.sqrt();
+    }
+    dists
+}
+
 /// Extracts the 3D interfacial atom nodes, residue groups, and classified 3D interaction edges
 /// from `complex` using the active `partition`.
 pub fn extract_3d_interface_graph(
@@ -401,6 +430,7 @@ pub fn extract_3d_interface_graph(
     let multi_chain_a = partition.group_a_chains.len() > 1;
     let multi_chain_b = partition.group_b_chains.len() > 1;
     let atom_sides = partition.atom_sides(complex);
+    let cross_dists = min_cross_distances(complex, &atom_sides, partition.max_proximity_cutoff_a());
 
     let mut res_to_territory: HashMap<GlobalResidueIdx, TerritoryIdx> = HashMap::new();
     let mut territories: Vec<ResidueTerritory> = Vec::new();
@@ -412,7 +442,7 @@ pub fn extract_3d_interface_graph(
             continue;
         }
         let sasa = &sasa_vec[a_idx];
-        if !is_interfacial_atom(side, sasa, sasa_p) {
+        if !partition.is_interfacial(sasa.buried_sasa_a2, cross_dists[a_idx]) {
             continue;
         }
 
@@ -582,4 +612,49 @@ pub fn extract_3d_interface_graph(
     }
 
     Ok((territories, nodes, edges))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::interface::definition::InterfaceCriterion;
+    use crate::ingest::load_complex;
+    use crate::params::AnalysisParams;
+
+    /// Brute-force nearest opposite-side distance, to validate the grid search at any cutoff.
+    fn brute_cross_dist(complex: &ComplexStructure, sides: &[InterfaceSide], i: usize) -> f32 {
+        let pi = Vec3::from(complex.atoms[i].pos_3d);
+        complex
+            .atoms
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| sides[*j] == sides[i].opposite())
+            .map(|(_, a)| pi.distance(Vec3::from(a.pos_3d)))
+            .fold(f32::INFINITY, f32::min)
+    }
+
+    #[test]
+    fn proximity_criterion_matches_brute_force_beyond_sasa_reach() {
+        let complex = load_complex("../../examples/7JVB.cif").unwrap();
+        let base = InterfacePartition::from_chains(&complex, "t", "A", vec!["A".into()], "B", vec!["C".into()]);
+        let sides = base.atom_sides(&complex);
+        let p = AnalysisParams::default();
+
+        let mut counts = Vec::new();
+        for cutoff_a in [4.5_f32, 8.0] {
+            let part = base.clone().with_criteria(vec![InterfaceCriterion::Proximity { cutoff_a }]);
+            let (_, nodes, _) = extract_3d_interface_graph(&complex, &part, &p.sasa, &p.contacts).unwrap();
+            let included: std::collections::HashSet<usize> =
+                nodes.iter().map(|n| n.global_atom.0 as usize).collect();
+            for i in (0..complex.atoms.len()).filter(|&i| sides[i].is_assigned()) {
+                let d = brute_cross_dist(&complex, &sides, i);
+                // Skip pairs within float noise of the cutoff.
+                if (d - cutoff_a).abs() > 1e-3 {
+                    assert_eq!(included.contains(&i), d <= cutoff_a, "atom {i} at {d} Å, cutoff {cutoff_a} Å");
+                }
+            }
+            counts.push(nodes.len());
+        }
+        assert!(counts[1] > counts[0]);
+    }
 }

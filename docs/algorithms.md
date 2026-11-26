@@ -40,9 +40,16 @@ Given the user's current chain assignment into **Group A** ($\mathcal{S}_A$) and
    * **Unbound SASA ($A_i^{\text{free}}$):** Occluded only by atoms in the *same* group ($\mathcal{S}_A$ or $\mathcal{S}_B$).
    * **Bound SASA ($A_i^{\text{bound}}$):** Occluded by atoms in *either* $\mathcal{S}_A$ or $\mathcal{S}_B$.
    * **Buried Area:** $\Delta\text{SASA}_i = \max(0, A_i^{\text{free}} - A_i^{\text{bound}})$.
-3. **Inclusion Criterion:**
-   An atom $i \in \mathcal{S}_A \cup \mathcal{S}_B$ enters the `InterfaceMap` if:
+3. **Inclusion Criteria (`InterfaceCriterion`, per interface):**
+   Each `InterfacePartition` carries a list of criteria; an atom $i \in \mathcal{S}_A \cup \mathcal{S}_B$
+   enters the `InterfaceMap` if it satisfies **any** of them:
+   * `BuriedSasa { min_a2 }`: $\Delta\text{SASA}_i > \text{min\_a2}$ (the standard interface definition).
+   * `Proximity { cutoff_a }`: $\min_{j \in \text{opposite}} \|\mathbf{p}_i - \mathbf{p}_j\|_2 \le \text{cutoff\_a}$
+     (atom centers; searched independently of the SASA neighbor query, so any cutoff is honored).
+
+   Interfaces created at load time use `[BuriedSasa { 0.15 Å² }, Proximity { 4.5 Å }]`:
    $$\Delta\text{SASA}_i > 0.15\text{ \AA}^2 \quad \text{or} \quad \min_{j \in \text{opposite}} \|\mathbf{p}_i - \mathbf{p}_j\|_2 \le 4.5\text{ \AA}$$
+   The Slice tab's interface builder (New / Edit) edits the chain groups and criteria of one interface.
 
 ### Covalent Bond Detection & Edge Classification (`bonds.rs`, `physics.rs`)
 Before classifying a first-shell atom pair as a clash, salt bridge, hydrogen bond, or generic

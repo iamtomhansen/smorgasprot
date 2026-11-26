@@ -1,12 +1,16 @@
 //! Complex tab controls: group names, color palette, 3D representations with customization popovers, and explode separation.
 
+mod interface_builder;
+
 use super::widgets::{
     UNIT_RANGE, max_text_width, param_group_controls, presentation_popover, row_height, section, slider,
     sphere_popovers, tween_presets, tween_slider,
 };
 use crate::dataset::ViewerDataset;
 use crate::state::{BoundaryLayerStyle, PresentationCaps, UiState, WorkspaceTab};
+use crate::style::InterfaceSidePalette;
 use egui::{Color32, RichText, ScrollArea, Ui};
+use interface_builder::{BuilderTarget, InterfaceDraft, builder_popover};
 use smorgasprot_core::InterfaceSide;
 
 const INTERFACE_MESH_REMESH_DEBOUNCE_S: f64 = 0.2;
@@ -18,7 +22,7 @@ pub fn show(ui: &mut Ui, ds: &mut ViewerDataset, state: &mut UiState) {
 
     let danger_color = state.palette.chrome.error;
     section(ui, "Active interface", |ui| {
-        active_interface_section(ui, ds, danger_color);
+        active_interface_section(ui, ds, &state.palette.sides, danger_color);
     });
 
     // Display-only rename and color customization; does not affect chain assignment.
@@ -233,6 +237,7 @@ struct InterfaceListUiState {
     renaming: Option<(usize, String)>,
     focus_rename: bool,
     confirm_delete: Option<ConfirmDelete>,
+    builder: Option<InterfaceDraft>,
 }
 
 /// A pending deletion of a single interface or all interfaces, awaiting user confirmation.
@@ -249,7 +254,7 @@ fn interface_display_name(ds: &ViewerDataset, idx: usize) -> String {
     }
 }
 
-fn active_interface_section(ui: &mut Ui, ds: &mut ViewerDataset, danger_color: Color32) {
+fn active_interface_section(ui: &mut Ui, ds: &mut ViewerDataset, sides: &InterfaceSidePalette, danger_color: Color32) {
     let state_id = egui::Id::new("complex_active_interface_ui");
     let mut ui_state = ui
         .ctx()
@@ -265,7 +270,7 @@ fn active_interface_section(ui: &mut Ui, ds: &mut ViewerDataset, danger_color: C
 
     // Sets the height of the scrollable list to show a maximum of this many rows before scrolling.
     let visible_rows = 6.0;
-    let btn_w = max_text_width(ui, &["New", "Rename", "Delete", "Delete all"], false)
+    let btn_w = max_text_width(ui, &["New", "Edit", "Rename", "Delete", "Delete all"], false)
         + ui.spacing().button_padding.x * 2.0
         + 4.0;
     let spacing = ui.spacing().item_spacing;
@@ -356,8 +361,11 @@ fn active_interface_section(ui: &mut Ui, ds: &mut ViewerDataset, danger_color: C
         // Action buttons to the right of the interface selector.
         ui.vertical(|ui| {
             let btn_size = egui::vec2(btn_w, row_h);
-            if ui.add(egui::Button::new("New").min_size(btn_size)).clicked() {
-                // Intentional no-op until interface creation workflow is implemented.
+            let new_btn = ui.add(egui::Button::new("New").min_size(btn_size));
+            builder_popover(ui, &new_btn, ds, BuilderTarget::New, &mut ui_state.builder, sides, danger_color);
+            let edit_btn = ui.add_enabled(active_idx.is_some(), egui::Button::new("Edit").min_size(btn_size));
+            if let Some(idx) = active_idx {
+                builder_popover(ui, &edit_btn, ds, BuilderTarget::Edit(idx), &mut ui_state.builder, sides, danger_color);
             }
             if ui
                 .add_enabled(active_idx.is_some(), egui::Button::new("Rename").min_size(btn_size))

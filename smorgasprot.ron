@@ -68,8 +68,6 @@
             probe_radius_a: 1.4,
             sphere_points: 72,
             grid_resolution_a: 6.4,
-            interface_min_buried_a2: 0.15,
-            interface_max_cross_dist_a: 4.5,
         ),
         contacts: (
             first_shell_cutoff_a: 4.5,

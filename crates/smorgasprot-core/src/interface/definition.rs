@@ -29,8 +29,43 @@ impl InterfaceSide {
     }
 }
 
+/// One rule by which an atom assigned to either side qualifies as interfacial.
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq)]
+pub enum InterfaceCriterion {
+    /// Buries more than `min_a2` Å² of solvent-accessible surface upon binding (ΔSASA).
+    BuriedSasa { min_a2: f32 },
+    /// Lies within `cutoff_a` Å (atom center to atom center) of any opposite-side atom.
+    Proximity { cutoff_a: f32 },
+}
+
+impl InterfaceCriterion {
+    pub const DEFAULT_MIN_BURIED_A2: f32 = 0.15;
+    pub const DEFAULT_PROXIMITY_A: f32 = 4.5;
+
+    pub const fn buried_sasa() -> Self {
+        Self::BuriedSasa { min_a2: Self::DEFAULT_MIN_BURIED_A2 }
+    }
+
+    pub const fn proximity() -> Self {
+        Self::Proximity { cutoff_a: Self::DEFAULT_PROXIMITY_A }
+    }
+
+    /// Standard ΔSASA criterion, with proximity retaining boundary contacts whose burial is low.
+    pub fn defaults() -> Vec<Self> {
+        vec![Self::buried_sasa(), Self::proximity()]
+    }
+
+    #[inline]
+    pub fn admits(self, buried_sasa_a2: f32, min_cross_dist_a: f32) -> bool {
+        match self {
+            Self::BuriedSasa { min_a2 } => buried_sasa_a2 > min_a2,
+            Self::Proximity { cutoff_a } => min_cross_dist_a <= cutoff_a,
+        }
+    }
+}
+
 /// Complete demarcation of an interface partition between two groups of atoms.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct InterfacePartition {
     /// User-facing name of the interface partition.
     pub name: String,
@@ -42,6 +77,9 @@ pub struct InterfacePartition {
     pub rule_a: AtomSelection,
     /// The inclusion criteria for atoms in group B.
     pub rule_b: AtomSelection,
+    /// An assigned atom is interfacial if it satisfies any of these.
+    #[serde(default = "InterfaceCriterion::defaults")]
+    pub criteria: Vec<InterfaceCriterion>,
     /// The indices of all atoms in group A.
     pub side_a_atoms: Vec<GlobalAtomIdx>,
     /// The indices of all atoms in group B.
@@ -68,6 +106,7 @@ impl InterfacePartition {
             group_b_name: group_b_name.into(),
             rule_a,
             rule_b,
+            criteria: InterfaceCriterion::defaults(),
             side_a_atoms: Vec::new(),
             side_b_atoms: Vec::new(),
             group_a_chains,
@@ -104,6 +143,7 @@ impl InterfacePartition {
             group_b_name: group_b_name.into(),
             rule_a,
             rule_b,
+            criteria: InterfaceCriterion::defaults(),
             side_a_atoms: Vec::new(),
             side_b_atoms: Vec::new(),
             group_a_chains: Vec::new(),
@@ -111,6 +151,29 @@ impl InterfacePartition {
         };
         part.recompute_membership(complex);
         part
+    }
+
+    #[must_use]
+    pub fn with_criteria(mut self, criteria: Vec<InterfaceCriterion>) -> Self {
+        self.criteria = criteria;
+        self
+    }
+
+    /// Whether an assigned atom with these metrics satisfies any of `criteria`.
+    #[inline]
+    pub fn is_interfacial(&self, buried_sasa_a2: f32, min_cross_dist_a: f32) -> bool {
+        self.criteria.iter().any(|c| c.admits(buried_sasa_a2, min_cross_dist_a))
+    }
+
+    /// Largest proximity cutoff among `criteria`, bounding the cross-side distance search.
+    pub fn max_proximity_cutoff_a(&self) -> Option<f32> {
+        self.criteria
+            .iter()
+            .filter_map(|c| match *c {
+                InterfaceCriterion::Proximity { cutoff_a } => Some(cutoff_a),
+                InterfaceCriterion::BuriedSasa { .. } => None,
+            })
+            .reduce(f32::max)
     }
 
     /// Re-evaluates `rule_a` and `rule_b` against `complex`, updating `side_a_atoms` and `side_b_atoms`.

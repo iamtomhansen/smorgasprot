@@ -22,7 +22,7 @@ smorgasprot/
     │   ├── selection.rs          AtomSelection algebra (predicates, combinators, and ComplexStructure queries)
     │   ├── interface.rs          Submodule declarations and re-exports for interface cartography & geometry
     │   ├── interface/
-    │   │   ├── definition.rs     InterfaceSide, InterfacePartition
+    │   │   ├── definition.rs     InterfaceSide, InterfaceCriterion, InterfacePartition
     │   │   ├── model.rs          InterfaceMap, ProjectionPlane, ResidueTerritory, AtomNode, InterfaceEdge, InterfaceGeometry
     │   │   ├── flatten.rs        Projection plane (SVD), 2D relaxation → build_interface_map
     │   │   ├── contour.rs        Residue territory contours (SDF, Voronoi, Chaikin)
@@ -55,7 +55,7 @@ Modules use the `foo.rs` + `foo/` layout (no `mod.rs`).
 There is deliberately **one** type for "a loaded structure": `dataset::ViewerDataset`. It
 owns the source `ComplexStructure`, every computed `InterfaceViewData`, and the
 analysis params that produced them. Editing chain-to-group membership goes through
-`InterfacePartition` (via `ViewerDataset::add_interface`/`remove_interface`), not a separate
+`InterfacePartition` (via `ViewerDataset::add_interface`/`replace_interface`/`remove_interface`), not a separate
 draft/commit pair.
 
 ## Load pipeline
