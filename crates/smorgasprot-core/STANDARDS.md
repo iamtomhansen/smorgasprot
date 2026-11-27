@@ -1,6 +1,6 @@
 # Scientific Coding Standards (`smorgasprot-core`)
 
-This document defines the coding, documentation, and reproducibility standards for `smorgasprot-core`. Our goal is **scientific legibility**: every module and algorithm should be accurate, reproducible, interpretable, and explainable to a domain scientist, adapting the *literate programming* ideal (Ziemann, Poulain, & Bora, 2023) to idiomatic Rust.
+This document defines the self-imposed coding, documentation, and reproducibility standards for `smorgasprot-core`. My goal is **scientific legibility**: every module and algorithm should be accurate, reproducible, interpretable, and explainable to a domain scientist. This is my best attempt at bringing *literate programming* (Ziemann, Poulain, & Bora, 2023) to idiomatic Rust.
 
 ---
 
@@ -11,10 +11,10 @@ Every `.rs` file in `smorgasprot-core` must begin with a `//!` module-level doc 
 ### Required Structure
 
 ```rust
-//! One-sentence summary of what this module does (displayed in parent module listings).
+//! One-to-two sentence summary of what this module does (displayed in parent module listings).
 //!
 //! ## Summary
-//! Plain-English, PhD-level explanation of the scientific or geometric problem solved here.
+//! Plain-English, explanation of the scientific or geometric problem solved here.
 //! Introduce the main entry points (e.g., [`function_one`]) and primary data structures
 //! (e.g., [`StructOne`]) using intra-doc links, and describe the high-level data flow.
 //!
@@ -35,7 +35,7 @@ Every `.rs` file in `smorgasprot-core` must begin with a `//!` module-level doc 
 ## 2. Function-Level Literate Programming
 
 - **Numbered Algorithmic Blocks**: Inside non-trivial scientific functions, use numbered comments (`// 1. ...`, `// 2. ...`, `// 3. ...`) to narrate *why* each computational step exists and how it transforms the data, even when helper functions perform the underlying work.
-- **Docstrings (`///`)**: Document public functions, structs, and fields with their purpose, **physical units** (e.g., `Å`, `kcal/mol`, `radians`), and any preconditions.
+- **Docstrings (`///`)**: Document public functions, structs, and fields with their purpose, units (`Å`, `kcal/mol`, `radians`), and any preconditions.
 
 ---
 
@@ -46,7 +46,7 @@ Every `.rs` file in `smorgasprot-core` must begin with a `//!` module-level doc 
   Name, A., Name, B., Name, C. (Year). Title. https://doi.org/d.o.i.
   ```
   List up to 3 authors; for 4 or more authors, use `First, A. et al.`.
-- **Inline Citations**: In function or struct docstrings, cite the method concisely (e.g., `Shrake & Rupley (1973)` or `[Shrake & Rupley (1973)](https://doi.org/...)`) rather than repeating the full bibliographic entry.
+- **Inline Citations**: In function or struct docstrings, cite the method concisely (e.g., `Shrake & Rupley (1973)`) rather than repeating the full bibliographic entry.
 - **Central Bibliography**: All references are also collected in `REFERENCES.md` (maintained via Zotero).
 
 ---

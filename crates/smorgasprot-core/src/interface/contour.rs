@@ -1,19 +1,19 @@
-//! Residue territory 2D/3D contour generation: ΔSASA-scaled smooth-union signed distance fields
-//! (preserving concave C/L/Y-shaped residues), radius-weighted Voronoi clipping, Marching Squares
-//! contour extraction, Chaikin smoothing, and 3D relief draping.
-//!
-//! ## Works referenced
-//! 1. **Marching Squares Iso-Contour Extraction:**
-//!    Lorensen, W. E., & Cline, H. E. (1987). Marching cubes: A high resolution 3D surface
-//!    construction algorithm (2D analog). *ACM SIGGRAPH Computer Graphics*, 21(4), 163–169.
-//! 2. **Polynomial Smooth Minimum (`smin`) for Signed Distance Fields:**
-//!    Quilez, I. (2013). Smooth minimum functions for implicit surface blending.
-//! 3. **Weighted Voronoi / Power Diagrams:**
-//!    Aurenhammer, F. (1987). Power diagrams: properties, algorithms and applications.
-//!    *SIAM Journal on Computing*, 16(1), 78–96.
-//! 4. **Corner-Cutting Curve Smoothing:**
-//!    Chaikin, G. M. (1974). An algorithm for high-speed curve generation.
-//!    *Computer Graphics and Image Processing*, 3(4), 346–349.
+//! Residue territory 2D/3D contour generation.
+//! 
+//! ## Summary
+//! This is just a visualization layer tool. It draws borders around the 2D projections of residues
+//! and/or molecules in the interface map.
+//! 
+//! ## Considerations
+//! The size of the contour is scaled by the buried surface area of each atom, giving a visual
+//! sense of the relative contribution of each atom and residue to the interface. I considered
+//! allowing other data to be embedded in the contour size channel, but found that these alternate
+//! views were less useful at best, misleading at worst. The buried surface area is an intuitive
+//! choice.
+//! 
+//! To make nice shapes, various smooth-union and smoothing techniques are used. The circle radii
+//! are scaled by the buried surface area, and then a concave union is drawn, ensuring that
+//! residues are contiguous. The corners are then smoothed with Chaikin's corner-cutting algorithm.
 
 use super::model::{AtomNode, ProjectionPlane, ResidueTerritory};
 use glam::{Vec2, Vec3};

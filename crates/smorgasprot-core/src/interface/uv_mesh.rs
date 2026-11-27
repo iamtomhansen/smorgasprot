@@ -1,19 +1,18 @@
-//! Interface sheet mesh: a smooth sheet lying midway between the van der Waals
-//! surfaces of `SideA` and `SideB`.
-//!
-//! Pipeline, all inside [`build_interface_sheet_mesh`]:
-//! 1. Lay a regular grid of square cells on the interface's projection plane,
-//!    and move each vertex along the plane normal onto the nearest point where
-//!    the bisector crosses from side A to side B.
+//! A smooth sheet lying midway between the van der Waals surfaces of `SideA` and `SideB`.
+//! 
+//! ## Summary
+//! Generates a flat mesh and iteratively moves its vertices onto the bisector between the
+//! two sides of the interface. This is all done in [`build_interface_sheet_mesh`]:
+//! 1. Lay a regular grid of square cells on the interface's projection plane, as
+//!    calculated by PCA.
 //! 2. Iterate:
-//!    a. Newton-step each vertex onto the bisector f(x) = d_A(x) - d_B(x) = 0,
-//!    where d_S is the smoothed distance from x to side S's vdW surface.
+//!    a. Step each vertex toward the bisector along the plane normal.
 //!    b. Puncture: remove triangles that do not lie on the bisector.
 //!    c. Slide each vertex within the sheet toward its neighbours' average,
 //!    so triangles stay evenly sized without changing the sheet's shape.
 //!    d. Once the sheet has roughly settled, split every edge stretched past
-//!    `SPLIT_EDGE_RATIO` × the target length, so pockets the flat starting
-//!    grid could not reach get enough vertices to follow them.
+//!    `SPLIT_EDGE_RATIO` × the target length, creating finer geometry to reach
+//!    deeper into pockets.
 //!
 //!    Stop when no vertex moves more than `stop_tolerance_a` and no edge
 //!    needed splitting.
@@ -22,6 +21,7 @@
 //!    joining two separate fans of triangles. The result is a 2-manifold that
 //!    may have holes.
 //!
+//! ## Considerations
 //! Why seeding and puncturing are needed: the bisector is a smooth surface,
 //! but it can have several separate parts, such as the main interface plus a
 //! tube around a loop of one partner that pokes into the other. If the
@@ -38,16 +38,13 @@
 //! each relaxation prevents that. It costs little: orientation is checked
 //! against the surface normal each vertex recorded while being projected, and
 //! only long triangles (possible bridges) need the field evaluated again.
-
-//! The mesh carries geometry only. Grid lines, solvent holes and colouring are
-//! decorations drawn on top of it.
+//! 
+//! Some constants are not parametrized because they are either purely geometric
+//! or would serve no purpose to a user. e.g. `RELAX_RATE` is a compromise between
+//! speed and stability, but other speed-based knobs already exist.
 //!
-//! The mesh starts as a regular grid but is a general triangle mesh from then
-//! on: edge splits add vertices of any valence. Grid lines are drawn by the
-//! shader from surface coordinates, so the mesh never needs quad structure.
-//! Splits keep the mesh a valid, consistently wound disc (no T-junctions).
-//!
-//! TODO(perf): a full build takes ~60 ms at default smoothing and ~300 ms at
+//! ## TODO
+//! (perf): a full build takes ~60 ms at default smoothing and ~300 ms at
 //! the tightest (400 interface atoms, release build). Nearly all of it is
 //! `soft_min_distance`, called once per vertex per iteration against every atom
 //! on a side. In rough order of payoff:
@@ -100,8 +97,6 @@ crate::param_group! {
     }
 }
 
-/// NON-PARAMETRIZED CONSTANTS
-
 /// Mesh edge length as a multiple of `smoothing_a`. Smoothing erases features
 /// narrower than about sigma, and a feature needs ~2 edges to show, so sigma/2
 /// resolves everything that survives the smoothing.
@@ -141,10 +136,6 @@ const MIN_NORMAL_ALIGNMENT: f32 = 0.5;
 /// so pocket edges are unaffected; bridging edges are what this stops.
 const MAX_SPLIT_EDGE_TILT: f32 = 0.5;
 
-// ---------------------------------------------------------------------------
-// Mesh
-// ---------------------------------------------------------------------------
-
 /// Builds a triangle mesh lying midway between the vdW surfaces of the two sides.
 ///
 /// `plane` is the interface's projection plane (shared with the 2D map, so the
@@ -157,6 +148,8 @@ pub fn build_interface_sheet_mesh(
     p: &InterfaceMeshParams,
 ) -> SurfaceMesh {
     debug_assert!(p.smoothing_a > 0.0, "smoothing_a must be positive, got {}", p.smoothing_a);
+
+    // 1. Build the smoothed bisector field and seed a regular PCA-plane grid onto it.
     let Some(field) = BisectorField::new(complex, nodes, p.smoothing_a) else {
         return SurfaceMesh::default();
     };
@@ -170,6 +163,8 @@ pub fn build_interface_sheet_mesh(
     // than the stop tolerance, or the loop could stop before any split.
     let settled_below = (SPLIT_WHEN_SETTLED * h).max(p.stop_tolerance_a);
 
+    // 2. Iteratively project toward f = 0, puncture bridges/tears, relax tangentially, and split
+    //    stretched edges once settled.
     let mut converged = false;
     for _ in 0..p.max_iterations {
         let max_move = sheet.project(&field, max_step);
@@ -201,6 +196,7 @@ pub fn build_interface_sheet_mesh(
         sheet.sample_surface(&field);
     }
 
+    // 3. Final strict puncture, footprint trim, manifold pinch-splitting, and area-weighted normals.
     sheet.puncture(&field, h, Stage::Final);
     let mut mesh = sheet.into_trimmed_mesh(&field, p.footprint_cutoff_a);
     split_pinched_vertices(&mut mesh);
@@ -242,12 +238,10 @@ impl SurfaceSample {
 struct SheetMesh {
     positions: Vec<Vec3>,
     triangles: Vec<[u32; 3]>,
-    /// Border vertices are projected but never relaxed, otherwise the sheet
-    /// would shrink inward.
+    /// Border vertices are projected but never relaxed, otherwise the sheet would shrink inward.
     is_border: Vec<bool>,
-    /// Per vertex, the bisector as seen from where the vertex was last
-    /// projected. Lets [`Self::puncture`] check every triangle's orientation
-    /// without evaluating the field again.
+    /// Per vertex, the bisector as seen from where the vertex was last projected. Lets
+    /// [`Self::puncture`] check every triangle's orientation without evaluating the field again.
     surface: Vec<SurfaceSample>,
 }
 
@@ -441,7 +435,7 @@ impl SheetMesh {
                 (along_surface && field.nearest_surface(mid).0 <= cutoff).then_some((len_sq, (a, b), sample))
             })
             .collect();
-        candidates.sort_unstable_by(|l, r| r.0.total_cmp(&l.0));
+        candidates.sort_unstable_by(|l, r| r.0.total_cmp(&l.0).then_with(|| l.1.cmp(&r.1)));
 
         let mut touched = vec![false; self.triangles.len()];
         let mut added = 0;
@@ -783,12 +777,20 @@ impl BisectorField {
 /// `atoms` must be non-empty.
 fn soft_min_distance(atoms: &[Atom], x: Vec3, sigma: f32) -> (f32, Vec3) {
     let s_min = atoms.iter().map(|a| a.surface_distance(x)).fold(f32::INFINITY, f32::min);
+    // Contributions with (s_i - s_min) / sigma > 18 are < exp(-18) ≈ 1.5e-8 (< f32::EPSILON).
+    let s_cutoff = s_min + 18.0 * sigma;
+    let inv_sigma = -1.0 / sigma;
 
     let (mut e_sum, mut grad) = (0.0_f32, Vec3::ZERO);
     for atom in atoms {
+        let max_r = s_cutoff + atom.radius;
         let offset = x - atom.pos;
-        let dist = offset.length().max(f32::EPSILON);
-        let e = (-(dist - atom.radius - s_min) / sigma).exp();
+        let d2 = offset.length_squared();
+        if max_r > 0.0 && d2 > max_r * max_r {
+            continue;
+        }
+        let dist = d2.sqrt().max(f32::EPSILON);
+        let e = ((dist - atom.radius - s_min) * inv_sigma).exp();
         e_sum += e;
         grad += e * offset / dist;
     }
