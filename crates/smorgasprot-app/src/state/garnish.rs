@@ -19,7 +19,7 @@ pub struct SurfaceRepStyle {
 impl Default for SurfaceRepStyle {
     fn default() -> Self {
         Self {
-            color: VisualChannel::new(ChainColorLens::InterfaceSide, Color32::from_rgb(86, 180, 233)),
+            color: VisualChannel::new(ChainColorLens::ChainIndex, Color32::from_rgb(86, 180, 233)),
             presentation: Self::default_presentation(),
         }
     }
@@ -46,7 +46,7 @@ pub struct RibbonRepStyle {
 impl Default for RibbonRepStyle {
     fn default() -> Self {
         Self {
-            color: VisualChannel::new(ChainColorLens::InterfaceSide, Color32::from_rgb(86, 180, 233)),
+            color: VisualChannel::new(ChainColorLens::ChainIndex, Color32::from_rgb(86, 180, 233)),
             width: VisualChannel::new(AtomSizeMode::Fixed, 0.28),
             width_scale: 1.0,
             presentation: Self::default_presentation(),
@@ -125,7 +125,7 @@ pub struct CartoonRepStyle {
 impl Default for CartoonRepStyle {
     fn default() -> Self {
         Self {
-            color: VisualChannel::new(ChainColorLens::InterfaceSide, Color32::from_rgb(86, 180, 233)),
+            color: VisualChannel::new(ChainColorLens::ChainIndex, Color32::from_rgb(86, 180, 233)),
             params: CartoonParams::default(),
             presentation: Self::default_presentation(),
         }
@@ -303,7 +303,11 @@ impl Default for GarnishViewSettings {
             ribbon: RibbonRepStyle::default(),
             cartoon: CartoonRepStyle::default(),
             ball_stick: BallStickRepStyle::default(),
-            spheres: SphereRepStyle::default(),
+            // Interface-sphere layers keep `SphereRepStyle`'s side default; whole-complex spheres start by chain.
+            spheres: SphereRepStyle {
+                fill: VisualChannel::new(ColorLens::ChainIndex, Color32::from_rgb(86, 180, 233)),
+                ..SphereRepStyle::default()
+            },
         }
     }
 }
@@ -323,5 +327,19 @@ impl GarnishViewSettings {
         self.cartoon_alpha.finish();
         self.ball_stick_alpha.finish();
         self.spheres_alpha.finish();
+    }
+
+    /// Defaults the chain-level color channels to interface side when one exists, else to chain.
+    /// Untouched channels follow; user-chosen lenses are kept.
+    pub fn retarget_color_defaults(&mut self, has_interface: bool) {
+        let (chain_lens, atom_lens) = if has_interface {
+            (ChainColorLens::InterfaceSide, ColorLens::InterfaceSide)
+        } else {
+            (ChainColorLens::ChainIndex, ColorLens::ChainIndex)
+        };
+        self.surface.color.retarget_default(chain_lens);
+        self.ribbon.color.retarget_default(chain_lens);
+        self.cartoon.color.retarget_default(chain_lens);
+        self.spheres.fill.retarget_default(atom_lens);
     }
 }

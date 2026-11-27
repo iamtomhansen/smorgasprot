@@ -1,29 +1,44 @@
-//! Secondary structure assignment: PDB/mmCIF header parsing (`_struct_conf`, `_struct_sheet_range`,
-//! `HELIX`, `SHEET`), coordinate-based Kabsch & Sander (1983) DSSP hydrogen-bond patterns, and
-//! Lovell et al. (2003) Ramachandran backbone dihedral contours.
+//! Secondary structure assignment via PDB/mmCIF headers and atomic coordinates.
+//! Simple helix-sheet-loop classification (Kabsch & Sander, 1983).
 //!
-//! ## Works referenced
-//! 1. **DSSP Electrostatic H-Bond & Turn/Bridge Assignment:**
-//!    Kabsch, W., & Sander, C. (1983). Dictionary of protein secondary structure: Pattern
-//!    recognition of hydrogen-bonded and geometrical features. *Biopolymers*, 22(12), 2577–2637.
-//! 2. **Ramachandran $(\phi, \psi)$ Contours:**
-//!    Lovell, S. C., Davis, I. W., Arendall, W. B., de Bakker, P. I. W., Word, J. M., Prisant, M. G.,
-//!    Richardson, J. S., & Richardson, D. C. (2003). Structure validation by $C\alpha$ geometry:
-//!    $\phi,\psi$ and $C\beta$ deviation. *Proteins: Structure, Function, and Bioinformatics*, 50(3), 437–450.
+//! ## Summary
+//! Assigns per-residue [`SecStruct`] (`Helix`, `Sheet`, `Loop`) and backbone `(φ, ψ)` dihedrals
+//! across polypeptide chains. The main entry point is [`assign_secondary_structure`], controlled
+//! by [`SecStructMode`].
+//!
+//! ## Considerations
+//! Secondary structure is assigned strictly from Kabsch & Sander (1983) hydrogen-bond patterns
+//! (3-turns, 4-turns, 5-turns, and parallel/antiparallel β-bridges). Missing density is considered
+//! to interrupt contiguous residues for helices. β-sheets are allowed to cross chain boundaries
+//! (e.g. inter-chain β-sandwiches). Implements core `Helix` and `Sheet` assignment rather than
+//! full DSSP 4.6 (which also includes e.g. PPII helices).
+//! Official DSSP 4.6 can be found here: https://github.com/PDB-REDO/dssp/.
+//!
+//! ## References
+//! - Kabsch, W., Sander, C. (1983). Dictionary of protein secondary structure: pattern
+//!   recognition of hydrogen-bonded and geometrical features.
+//!   https://doi.org/10.1002/bip.360221211
+//!
+//! ## TODO
+//! - Fine-grained `SecStruct` variants like (α, 3₁₀, π) helices, β-hairpins, and PPII helices.
 
-use crate::model::{ComplexStructure, SecStruct};
+use crate::model::{ComplexStructure, ResidueRecord, SecStruct};
+use crate::spatial::dihedral_deg;
 use glam::Vec3;
 use std::fs;
 use std::path::Path;
 
-/// Controls whether secondary structure is read from PDB/mmCIF header records or computed from 3D coordinates.
+/// Controls whether secondary structure is read from PDB/mmCIF header records or computed from
+/// 3D coordinates.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum SecStructMode {
-    /// TODO: Only use explicit `_struct_conf` / `_struct_sheet_range` (mmCIF) or `HELIX` / `SHEET` (PDB) records
+    /// Only use explicit `_struct_conf` / `_struct_sheet_range` (mmCIF) or `HELIX` / `SHEET` (PDB)
+    /// records; leaves residues as `Loop` if none are present.
     FromFile,
-    /// Fall back to coordinate-based DSSP if file does not assigned secondary structure (e.g. de novo models).
+    /// Fall back to coordinate-based DSSP if the file does not assign secondary structure
+    /// (e.g. de novo models).
     FromFileOrComputeDssp,
-    /// Force compute secondary structure from 3D coordinates (Kabsch & Sander (1983) DSSP + Lovell (2003) Ramachandran contours).
+    /// Force compute secondary structure from 3D coordinates (Kabsch & Sander, 1983 DSSP).
     ComputeDssp,
 }
 
@@ -34,32 +49,42 @@ struct BackboneFrame {
     ca: Vec3,
     c: Vec3,
     o: Option<Vec3>,
-    /// Reconstructed ideal amide hydrogen position (1.01 A antiparallel to preceding C=O)
+    /// Reconstructed ideal amide hydrogen position (1.01 Å antiparallel to preceding C=O)
     h: Option<Vec3>,
 }
 
-/// Assigns backbone $(\phi, \psi)$ angles and [`SecStruct`] (`Helix`, `Sheet`, `Loop`) to all
-/// polypeptide residues in `complex` according to `mode`.
+/// Assigns [`SecStruct`] (`Helix`, `Sheet`, `Loop`) to all polypeptide residues in `complex`
+/// according to `mode`.
 pub fn assign_secondary_structure(
     complex: &mut ComplexStructure,
     source_path: Option<&Path>,
     mode: SecStructMode,
 ) {
-    let frames = compute_backbone_phi_psi_and_frames(complex);
+    let frames = compute_backbone_frames(complex);
 
-    if mode == SecStructMode::FromFileOrComputeDssp
-        && let Some(path) = source_path
-        && try_parse_file_secondary_structure(path, complex)
-    {
-        return;
+    match mode {
+        SecStructMode::FromFile => {
+            if let Some(path) = source_path {
+                try_parse_file_secondary_structure(path, complex);
+            }
+        }
+        SecStructMode::FromFileOrComputeDssp => {
+            if let Some(path) = source_path
+                && try_parse_file_secondary_structure(path, complex)
+            {
+                return;
+            }
+            compute_dssp_from_frames(complex, &frames);
+        }
+        SecStructMode::ComputeDssp => {
+            compute_dssp_from_frames(complex, &frames);
+        }
     }
-
-    compute_dssp_from_frames(complex, &frames);
 }
 
-/// Extracts backbone frames, computes $(\phi, \psi)$ dihedral angles on `complex.residues`,
-/// and reconstructs ideal amide hydrogen coordinates for non-Proline residues.
-fn compute_backbone_phi_psi_and_frames(
+/// Extracts backbone frames and reconstructs ideal amide hydrogen coordinates for non-Proline
+/// residues.
+fn compute_backbone_frames(
     complex: &mut ComplexStructure,
 ) -> Vec<Option<BackboneFrame>> {
     let n_res = complex.residues.len();
@@ -327,10 +352,31 @@ fn parse_pdb_sec_struct_spans(content: &str, spans: &mut Vec<(String, i32, i32, 
     }
 }
 
-/// Evaluates Kabsch & Sander (1983) DSSP hydrogen-bond patterns and Lovell et al. (2003) Ramachandran contours.
+/// Returns true if all residues in `start..=end` belong to the same polypeptide chain with no
+/// sequence-number gaps (`|Δseq| <= 1`).
+fn is_contiguous_span(residues: &[ResidueRecord], start: usize, end: usize) -> bool {
+    if end >= residues.len() || start >= end {
+        return false;
+    }
+    for k in start..end {
+        let a = &residues[k];
+        let b = &residues[k + 1];
+        if a.chain_idx != b.chain_idx
+            || (b.seq_num - a.seq_num).abs() > 1
+            || !a.kind.is_polypeptide()
+            || !b.kind.is_polypeptide()
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// Evaluates Kabsch & Sander (1983) DSSP hydrogen-bond patterns (3₁₀/α/π helices and β-sheets).
 fn compute_dssp_from_frames(complex: &mut ComplexStructure, frames: &[Option<BackboneFrame>]) {
     let n_res = complex.residues.len();
 
+    // 1. Kabsch & Sander (1983) electrostatic H-bond energy: E = 27.888 * (1/r_ON + 1/r_CH - 1/r_OH - 1/r_CN).
     let is_hbonded = |donor_nh: usize, acceptor_co: usize| -> bool {
         if donor_nh == acceptor_co {
             return false;
@@ -359,25 +405,25 @@ fn compute_dssp_from_frames(complex: &mut ComplexStructure, frames: &[Option<Bac
         energy_kcal < -0.5
     };
 
-    let mut turn4 = vec![false; n_res];
+    // 2. Detect contiguous 3-turns (3₁₀), 4-turns (α), and 5-turns (π).
     let mut turn3 = vec![false; n_res];
+    let mut turn4 = vec![false; n_res];
+    let mut turn5 = vec![false; n_res];
     for i in 0..n_res {
-        if i + 4 < n_res
-            && complex.residues[i].chain_idx == complex.residues[i + 4].chain_idx
-            && is_hbonded(i + 4, i)
-        {
+        if is_contiguous_span(&complex.residues, i, i + 3) && is_hbonded(i + 3, i) {
+            turn3[i] = true;
+        }
+        if is_contiguous_span(&complex.residues, i, i + 4) && is_hbonded(i + 4, i) {
             turn4[i] = true;
         }
-        if i + 3 < n_res
-            && complex.residues[i].chain_idx == complex.residues[i + 3].chain_idx
-            && is_hbonded(i + 3, i)
-        {
-            turn3[i] = true;
+        if is_contiguous_span(&complex.residues, i, i + 5) && is_hbonded(i + 5, i) {
+            turn5[i] = true;
         }
     }
 
     let mut assigned = vec![SecStruct::Loop; n_res];
 
+    // 3. Assign helices from consecutive overlapping turns (α, then 3₁₀, then π).
     for i in 1..(n_res.saturating_sub(3)) {
         if turn4[i - 1] && turn4[i] {
             for r in assigned.iter_mut().take(i + 4).skip(i) {
@@ -394,13 +440,30 @@ fn compute_dssp_from_frames(complex: &mut ComplexStructure, frames: &[Option<Bac
             }
         }
     }
+    for i in 1..(n_res.saturating_sub(4)) {
+        if turn5[i - 1] && turn5[i] {
+            for r in assigned.iter_mut().take(i + 5).skip(i) {
+                if *r == SecStruct::Loop {
+                    *r = SecStruct::Helix;
+                }
+            }
+        }
+    }
 
+    // 4. Assign β-sheets from parallel and antiparallel bridges (inter-chain bridges allowed).
     for i in 1..(n_res.saturating_sub(1)) {
-        if assigned[i] == SecStruct::Helix || frames[i].is_none() {
+        if assigned[i] == SecStruct::Helix
+            || frames[i].is_none()
+            || !is_contiguous_span(&complex.residues, i - 1, i + 1)
+        {
             continue;
         }
         for j in 1..(n_res.saturating_sub(1)) {
-            if (i as isize - j as isize).abs() <= 2 || frames[j].is_none() {
+            let same_chain = complex.residues[i].chain_idx == complex.residues[j].chain_idx;
+            if (same_chain && (i as isize - j as isize).abs() <= 2)
+                || frames[j].is_none()
+                || !is_contiguous_span(&complex.residues, j - 1, j + 1)
+            {
                 continue;
             }
             let antiparallel = (is_hbonded(i, j) && is_hbonded(j, i))
@@ -416,42 +479,8 @@ fn compute_dssp_from_frames(complex: &mut ComplexStructure, frames: &[Option<Bac
     }
 
     for i in 0..n_res {
-        if assigned[i] != SecStruct::Loop {
-            complex.residues[i].sec_struct = assigned[i];
-        } else if let Some((phi, psi)) = complex.residues[i].backbone_phi_psi {
-            complex.residues[i].sec_struct = classify_ramachandran_lovell(phi, psi);
-        }
+        complex.residues[i].sec_struct = assigned[i];
     }
-}
-
-/// TODO: Use an actual 2D lookup table from Lovell
-/// Lovell et al. (2003) Top500 core Ramachandran region fallback (*Proteins* 50:437–450).
-fn classify_ramachandran_lovell(phi: f32, psi: f32) -> SecStruct {
-    let d_alpha = ((phi + 63.0) / 38.0).powi(2) + ((psi + 43.0) / 35.0).powi(2);
-    if d_alpha <= 1.0 {
-        return SecStruct::Helix;
-    }
-
-    let psi_wrapped = if psi < -135.0 { psi + 360.0 } else { psi };
-    let d_beta = ((phi + 118.0) / 55.0).powi(2) + ((psi_wrapped - 135.0) / 48.0).powi(2);
-    if d_beta <= 1.0 {
-        return SecStruct::Sheet;
-    }
-
-    SecStruct::Loop
-}
-
-/// Calculates the signed IUPAC dihedral angle (in degrees, `[-180, 180]`) defined by four 3D points.
-pub fn dihedral_deg(p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3) -> f32 {
-    let b0 = p0 - p1;
-    let b1 = p2 - p1;
-    let b2 = p3 - p2;
-    let b1_norm = b1.normalize_or_zero();
-    let v = b0 - b0.dot(b1_norm) * b1_norm;
-    let w = b2 - b2.dot(b1_norm) * b1_norm;
-    let x = v.dot(w);
-    let y = b1_norm.cross(v).dot(w);
-    y.atan2(x).to_degrees()
 }
 
 #[cfg(test)]

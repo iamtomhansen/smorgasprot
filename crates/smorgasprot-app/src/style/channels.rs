@@ -33,6 +33,14 @@ impl<L: Copy + PartialEq, V: Copy + PartialEq> VisualChannel<L, V> {
         self.lens = self.default_lens;
         self.fixed = self.default_fixed;
     }
+
+    /// Moves the default lens to `lens`; the active lens follows only if the user hadn't changed it.
+    pub fn retarget_default(&mut self, lens: L) {
+        if self.lens == self.default_lens {
+            self.lens = lens;
+        }
+        self.default_lens = lens;
+    }
 }
 
 /// Shared continuous 1D biophysical metrics evaluated across color, sizing, and label channels.
@@ -598,5 +606,25 @@ impl Choice for BFactorMode {
             Self::Crystallographic => "Crystallographic B-Factor (Rigid Blue <= 30 -> Labile Red > 70)",
             Self::AlphaFold => "AlphaFold pLDDT (High Blue > 90 -> Low Red < 50)",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retarget_default_moves_untouched_lens_but_keeps_user_choice() {
+        let mut untouched = VisualChannel::new(ChainColorLens::ChainIndex, 0u8);
+        untouched.retarget_default(ChainColorLens::InterfaceSide);
+        assert_eq!(untouched.lens, ChainColorLens::InterfaceSide);
+        assert!(untouched.is_default());
+
+        let mut chosen = VisualChannel::new(ChainColorLens::ChainIndex, 0u8);
+        chosen.lens = ChainColorLens::Bfactor;
+        chosen.retarget_default(ChainColorLens::InterfaceSide);
+        assert_eq!(chosen.lens, ChainColorLens::Bfactor);
+        chosen.reset();
+        assert_eq!(chosen.lens, ChainColorLens::InterfaceSide);
     }
 }

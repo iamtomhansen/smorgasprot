@@ -186,6 +186,8 @@ impl SmorgasprotApp {
                 self.datasets = datasets;
                 self.active = 0;
                 self.state.selection.clear();
+                let has_interface = self.datasets.first().is_some_and(|ds| ds.active_interface().is_some());
+                self.state.garnish.retarget_color_defaults(has_interface);
 
                 // A large structure starts at a coarser preset + backface culling, decided and
                 // baked onto the dataset itself at construction in `ViewerDataset::new` — this

@@ -1,13 +1,21 @@
 //! Amino acid definitions, physicochemical properties, and PDB/mmCIF residue classification.
+//! 
+//! ## Summary
 //! [`pdbtbx::Element`] provides most of the data, while this module provides convenience methods
 //! and high-level classifications.
+//! 
+//! ## Considerations
+//! Bondi VDW radii and Kyte-Doolittle hydropahty are de facto standards, but others exist.
 //!
-//! ## Works referenced:
-//! 1. **Hydropathy Index:** Kyte, J., & Doolittle, R. F. (1982). A simple method for displaying
-//!    the hydropathic character of a protein. *Journal of Molecular Biology*, 157(1), 105–132.
-//! 2. **Van der Waals Radii:** Bondi, A. (1964). van der Waals Volumes and Radii.
-//!    *The Journal of Physical Chemistry*, 68(3), 441–451; Mantina, M. et al. (2009).
-//!    Consistent van der Waals Radii for the Whole Main Group. *J. Phys. Chem. A*, 113(19), 5806–5812.
+//! ## References
+//! 1. Kyte, J., & Doolittle, R. F. (1982). A simple method for displaying the hydropathic
+//!    character of a protein. https://doi.org/10.1016/0022-2836(82)90515-0
+//! 2. Bondi, A. (1964). van der Waals Volumes and Radii. https://doi.org/10.1021/j100785a001
+//!
+//! ## TODO:
+//! - This is not exhaustive... I should use the entire PDB chemical component dictionary
+//! - These are extensive, flat structs. There's probably a clever way to generate them from a
+//!   mmCIF dictionary or something.
 
 use pdbtbx::Element;
 use serde::{Deserialize, Serialize};

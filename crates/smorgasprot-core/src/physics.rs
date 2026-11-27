@@ -35,6 +35,10 @@ use crate::model::{
 use crate::sasa::{SasaParams, compute_complex_sasa};
 use crate::spatial::SpatialGrid;
 use glam::Vec3;
+
+use crate::interactions::h_bonds::is_hydrogen_bond_baker_hubbard;
+use crate::interactions::salt_bridges::is_salt_bridge;
+use crate::interactions::vdw_contacts::check_steric_clash;
 use std::collections::HashMap;
 
 crate::param_group! {
@@ -161,117 +165,6 @@ pub fn is_adjacent_backbone_pair(res_a: &ResidueRecord, res_b: &ResidueRecord) -
         && (res_a.seq_num - res_b.seq_num).abs() <= 1
         && res_a.kind.is_polypeptide()
         && res_b.kind.is_polypeptide()
-}
-
-/// Checks if two non-bonded heavy atoms violate van der Waals steric exclusion (Word et al. 1999).
-/// Returns `Some(overlap_a)` when the penetration exceeds the allowed tolerance.
-#[inline]
-pub fn check_steric_clash(
-    atom_a: &AtomRecord,
-    atom_b: &AtomRecord,
-    dist_a: f32,
-    p: &ContactParams,
-) -> Option<f32> {
-    let is_hbond_pair = atom_a.element.is_h_bond_partner() && atom_b.element.is_h_bond_partner();
-    let tol = if is_hbond_pair {
-        p.hbond_clash_tolerance_a
-    } else {
-        p.clash_tolerance_a
-    };
-    let overlap_a = (atom_a.vdw_radius_a + atom_b.vdw_radius_a - tol) - dist_a;
-    if overlap_a > f32::EPSILON {
-        Some(overlap_a)
-    } else {
-        None
-    }
-}
-
-/// Returns true if `atom_a` and `atom_b` carry opposite formal charges within `p.salt_bridge_max_dist_a`.
-#[inline]
-pub fn is_salt_bridge(
-    atom_a: &AtomRecord,
-    res_a: &ResidueRecord,
-    atom_b: &AtomRecord,
-    res_b: &ResidueRecord,
-    dist_a: f32,
-    p: &ContactParams,
-) -> bool {
-    dist_a <= p.salt_bridge_max_dist_a && is_opposite_charged_atoms(atom_a, res_a, atom_b, res_b)
-}
-
-/// Baker & Hubbard (1984) / McDonald & Thornton (1994) heavy-atom hydrogen bond detector.
-///
-/// Requires:
-/// 1. Both atoms are polar N/O heavy atoms (`ElementExt::is_h_bond_partner`),
-/// 2. Donor–acceptor distance 2.35 A < dA < 3.50 A, and
-/// 3. Antecedent covalent bond angles angle(BaseA-A...B) >= 100° and angle(A...B-BaseB) >= 100°
-///    (when covalent base atoms are present).
-pub fn is_hydrogen_bond_baker_hubbard(
-    atom_a: &AtomRecord,
-    base_a: Option<Vec3>,
-    atom_b: &AtomRecord,
-    base_b: Option<Vec3>,
-    dist_a: f32,
-    p: &ContactParams,
-) -> bool {
-    if !atom_a.element.is_h_bond_partner()
-        || !atom_b.element.is_h_bond_partner()
-        || !(p.hbond_min_dist_a..=p.hbond_max_dist_a).contains(&dist_a)
-    {
-        return false;
-    }
-
-    let pa = Vec3::from(atom_a.pos_3d);
-    let pb = Vec3::from(atom_b.pos_3d);
-    // cos(100 deg) = -0.173648
-    let max_cos = (p.hbond_min_antecedent_angle_deg.to_radians()).cos();
-
-    if let Some(ba) = base_a {
-        let u_ba = (ba - pa).normalize_or_zero();
-        let u_ab = (pb - pa).normalize_or_zero();
-        // Angle at A is obtuse (>= 100 deg) iff dot(u_ba, u_ab) <= cos(100 deg)
-        if u_ba.dot(u_ab) > max_cos {
-            return false;
-        }
-    }
-
-    if let Some(bb) = base_b {
-        let u_bb = (bb - pb).normalize_or_zero();
-        let u_ba = (pa - pb).normalize_or_zero();
-        if u_bb.dot(u_ba) > max_cos {
-            return false;
-        }
-    }
-
-    true
-}
-
-fn is_positive_sidechain_atom(atom: &AtomRecord, res: &ResidueRecord) -> bool {
-    if let Some(aa) = res.kind.amino_acid() {
-        let aname = std::str::from_utf8(&atom.atom_name).unwrap_or("");
-        aa.is_positive_functional_atom(aname)
-    } else {
-        atom.element.is_metal_ion()
-    }
-}
-
-fn is_negative_sidechain_atom(atom: &AtomRecord, res: &ResidueRecord) -> bool {
-    if let Some(aa) = res.kind.amino_acid() {
-        let aname = std::str::from_utf8(&atom.atom_name).unwrap_or("");
-        aa.is_negative_functional_atom(aname)
-    } else {
-        false
-    }
-}
-
-fn is_opposite_charged_atoms(
-    atom_a: &AtomRecord,
-    res_a: &ResidueRecord,
-    atom_b: &AtomRecord,
-    res_b: &ResidueRecord,
-) -> bool {
-    (is_positive_sidechain_atom(atom_a, res_a) && is_negative_sidechain_atom(atom_b, res_b))
-        || (is_negative_sidechain_atom(atom_a, res_a) && is_positive_sidechain_atom(atom_b, res_b))
 }
 
 /// Returns the intrinsic apolar/aliphatic weight $w_j \in [0, 1]$ of an atom for local hydrophobic

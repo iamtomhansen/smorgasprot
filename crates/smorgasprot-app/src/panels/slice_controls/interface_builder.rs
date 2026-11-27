@@ -111,6 +111,7 @@ impl BuilderTarget {
 }
 
 /// Draws `button` as the toggle for a builder popover writing to `target`.
+/// Returns `true` on the frame a new interface is created.
 pub fn builder_popover(
     ui: &mut Ui,
     button: &egui::Response,
@@ -119,7 +120,8 @@ pub fn builder_popover(
     draft: &mut Option<InterfaceDraft>,
     sides: &InterfaceSidePalette,
     danger_color: Color32,
-) {
+) -> bool {
+    let mut created = false;
     let id_salt = match target {
         BuilderTarget::New => "interface_builder_new",
         BuilderTarget::Edit(_) => "interface_builder_edit",
@@ -132,8 +134,9 @@ pub fn builder_popover(
             *draft = Some(InterfaceDraft::new(ds, target));
         }
         if let Some(d) = draft.as_mut()
-            && builder_contents(ui, ds, d, sides, danger_color)
+            && let Some(outcome) = builder_contents(ui, ds, d, sides, danger_color)
         {
+            created = outcome == Outcome::Applied && target == BuilderTarget::New;
             *draft = None;
             close_popover(ui.ctx());
         }
@@ -141,16 +144,24 @@ pub fn builder_popover(
     if opened {
         *draft = Some(InterfaceDraft::new(ds, target));
     }
+    created
 }
 
-/// Returns `true` once the draft has been successfully applied or cancelled.
+/// How the user closed the builder.
+#[derive(PartialEq, Eq)]
+enum Outcome {
+    Applied,
+    Cancelled,
+}
+
+/// Returns an outcome once the draft has been successfully applied or cancelled.
 fn builder_contents(
     ui: &mut Ui,
     ds: &mut ViewerDataset,
     draft: &mut InterfaceDraft,
     sides: &InterfaceSidePalette,
     danger_color: Color32,
-) -> bool {
+) -> Option<Outcome> {
     let title = match draft.target {
         BuilderTarget::New => "New interface",
         BuilderTarget::Edit(_) => "Edit interface",
@@ -177,10 +188,10 @@ fn builder_contents(
 
     ui.separator();
     let blocker = draft.blocker();
-    let mut done = false;
+    let mut outcome = None;
     ui.horizontal(|ui| {
         if ui.button("Cancel").clicked() {
-            done = true;
+            outcome = Some(Outcome::Cancelled);
         }
         let apply_label = match draft.target {
             BuilderTarget::New => "Create",
@@ -193,12 +204,12 @@ fn builder_contents(
         };
         if resp.clicked() {
             match draft.apply(ds) {
-                Ok(()) => done = true,
+                Ok(()) => outcome = Some(Outcome::Applied),
                 Err(e) => draft.error = Some(e),
             }
         }
     });
-    done
+    outcome
 }
 
 fn chain_side_list(ui: &mut Ui, ds: &ViewerDataset, draft: &mut InterfaceDraft, sides: &InterfaceSidePalette) {

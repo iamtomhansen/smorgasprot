@@ -21,9 +21,13 @@ pub fn show(ui: &mut Ui, ds: &mut ViewerDataset, state: &mut UiState) {
     ui.add_space(4.0);
 
     let danger_color = state.palette.chrome.error;
+    let mut created_interface = false;
     section(ui, "Active interface", |ui| {
-        active_interface_section(ui, ds, &state.palette.sides, danger_color);
+        created_interface = active_interface_section(ui, ds, &state.palette.sides, danger_color);
     });
+    if created_interface {
+        state.garnish.retarget_color_defaults(true);
+    }
 
     // Display-only rename and color customization; does not affect chain assignment.
     section(ui, "1. Interface group names & palette", |ui| {
@@ -254,7 +258,14 @@ fn interface_display_name(ds: &ViewerDataset, idx: usize) -> String {
     }
 }
 
-fn active_interface_section(ui: &mut Ui, ds: &mut ViewerDataset, sides: &InterfaceSidePalette, danger_color: Color32) {
+/// Returns `true` on the frame a new interface is created.
+fn active_interface_section(
+    ui: &mut Ui,
+    ds: &mut ViewerDataset,
+    sides: &InterfaceSidePalette,
+    danger_color: Color32,
+) -> bool {
+    let mut created = false;
     let state_id = egui::Id::new("complex_active_interface_ui");
     let mut ui_state = ui
         .ctx()
@@ -362,7 +373,7 @@ fn active_interface_section(ui: &mut Ui, ds: &mut ViewerDataset, sides: &Interfa
         ui.vertical(|ui| {
             let btn_size = egui::vec2(btn_w, row_h);
             let new_btn = ui.add(egui::Button::new("New").min_size(btn_size));
-            builder_popover(ui, &new_btn, ds, BuilderTarget::New, &mut ui_state.builder, sides, danger_color);
+            created = builder_popover(ui, &new_btn, ds, BuilderTarget::New, &mut ui_state.builder, sides, danger_color);
             let edit_btn = ui.add_enabled(active_idx.is_some(), egui::Button::new("Edit").min_size(btn_size));
             if let Some(idx) = active_idx {
                 builder_popover(ui, &edit_btn, ds, BuilderTarget::Edit(idx), &mut ui_state.builder, sides, danger_color);
@@ -399,6 +410,7 @@ fn active_interface_section(ui: &mut Ui, ds: &mut ViewerDataset, sides: &Interfa
 
     confirm_delete_dialog(ui.ctx(), ds, &mut ui_state, danger_color);
     ui.ctx().data_mut(|d| d.insert_temp(state_id, ui_state));
+    created
 }
 
 /// A pop-up confirming destructive deletion of an interface (or all interfaces) with a cancel button.

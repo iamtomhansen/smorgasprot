@@ -166,6 +166,16 @@ impl ComplexStructure {
     pub fn select_mask(&self, sel: &crate::selection::AtomSelection) -> Vec<bool> {
         sel.select_mask(self)
     }
+
+    /// Looks up an atom within `res_idx` by trimmed atom name (e.g., `"CA"`, `"CB"`).
+    #[inline]
+    pub fn residue_atom(&self, res_idx: GlobalResidueIdx, target_name: &str) -> Option<&AtomRecord> {
+        let res = &self.residues[res_idx.0 as usize];
+        let (start, end) = (res.atom_range.0 as usize, res.atom_range.1 as usize);
+        self.atoms[start..end].iter().find(|atom| {
+            std::str::from_utf8(&atom.atom_name).unwrap_or("").trim() == target_name
+        })
+    }
 }
 
 /// Metadata and contiguous array ranges for a single polypeptide chain in [`ComplexStructure`].
