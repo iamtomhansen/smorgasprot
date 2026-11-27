@@ -1,5 +1,28 @@
-//! Shared projection-plane singular value decomposition (SVD) basis, coupled 2D spring/repulsion
-//! solver, and bas-relief/butterfly kinematics.
+//! Shared projection-plane PCA/SVD basis, coupled 2D spring/repulsion solver, and
+//! bas-relief/butterfly kinematics.
+//!
+//! ## Summary
+//! Unrolls a curved 3D protein–protein interface onto a shared 2D tangent plane while preserving
+//! local intra-side distances and cross-interface contact registration. The primary entry point is
+//! [`build_interface_map`], which outputs an [`InterfaceMap`] and [`FlatteningStats`];
+//! [`interpolate_atom_position`] maps any atom continuously between 3D, bas-relief, and 2D
+//! open-book views.
+//!
+//! ## Considerations
+//! - **Projection plane**: [`compute_shared_tangent_plane`] fits a SASA-weighted 3×3 covariance
+//!   basis (`buried_sasa_a2 + 1.0`) via symmetric Jacobi eigendecomposition, oriented `SideB → SideA`.
+//! - **Coupled relaxation**: `SideA` and `SideB` relax simultaneously in `(u, v)` with intra-side
+//!   metric springs, same-side hard-core repulsion, cross-interface registration springs, residue
+//!   cohesion, and a gentle anchor tether.
+//! - **Determinism**: Exact 2D overlaps are broken with deterministic index-seeded angles; all
+//!   loops iterate in slice order.
+//!
+//! ## References
+//! - Golub, G. H., Van Loan, C. F. (2013). *Matrix Computations* (4th ed., Ch. 8: Symmetric
+//!   Eigenvalue Problems / Jacobi Method).
+//!
+//! ## TODO
+//! - Consider a dedicated registration stiffness for cross-interface covalent/disulfide links.
 
 use super::contour::compute_territory_contours;
 use super::definition::{InterfacePartition, InterfaceSide};
@@ -71,8 +94,8 @@ pub struct FlatteningStats {
 }
 
 /// Extracts the dual-side 3D interface graph via [`extract_3d_interface_graph`], computes the shared
-/// SVD [`ProjectionPlane`], relaxes the 2D coordinates `(u, v)`, builds ΔSASA-weighted Voronoi
-/// residue territory contours, and generates the 3D inter-chain interface separator sheet mesh.
+/// weighted-PCA [`ProjectionPlane`], relaxes the 2D coordinates `(u, v)`, and builds ΔSASA-weighted
+/// Voronoi residue territory contours.
 pub fn build_interface_map(
     complex: &ComplexStructure,
     partition: &InterfacePartition,
@@ -85,10 +108,10 @@ pub fn build_interface_map(
     let cross_contacts_count = edges.iter().filter(|e| e.is_cross_interface).count();
     let intra_edges_count = edges.len() - cross_contacts_count;
 
-    // 2. Compute shared SVD projection plane Π = (origin, axis_u, axis_v, normal)
+    // 2. Compute shared weighted-PCA projection plane Π = (origin, axis_u, axis_v, normal)
     let mut plane = compute_shared_tangent_plane(&nodes);
 
-    // 4. Project atoms onto initial (u^(0), v^(0)) coordinates
+    // 3. Project atoms onto initial (u^(0), v^(0)) coordinates
     let origin = Vec3::from(plane.origin);
     let axis_u = Vec3::from(plane.axis_u);
     let axis_v = Vec3::from(plane.axis_v);
@@ -105,7 +128,7 @@ pub fn build_interface_map(
     let edge_rmse_before_a = compute_intra_edge_rmse_2d(&nodes, &edges);
     let overlaps_before = count_same_side_overlaps(&nodes, params.relax.overlap_diagnostic_dist_a);
 
-    // 5. Run coupled 2D spring + hard-core repulsion + contact registration relaxation
+    // 4. Run coupled 2D spring + hard-core repulsion + contact registration relaxation
     relax_interface_uv(&mut nodes, &territories, &edges, &initial_uv, &params.relax);
 
     let min_u = nodes
@@ -127,7 +150,7 @@ pub fn build_interface_map(
     let edge_rmse_after_a = compute_intra_edge_rmse_2d(&nodes, &edges);
     let overlaps_after = count_same_side_overlaps(&nodes, params.relax.overlap_diagnostic_dist_a);
 
-    // 6. Compute Voronoi-clipped smooth concave residue territory contours & 3D relief outlines
+    // 5. Compute Voronoi-clipped smooth concave residue territory contours & 3D relief outlines
     compute_territory_contours(&mut territories, &nodes, &plane, &params.contour);
 
     let side_a_atoms = nodes

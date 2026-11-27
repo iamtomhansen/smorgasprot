@@ -6,6 +6,7 @@ pub mod dssp;
 pub mod ingest;
 pub mod interactions;
 pub mod interface;
+pub mod isosurface;
 pub mod minimize;
 pub mod model;
 pub mod params;
@@ -26,4 +27,3 @@ pub use selection::AtomSelection;
 // Compatibility aliases for submodule paths.
 pub use interface::contour;
 pub use interface::flatten;
-pub use interface::geometry as interface_geometry;

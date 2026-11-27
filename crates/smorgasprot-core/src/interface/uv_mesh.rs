@@ -236,7 +236,9 @@ impl SurfaceSample {
 /// The sheet while it is being fitted: an indexed triangle mesh, consistently
 /// wound, with the vertices on its outer border flagged.
 struct SheetMesh {
+    /// Dense vector of vertices in 3D space.
     positions: Vec<Vec3>,
+    /// Each triangle's three vertex indices in winding order.
     triangles: Vec<[u32; 3]>,
     /// Border vertices are projected but never relaxed, otherwise the sheet would shrink inward.
     is_border: Vec<bool>,

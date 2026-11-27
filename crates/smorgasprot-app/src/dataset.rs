@@ -7,10 +7,10 @@ use smorgasprot_core::{
     GlobalResidueIdx, InterfaceGeometry, InterfaceMap, InterfacePartition, InterfaceSide, ResidueTerritory,
     SurfaceMesh, TerritoryIdx,
     flatten::FlatteningStats,
-    interface::{CavityParams, InterfaceMeshParams, build_interface_cavities, build_interface_sheet_mesh},
-    interface_geometry::{
-        GeometryParams, build_interface_geometry, build_interface_negative_mesh, compute_mesh_volume_a3,
-        extract_interface_envelope_mesh,
+    interface::{
+        CavityParams, GeometryParams, InterfaceMeshParams, build_interface_cavities,
+        build_interface_geometry, build_interface_negative_mesh, build_interface_sheet_mesh,
+        compute_mesh_volume_a3, extract_interface_envelope_mesh,
     },
     surface::{
         GeodesicPreset, SurfaceParams, build_chain_surface_mesh_with_preset, compute_chain_explode_offsets,

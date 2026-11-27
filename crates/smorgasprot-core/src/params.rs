@@ -7,7 +7,7 @@ pub use crate::contour::ContourParams;
 pub use crate::flatten::RelaxParams;
 pub use crate::interface::cavities::CavityParams;
 pub use crate::interface::uv_mesh::InterfaceMeshParams;
-pub use crate::interface_geometry::GeometryParams;
+pub use crate::interface::GeometryParams;
 pub use crate::physics::ContactParams;
 pub use crate::sasa::SasaParams;
 pub use crate::surface::SurfaceParams;

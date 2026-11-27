@@ -28,8 +28,9 @@
 //! - Add calculations for largest probe that can pass through a channel to bulk solvent (currently only largest probe that can fit inside the cavity is computed).
 //! - Do something about the ring of voxels around the interface that are not so much cavities as "external crevices".
 
+use super::GeometryParams;
 use super::definition::InterfaceSide;
-use super::geometry::{GeometryParams, extract_dual_surface_net};
+use crate::isosurface::{extract_dual_surface_net, mesh_volume_area_centroid};
 use super::model::AtomNode;
 use crate::model::{ComplexStructure, GlobalAtomIdx, SurfaceMesh};
 use glam::Vec3;
@@ -775,31 +776,6 @@ fn refine_and_mesh_component(
         fallback,
     );
     (mesh, max_internal_radius_a)
-}
-
-/// Computes `(volume_a3, surface_area_a2, centroid)` for a closed triangle mesh.
-fn mesh_volume_area_centroid(mesh: &SurfaceMesh) -> (f32, f32, [f32; 3]) {
-    if mesh.vertices.is_empty() || mesh.triangles.is_empty() {
-        return (0.0, 0.0, [0.0; 3]);
-    }
-    let mut signed_vol_6 = 0.0_f64;
-    let mut area = 0.0_f64;
-    for &[i0, i1, i2] in &mesh.triangles {
-        let (u0, u1, u2) = (i0 as usize, i1 as usize, i2 as usize);
-        if u0 < mesh.vertices.len() && u1 < mesh.vertices.len() && u2 < mesh.vertices.len() {
-            let v0 = Vec3::from(mesh.vertices[u0]);
-            let v1 = Vec3::from(mesh.vertices[u1]);
-            let v2 = Vec3::from(mesh.vertices[u2]);
-            signed_vol_6 += v0.dot(v1.cross(v2)) as f64;
-            area += 0.5 * (v1 - v0).cross(v2 - v0).length() as f64;
-        }
-    }
-    let mut sum = Vec3::ZERO;
-    for &v in &mesh.vertices {
-        sum += Vec3::from(v);
-    }
-    let centroid = (sum / mesh.vertices.len() as f32).to_array();
-    ((signed_vol_6 / 6.0).abs() as f32, area as f32, centroid)
 }
 
 /// Appends `src` vertices and triangles into `dst` with offset triangle indices.

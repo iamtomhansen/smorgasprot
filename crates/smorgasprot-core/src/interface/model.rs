@@ -1,4 +1,18 @@
 //! Domain model for macromolecular interfaces and cartographic interface maps.
+//!
+//! ## Summary
+//! Defines the core data structures for 2D/3D interface analysis: [`InterfaceMap`] (containing
+//! [`ProjectionPlane`], [`ResidueTerritory`], [`AtomNode`], and [`InterfaceEdge`]) and
+//! [`InterfaceGeometry`] (sheet, contact envelope, negative-space voids, and cavities).
+//!
+//! ## Considerations
+//! - **Dense indexing**: [`AtomNodeIdx`] and [`TerritoryIdx`] index directly into
+//!   [`InterfaceMap::nodes`] and [`InterfaceMap::territories`].
+//! - **Units**: Coordinates and distances are in Å; SASA values are in Å²; volumes are in Å³.
+//!   `strain_2d_a = dist_2d_a - dist_3d_a` (positive = stretched, negative = compressed).
+//!
+//! ## TODO
+//! - Keep `EdgeKind` aligned as new interaction types (e.g. metal coordinations) are added.
 
 use super::definition::InterfaceSide;
 use crate::model::{BondKind, ChainName, GlobalAtomIdx, GlobalResidueIdx, SurfaceMesh};
@@ -44,6 +58,8 @@ pub struct InterfaceGeometry {
     pub negative_mesh: SurfaceMesh,
     /// Total enclosed physical volume of the sub-solvent interfacial voids in cubic Angstroms (Å³).
     pub void_volume_a3: f32,
+    /// Lawrence & Colman (1993) shape complementarity S_c ∈ [-1, 1] on the contact envelope.
+    pub shape_complementarity_sc: f32,
     /// Probe-accessible buried pockets and solvent-connected channels.
     pub cavities: super::cavities::CavityAnalysis,
 }
@@ -96,16 +112,16 @@ pub struct AtomNode {
 /// Unified classification of an edge or contact between two interfacial atoms (intra-side or cross-interface).
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum EdgeKind {
-    /// A real covalent bond, as found by `bonds::detect_bonds` and stored in `ComplexStructure::bonds`.
-    /// See [`BondKind`] sub-classifications (backbone, sidechain, disulfide, other).
+    /// A real covalent bond, as found by `topology::covalent::detect_bonds` and stored in
+    /// `ComplexStructure::bonds`. See [`BondKind`] sub-classifications.
     Covalent(BondKind),
-    /// General first-shell spatial neighbor / apolar van der Waals contact (<= 4.5 A).
+    /// General first-shell spatial neighbor / apolar van der Waals contact (≤ 4.5 Å).
     VanDerWaalsContact,
     /// Steric van der Waals radius clash.
     Clash,
-    /// Hydrogen bond (2.35..=3.50 A between polar N/O heavy atoms).
+    /// Hydrogen bond (2.35–3.50 Å between polar N/O heavy atoms).
     HBond,
-    /// Salt bridge (<= 4.00 A between oppositely charged sidechain groups).
+    /// Salt bridge (≤ 4.00 Å between oppositely charged sidechain groups).
     SaltBridge,
 }
 
