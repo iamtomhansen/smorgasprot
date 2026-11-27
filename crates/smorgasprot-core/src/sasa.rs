@@ -1,17 +1,31 @@
-//! Shrake-Rupley solvent-accessible surface area (ΔSASA) calculation.
-//! [Information]: https://en.wikipedia.org/wiki/Accessible_surface_area#Shrake-Rupley_algorithm
+//! Shrake–Rupley solvent-accessible surface area (ΔSASA) calculation.
 //!
-//! ## Works referenced
-//! 1. **Rolling-Probe Solvent-Accessible Surface Definition ($r_{\text{probe}} = 1.4\text{ \AA}$):**
-//!    Lee, B., & Richards, F. M. (1971). The interpretation of protein structures: estimation of
-//!    static accessibility. *Journal of Molecular Biology*, 55(3), 379–400.
-//! 2. **Discrete Sphere Test-Point SASA Integration:**
-//!    Shrake, A., & Rupley, J. A. (1973). Environment and exposure to solvent of protein atoms.
-//!    Lysozyme and insulin. *Journal of Molecular Biology*, 79(2), 351–371.
-//! 3. **Golden-Angle Fibonacci Sphere Quadrature (as used in FreeSASA):**
-//!    González, Á. (2010). Measurement of Areas on a Sphere Using Fibonacci and Latitude–Longitude
-//!    Lattices. *Mathematical Geosciences*, 42(1), 49–64; Mitternacht, S. (2016). FreeSASA: An open
-//!    source C library for solvent accessible surface area calculations. *BMC Bioinformatics*, 17, 18.
+//! ## Summary
+//! Computes per-atom unbound (`free_sasa_a2`), bound (`complex_sasa_a2`), and buried
+//! (`buried_sasa_a2 = free - complex`) solvent-accessible surface area across `SideA` and `SideB`
+//! of an [`InterfacePartition`]. The primary entry point is [`compute_complex_sasa`], configured
+//! by [`SasaParams`].
+//!
+//! ## Considerations
+//! - **Quadrature**: Uses González (2010) golden-angle Fibonacci sphere test points (72 points ≈ 1%
+//!   area error, deterministic).
+//! - **Heavy-atom representation**: Uses Bondi/standard heavy-atom vdW radii (`vdw_radius_a`) plus
+//!   `probe_radius_a` (default `1.4 Å`, Lee & Richards, 1971).
+//! - **Near-interface shortcut**: Atoms with no cross-side occlusion and `min_cross_dist_a > 6.5 Å`
+//!   skip sphere quadrature (`buried_sasa_a2 = 0.0`).
+//!
+//! ## References
+//! - Lee, B., Richards, F. M. (1971). The interpretation of protein structures: estimation of
+//!   static accessibility. https://doi.org/10.1016/0022-2836(71)90324-X
+//! - Shrake, A., Rupley, J. A. (1973). Environment and exposure to solvent of protein atoms.
+//!   Lysozyme and insulin. https://doi.org/10.1016/0022-2836(73)90011-9
+//! - González, Á. (2010). Measurement of areas on a sphere using Fibonacci and latitude–longitude
+//!   lattices. https://doi.org/10.1007/s11004-009-9257-x
+//! - Mitternacht, S. (2016). FreeSASA: an open source C library for solvent accessible surface
+//!   area calculations. https://doi.org/10.12688/f1000research.7931.1
+//!
+//! ## TODO
+//! - Optionally sort neighbor lists by `r_j_sq` descending for earlier loop termination.
 
 use crate::interface::definition::InterfacePartition;
 use crate::model::ComplexStructure;
@@ -90,6 +104,13 @@ pub fn compute_complex_sasa(
     let sphere_pts = fibonacci_sphere(p.sphere_points);
     let weight_per_pt = 4.0 * std::f32::consts::PI / (p.sphere_points as f32);
 
+    const NEAR_INTERFACE_CUTOFF_A: f32 = 6.5;
+    let max_vdw = complex
+        .atoms
+        .iter()
+        .map(|a| a.vdw_radius_a)
+        .fold(1.85_f32, f32::max);
+
     let mut same_neighbors: Vec<(Vec3, f32)> = Vec::with_capacity(64);
     let mut cross_neighbors: Vec<(Vec3, f32)> = Vec::with_capacity(64);
 
@@ -102,8 +123,9 @@ pub fn compute_complex_sasa(
         let pos_i = Vec3::from(atom.pos_3d);
         // Solvent-expanded radius R_i = r_vdW + r_probe
         let r_i = atom.vdw_radius_a + p.probe_radius_a;
-        // Upper bound on distance at which a neighbor's expanded sphere R_j can intersect R_i
-        let query_reach = r_i + 1.85 + p.probe_radius_a;
+        // Upper bound on distance at which any neighbor's expanded sphere R_j can intersect R_i,
+        // floored at NEAR_INTERFACE_CUTOFF_A so `min_cross_dist_a` is accurate up to 6.5 Å.
+        let query_reach = (r_i + max_vdw + p.probe_radius_a).max(NEAR_INTERFACE_CUTOFF_A);
 
         same_neighbors.clear();
         cross_neighbors.clear();
@@ -140,7 +162,7 @@ pub fn compute_complex_sasa(
         results[i].min_cross_dist_a = min_cross_dist_a;
 
         // Fast skip: if no opposite-side expanded sphere touches R_i, ΔSASA is identically 0.
-        if cross_neighbors.is_empty() && min_cross_dist_a > 6.5 {
+        if cross_neighbors.is_empty() && min_cross_dist_a > NEAR_INTERFACE_CUTOFF_A {
             continue;
         }
 
