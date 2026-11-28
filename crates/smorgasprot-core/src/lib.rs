@@ -2,9 +2,9 @@
 //! and presentation logic (2D projection, flattening, contouring).
 
 pub mod amino_acids;
+pub mod contacts;
 pub mod dssp;
 pub mod ingest;
-pub mod interactions;
 pub mod interface;
 pub mod isosurface;
 pub mod minimize;
@@ -16,7 +16,6 @@ pub mod sasa;
 pub mod selection;
 pub mod spatial;
 pub mod surface;
-pub mod topology;
 
 pub use amino_acids::*;
 pub use interface::*;

@@ -299,10 +299,7 @@ pub fn edge_width_px(
             let t = ((params.edge_dist_max_a - edge.dist_3d_a) / span).clamp(0.0, 1.0);
             0.8 + 2.4 * t
         }
-        EdgeWidthLens::ClashSeverity => {
-            let t = (edge.overlap_a / params.clash_severity_max_a.max(1e-3)).clamp(0.0, 1.0);
-            0.9 + 2.6 * t
-        }
+        EdgeWidthLens::ClashSeverity => if edge.kind == smorgasprot_core::EdgeKind::Clash { 3.2 } else { 0.9 },
         EdgeWidthLens::Strain2D => {
             let t = (edge.strain_2d_a.abs() / params.edge_strain_max_a.max(1e-3)).clamp(0.0, 1.0);
             0.8 + 2.4 * t
@@ -330,7 +327,7 @@ pub fn territory_stroke_width_px(
             0.9 + 1.8 * ScalarMetric::BuriedSasa.territory_norm(terr, nodes, bfactor_mode, params)
         }
         TerritoryStrokeLens::UnsatisfiedPolar => {
-            if terr.has_unsatisfied_polar { 2.4 } else { 1.1 }
+            if terr.unsatisfied_polar_buried_sasa_a2 > 0.0 { 2.4 } else { 1.1 }
         }
         TerritoryStrokeLens::AvgRigidity => {
             0.8 + 2.0 * ScalarMetric::Rigidity.territory_norm(terr, nodes, bfactor_mode, params)

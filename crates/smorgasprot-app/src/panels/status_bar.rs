@@ -38,7 +38,7 @@ pub fn show(
                     ds.id,
                     iface.map.nodes.len(),
                     ds.cross_contact_count(),
-                    iface.map.plane.hinge_u,
+                    iface.map.hinge_u(),
                 ));
             } else {
                 let total_atoms: usize = ds.chains.iter().map(|c| c.atom_count).sum();

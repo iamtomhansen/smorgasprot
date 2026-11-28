@@ -101,7 +101,7 @@ impl Ctx<'_> {
 /// Screen `(position, depth)` of every interface node under the current morph, indexed like `map.nodes`.
 pub fn project_nodes(ds: &ViewerDataset, rect: Rect, s: &CartographyViewSettings) -> Vec<(Pos2, f32)> {
     let Some(iface) = ds.active_interface() else { return Vec::new() };
-    let frame = PlaneFrame::from(&iface.map.plane);
+    let frame = PlaneFrame::from(&iface.map);
     iface
         .map
         .nodes
@@ -158,7 +158,7 @@ pub fn paint(
         ds,
         iface,
         camera: &s.camera,
-        frame: PlaneFrame::from(&iface.map.plane),
+        frame: PlaneFrame::from(&iface.map),
         s,
         lenses: &state.palette.thresholds,
         atom_draw: &state.view_params.atom_draw,

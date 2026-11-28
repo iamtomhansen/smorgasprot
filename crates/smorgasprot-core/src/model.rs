@@ -233,3 +233,19 @@ pub struct SurfaceMesh {
     /// Triangle index triplets `(i0, i1, i2)` into `vertices`.
     pub triangles: Vec<[u32; 3]>,
 }
+
+/// Unified classification of an edge or contact between two atoms (covalent or noncovalent).
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum EdgeKind {
+    /// A real covalent bond, as found by `contacts::covalent::detect_bonds` and stored in
+    /// `ComplexStructure::bonds`. See [`BondKind`] sub-classifications.
+    Covalent(BondKind),
+    /// General first-shell spatial neighbor / apolar van der Waals contact (≤ 4.5 Å).
+    VanDerWaalsContact,
+    /// Steric van der Waals radius clash.
+    Clash,
+    /// Hydrogen bond (2.35–3.50 Å between polar N/O heavy atoms).
+    HBond,
+    /// Salt bridge (≤ 4.00 Å between oppositely charged sidechain groups).
+    SaltBridge,
+}

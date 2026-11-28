@@ -269,7 +269,7 @@ pub fn territory_fill_color(
             aa_chemistry_color(res_name, avg_aliphatic, params, palette)
         }
         TerritoryColorLens::UnsatisfiedPolar => {
-            if terr.has_unsatisfied_polar {
+            if terr.unsatisfied_polar_buried_sasa_a2 > 0.0 {
                 palette.chrome.warning
             } else {
                 palette.sides.side(terr.side)
@@ -509,11 +509,11 @@ pub fn contact_label(kind: EdgeKind) -> &'static str {
 
 /// Largest steric overlap (Å) among an atom's clash interactions, or `0`.
 pub fn worst_clash_overlap(node: &AtomNode) -> f32 {
-    node.interactions
-        .iter()
-        .filter(|i| i.kind == EdgeKind::Clash)
-        .map(|i| i.overlap_a)
-        .fold(0.0, f32::max)
+    if node.interactions.iter().any(|i| i.kind == EdgeKind::Clash) {
+        1.0
+    } else {
+        0.0
+    }
 }
 
 /// Whether an atom has at least one cross-interface interaction of `kind`.

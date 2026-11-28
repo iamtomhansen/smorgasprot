@@ -109,7 +109,7 @@ pub fn build_interface_map(
     let intra_edges_count = edges.len() - cross_contacts_count;
 
     // 2. Compute shared weighted-PCA projection plane Π = (origin, axis_u, axis_v, normal)
-    let mut plane = compute_projection_plane(&nodes);
+    let plane = compute_projection_plane(&nodes);
 
     // 3. Build curved 3D interface sheet (uv_mesh) and unroll atoms onto initial (u^(0), v^(0))
     //    using geodesic arc-lengths along the sheet (falls back to flat PCA if empty).
@@ -122,12 +122,6 @@ pub fn build_interface_map(
 
     // 4. Run coupled 2D spring + hard-core repulsion + contact registration relaxation
     relax_interface_uv(&mut nodes, &territories, &edges, &initial_uv, &params.relax);
-
-    let min_u = nodes
-        .iter()
-        .map(|n| n.pos_uv[0])
-        .fold(f32::INFINITY, f32::min);
-    plane.hinge_u = min_u - 3.5;
 
     // Record final 2D edge length and signed metric strain (dist_2d - dist_3d) on every InterfaceEdge
     for edge in &mut edges {
@@ -559,7 +553,6 @@ fn compute_projection_plane(nodes: &[AtomNode]) -> ProjectionPlane {
         axis_u: axis_u.to_array(),
         axis_v: axis_v.to_array(),
         normal: normal.to_array(),
-        hinge_u: -15.0,
     }
 }
 
@@ -781,10 +774,10 @@ pub fn compute_intra_edge_rmse_at_t(
         let na = &nodes[e.a.0 as usize];
         let nb = &nodes[e.b.0 as usize];
         let pa = Vec3::from(interpolate_atom_position(
-            na.pos_3d, na.pos_uv, na.side, plane, flatten_t, 0.0,
+            na.pos_3d, na.pos_uv, na.side, plane, flatten_t, 0.0, 0.0,
         ));
         let pb = Vec3::from(interpolate_atom_position(
-            nb.pos_3d, nb.pos_uv, nb.side, plane, flatten_t, 0.0,
+            nb.pos_3d, nb.pos_uv, nb.side, plane, flatten_t, 0.0, 0.0,
         ));
         let err = pa.distance(pb) - e.dist_3d_a;
         sum_sq += err * err;
@@ -830,6 +823,7 @@ pub fn interpolate_atom_position(
     plane: &ProjectionPlane,
     flatten_t: f32,
     book_theta: f32,
+    hinge_u: f32,
 ) -> [f32; 3] {
     let p3 = Vec3::from(pos_3d);
     let origin = Vec3::from(plane.origin);
@@ -844,8 +838,8 @@ pub fn interpolate_atom_position(
         InterfaceSide::SideA => origin + u * axis_u + v * axis_v + sheet_offset * normal,
         InterfaceSide::SideB => {
             let phi = book_theta.clamp(0.0, 1.0) * std::f32::consts::PI;
-            let du = u - plane.hinge_u;
-            let u_rot = plane.hinge_u + du * phi.cos();
+            let du = u - hinge_u;
+            let u_rot = hinge_u + du * phi.cos();
             let n_rot = -du * phi.sin() - sheet_offset * phi.cos();
             origin + u_rot * axis_u + v * axis_v + n_rot * normal
         }

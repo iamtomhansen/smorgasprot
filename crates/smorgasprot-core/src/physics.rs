@@ -36,9 +36,9 @@ use crate::sasa::{SasaParams, compute_complex_sasa};
 use crate::spatial::SpatialGrid;
 use glam::Vec3;
 
-use crate::interactions::h_bonds::is_hydrogen_bond_baker_hubbard;
-use crate::interactions::salt_bridges::is_salt_bridge;
-use crate::interactions::vdw_contacts::check_steric_clash;
+use crate::contacts::h_bonds::is_hydrogen_bond_baker_hubbard;
+use crate::contacts::salt_bridges::is_salt_bridge;
+use crate::contacts::vdw_contacts::check_steric_clash;
 use std::collections::HashMap;
 
 crate::param_group! {
@@ -372,7 +372,7 @@ pub fn extract_3d_interface_graph(
                 label_bottom,
                 member_atoms: Vec::new(),
                 buried_sasa_a2: 0.0,
-                has_unsatisfied_polar: false,
+                unsatisfied_polar_buried_sasa_a2: 0.0,
                 contour_uv: Vec::new(),
                 contour_3d: Vec::new(),
                 contour_3d_sheet: Vec::new(),
@@ -452,7 +452,7 @@ pub fn extract_3d_interface_graph(
             let bonded = bonded_pairs.get(&((g_i as u32).min(g_j as u32), (g_i as u32).max(g_j as u32))).copied();
             let one_bond_removed = bonded.is_none() && shares_bonded_neighbor(g_i as u32, g_j as u32);
 
-            let Some((kind, overlap_a)) =
+            let Some((kind, _overlap_a)) =
                 classify_pair_edge(atom_i, res_i, base_i, atom_j, res_j, base_j, dist, bonded, one_bond_removed, p)
             else {
                 continue;
@@ -470,7 +470,6 @@ pub fn extract_3d_interface_graph(
                 dist_3d_a: dist,
                 dist_2d_a: dist,
                 strain_2d_a: 0.0,
-                overlap_a,
             });
 
             // Every edge is stored twice, once in each node's interactions list, for fast access.
@@ -479,14 +478,12 @@ pub fn extract_3d_interface_graph(
                 is_cross_interface: is_cross,
                 kind,
                 dist_3d_a: dist,
-                overlap_a,
             });
             nodes[j].interactions.push(AtomInteraction {
                 partner: p_i,
                 is_cross_interface: is_cross,
                 kind,
                 dist_3d_a: dist,
-                overlap_a,
             });
         }
     }
@@ -505,7 +502,7 @@ pub fn extract_3d_interface_graph(
             && !has_polar_satisfaction
         {
             node.is_unsatisfied_buried_polar = true;
-            territories[node.territory.0 as usize].has_unsatisfied_polar = true;
+            territories[node.territory.0 as usize].unsatisfied_polar_buried_sasa_a2 += node.buried_sasa_a2;
         }
     }
 

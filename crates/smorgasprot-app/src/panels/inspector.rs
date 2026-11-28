@@ -526,7 +526,7 @@ fn residue_card(ui: &mut Ui, ds: &ViewerDataset, terr: &ResidueTerritory, sides:
     });
     ui.label(format!("Chain {} • {} • {} interfacial atoms", terr.chain_id, terr.label_bottom, terr.member_atoms.len()));
     ui.label(format!("Buried ΔSASA: {:.1} Å²", terr.buried_sasa_a2));
-    if terr.has_unsatisfied_polar {
+    if terr.unsatisfied_polar_buried_sasa_a2 > 0.0 {
         ui.colored_label(chrome.warning, "⚠️ Buried polar atom with 0 satisfied H-bonds/salt bridges.");
     }
 }
@@ -564,7 +564,7 @@ fn contacts_list(ui: &mut Ui, ds: &ViewerDataset, terr: &ResidueTerritory, conta
         let own = ds.meta(node.idx).map_or("?".to_owned(), |m| m.atom_name.clone());
         let partner = ds.meta(contact.partner).map_or("?".to_owned(), |m| m.residue_atom_label());
         let measure = match contact.kind {
-            EdgeKind::Clash => format!("-{:.2} Å", contact.overlap_a),
+            EdgeKind::Clash => format!("{:.2} Å (clash)", contact.dist_3d_a),
             _ => format!("{:.2} Å", contact.dist_3d_a),
         };
         ui.horizontal_wrapped(|ui| {

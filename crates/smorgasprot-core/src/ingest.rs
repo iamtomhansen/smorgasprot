@@ -1,7 +1,7 @@
 //! Direct `.pdb` and `.cif` structure ingestion via `pdbtbx`.
 
 use crate::amino_acids::{ElementExt, ResidueKind};
-use crate::topology::covalent::{BondParams, detect_bonds};
+use crate::contacts::covalent::{BondParams, detect_bonds};
 use crate::dssp::{SecStructMode, assign_secondary_structure};
 use crate::model::{
     AtomRecord, Bond, BondKind, GlobalChainIdx, ChainName, ChainRecord, ComplexStructure, Element, GlobalAtomIdx,

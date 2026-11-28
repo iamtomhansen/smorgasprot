@@ -26,7 +26,19 @@ impl From<&ProjectionPlane> for PlaneFrame {
             u: p.axis_u.into(),
             v: p.axis_v.into(),
             n: p.normal.into(),
-            hinge_u: p.hinge_u,
+            hinge_u: 0.0,
+        }
+    }
+}
+
+impl From<&smorgasprot_core::InterfaceMap> for PlaneFrame {
+    fn from(map: &smorgasprot_core::InterfaceMap) -> Self {
+        Self {
+            origin: map.plane.origin.into(),
+            u: map.plane.axis_u.into(),
+            v: map.plane.axis_v.into(),
+            n: map.plane.normal.into(),
+            hinge_u: map.hinge_u(),
         }
     }
 }

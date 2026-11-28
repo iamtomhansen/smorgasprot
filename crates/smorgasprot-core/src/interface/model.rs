@@ -15,8 +15,11 @@
 //! - Keep `EdgeKind` aligned as new interaction types (e.g. metal coordinations) are added.
 
 use super::definition::InterfaceSide;
-use crate::model::{BondKind, ChainName, GlobalAtomIdx, GlobalResidueIdx, SurfaceMesh};
+use crate::model::{ChainName, GlobalAtomIdx, GlobalResidueIdx, SurfaceMesh};
+pub use crate::model::EdgeKind;
 use serde::{Deserialize, Serialize};
+
+const HINGE_OFFSET_A: f32 = 3.5; // Å
 
 /// Dense index into `InterfaceMap::nodes`.
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
@@ -40,16 +43,27 @@ pub struct ProjectionPlane {
     pub axis_v: [f32; 3],
     /// Normal vector of the 2D projection plane in 3D space.
     pub normal: [f32; 3],
-    pub hinge_u: f32,
 }
 
 /// Extracted dual-side interface cartography (SideA + SideB patches).
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct InterfaceMap {
+    /// The 3D projection plane Π = (origin, axis_u, axis_v, normal) for the interface.
     pub plane: ProjectionPlane,
+    /// The territories on the map corresponding to each residue in the interface.
     pub territories: Vec<ResidueTerritory>,
+    /// The individual atom nodes on the map corresponding to each atom in the interface.
     pub nodes: Vec<AtomNode>,
+    /// Every unique edge between two atoms in the interface (intra-side or cross-interface).
     pub edges: Vec<InterfaceEdge>,
+}
+
+impl InterfaceMap {
+    /// Derived `u`-coordinate of the open-book butterfly hinge (`min_u - 3.5 Å`).
+    pub fn hinge_u(&self) -> f32 {
+        let min_u = self.nodes.iter().map(|n| n.pos_uv[0]).fold(f32::INFINITY, f32::min);
+        if min_u.is_finite() { min_u - HINGE_OFFSET_A } else { -HINGE_OFFSET_A }
+    }
 }
 
 /// Derived 3D interface geometric and visual representations (sheet, envelope, and negative voids).
@@ -86,9 +100,11 @@ pub struct ResidueTerritory {
     pub label_bottom: String,
     /// Indices of the [`AtomNode`]s that belong to this residue territory.
     pub member_atoms: Vec<AtomNodeIdx>,
+    /// The total buried solvent-accessible surface area (SASA) of this residue in Å².
     pub buried_sasa_a2: f32,
-    pub has_unsatisfied_polar: bool,
-    /// Relaxed 2D contour boundary polygon vertices `(u, v)` on `ProjectionPlane` (at `flatten_t = 1.0`).
+    /// Total buried SASA (Å²) of polar atoms in this residue with no H-bonds or salt bridges.
+    pub unsatisfied_polar_buried_sasa_a2: f32,
+    /// 2D contour boundary polygon vertices `(u, v)` on `ProjectionPlane` (at `flatten_t = 1.0`).
     pub contour_uv: Vec<[f32; 2]>,
     /// 3D boundary polygon vertices draped through the residue's atomic centers (blend = 0.0).
     pub contour_3d: Vec<[f32; 3]>,
@@ -133,23 +149,8 @@ pub struct AtomNode {
     pub pos_uv_raw: [f32; 2],
     pub pos_uv: [f32; 2],
     pub is_unsatisfied_buried_polar: bool,
+    /// All interactions (edges) between this atom and its neighbors, stored directly on the node for fast access.
     pub interactions: Vec<AtomInteraction>,
-}
-
-/// Unified classification of an edge or contact between two interfacial atoms (intra-side or cross-interface).
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum EdgeKind {
-    /// A real covalent bond, as found by `topology::covalent::detect_bonds` and stored in
-    /// `ComplexStructure::bonds`. See [`BondKind`] sub-classifications.
-    Covalent(BondKind),
-    /// General first-shell spatial neighbor / apolar van der Waals contact (≤ 4.5 Å).
-    VanDerWaalsContact,
-    /// Steric van der Waals radius clash.
-    Clash,
-    /// Hydrogen bond (2.35–3.50 Å between polar N/O heavy atoms).
-    HBond,
-    /// Salt bridge (≤ 4.00 Å between oppositely charged sidechain groups).
-    SaltBridge,
 }
 
 /// A single interaction record stored directly on a [`AtomNode`].
@@ -159,7 +160,6 @@ pub struct AtomInteraction {
     pub is_cross_interface: bool,
     pub kind: EdgeKind,
     pub dist_3d_a: f32,
-    pub overlap_a: f32,
 }
 
 /// A unified non-directional edge between two [`AtomNode`]s in [`InterfaceMap::edges`].
@@ -179,6 +179,4 @@ pub struct InterfaceEdge {
     pub dist_2d_a: f32,
     /// Signed 2D metric distortion (`dist_2d_a - dist_3d_a`: positive = stretched, negative = compressed).
     pub strain_2d_a: f32,
-    /// Calculated steric overlap between atoms `a` and `b`.
-    pub overlap_a: f32,
 }
