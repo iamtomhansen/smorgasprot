@@ -4,7 +4,7 @@
 use crate::dataset::{AtomMeta, InterfaceViewData};
 use serde::{Deserialize, Serialize};
 use smorgasprot_core::{
-    AnalysisParams, ChainName, ComplexStructure, InterfaceMap, flatten::FlatteningStats,
+    AnalysisParams, ChainName, ComplexStructure, InterfaceMap, projection2d::FlatteningStats,
     interface::InterfacePartition,
 };
 use std::collections::HashMap;

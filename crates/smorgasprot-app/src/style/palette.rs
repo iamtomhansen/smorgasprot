@@ -91,6 +91,8 @@ pub struct Palette {
     pub elements: ElementPalette,
     pub mobility: ColorMap,
     pub charge: ColorMap,
+    /// Diverging strain ramp: blue (compressed) → white (isometric) → red (stretched).
+    pub strain: ColorMap,
     pub thresholds: crate::state::LensParams,
     #[serde(skip)]
     pub gizmo: GizmoPalette,
@@ -122,6 +124,11 @@ impl Default for Palette {
                 Color32::from_rgb(239, 68, 68),
                 Color32::WHITE,
                 Color32::from_rgb(37, 99, 235),
+            ),
+            strain: ColorMap::diverging(
+                Color32::from_rgb(37, 99, 235),
+                Color32::WHITE,
+                Color32::from_rgb(239, 68, 68),
             ),
             thresholds: crate::state::LensParams::default(),
             gizmo: GizmoPalette::default(),

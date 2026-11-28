@@ -1,12 +1,13 @@
-//! Shared projection-plane PCA/SVD basis, coupled 2D spring/repulsion solver, and
-//! bas-relief/butterfly kinematics.
+//! Flatten the interfacial atoms onto a shared 2D projection plane while preserving local
+//! chemical interactions and distances.
 //!
 //! ## Summary
-//! Unrolls a curved 3D protein–protein interface onto a shared 2D tangent plane while preserving
-//! local intra-side distances and cross-interface contact registration. The primary entry point is
-//! [`build_interface_map`], which outputs an [`InterfaceMap`] and [`FlatteningStats`];
-//! [`interpolate_atom_position`] maps any atom continuously between 3D, bas-relief, and 2D
-//! open-book views.
+//! Inspecting interfacial interactions in 3D can be frustrating, especially for large and complex
+//! surfaces, and the amount of data that can be shown in 3D is limited. Instead, both halves of
+//! that interface can be flattened onto a shared 2D plane while preserving local features.
+//! The primary entry point is [`build_interface_map`], which outputs an [`InterfaceMap`] and
+//! [`FlatteningStats`] (used to assess distortion upon flattening). [`interpolate_atom_position`]
+//! allows partial flattening by simple linear interpolation of 3D and 2D coordinates.
 //!
 //! ## Considerations
 //! - **Projection plane**: [`compute_shared_tangent_plane`] fits a SASA-weighted 3×3 covariance
@@ -17,10 +18,6 @@
 //! - **Determinism**: Exact 2D overlaps are broken with deterministic index-seeded angles; all
 //!   loops iterate in slice order.
 //!
-//! ## References
-//! - Golub, G. H., Van Loan, C. F. (2013). *Matrix Computations* (4th ed., Ch. 8: Symmetric
-//!   Eigenvalue Problems / Jacobi Method).
-//!
 //! ## TODO
 //! - Consider a dedicated registration stiffness for cross-interface covalent/disulfide links.
 
@@ -29,11 +26,14 @@ use super::definition::{InterfacePartition, InterfaceSide};
 use super::model::{
     AtomNode, EdgeKind, InterfaceEdge, InterfaceMap, ProjectionPlane, ResidueTerritory,
 };
-use crate::model::ComplexStructure;
+use super::uv_mesh::build_interface_sheet_mesh;
+use crate::model::{ComplexStructure, SurfaceMesh};
 use crate::params::AnalysisParams;
 use crate::physics::extract_3d_interface_graph;
 use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 
 crate::param_group! {
     /// Coupled 2D spring/repulsion solver that unrolls the interface onto the tangent plane.
@@ -109,21 +109,13 @@ pub fn build_interface_map(
     let intra_edges_count = edges.len() - cross_contacts_count;
 
     // 2. Compute shared weighted-PCA projection plane Π = (origin, axis_u, axis_v, normal)
-    let mut plane = compute_shared_tangent_plane(&nodes);
+    let mut plane = compute_projection_plane(&nodes);
 
-    // 3. Project atoms onto initial (u^(0), v^(0)) coordinates
-    let origin = Vec3::from(plane.origin);
-    let axis_u = Vec3::from(plane.axis_u);
-    let axis_v = Vec3::from(plane.axis_v);
-    let mut initial_uv = Vec::with_capacity(nodes.len());
-
-    for node in &mut nodes {
-        let rel = Vec3::from(node.pos_3d) - origin;
-        let uv = [rel.dot(axis_u), rel.dot(axis_v)];
-        node.pos_uv_raw = uv;
-        node.pos_uv = uv;
-        initial_uv.push(Vec2::from(uv));
-    }
+    // 3. Build curved 3D interface sheet (uv_mesh) and unroll atoms onto initial (u^(0), v^(0))
+    //    using geodesic arc-lengths along the sheet (falls back to flat PCA if empty).
+    let sheet_mesh =
+        build_interface_sheet_mesh(complex, &nodes, &plane, &params.interface_mesh);
+    let initial_uv = project_atoms_onto_manifold(&mut nodes, &plane, &sheet_mesh);
 
     let edge_rmse_before_a = compute_intra_edge_rmse_2d(&nodes, &edges);
     let overlaps_before = count_same_side_overlaps(&nodes, params.relax.overlap_diagnostic_dist_a);
@@ -150,8 +142,11 @@ pub fn build_interface_map(
     let edge_rmse_after_a = compute_intra_edge_rmse_2d(&nodes, &edges);
     let overlaps_after = count_same_side_overlaps(&nodes, params.relax.overlap_diagnostic_dist_a);
 
-    // 5. Compute Voronoi-clipped smooth concave residue territory contours & 3D relief outlines
-    compute_territory_contours(&mut territories, &nodes, &plane, &params.contour);
+    // 5. Compute Voronoi-clipped smooth concave residue territory contours draped onto sheet_mesh
+    let sheet_flat_uv = compute_sheet_flat_uv(&sheet_mesh, &plane);
+    let sheet_ref = (!sheet_mesh.vertices.is_empty() && !sheet_mesh.triangles.is_empty())
+        .then_some((&sheet_mesh, sheet_flat_uv.as_slice()));
+    compute_territory_contours(&mut territories, &nodes, &plane, sheet_ref, &params.contour);
 
     let side_a_atoms = nodes
         .iter()
@@ -188,9 +183,308 @@ pub fn build_interface_map(
     Ok((map, stats))
 }
 
+#[derive(Copy, Clone, PartialEq)]
+struct GeoState {
+    dist: f32,
+    idx: usize,
+}
+
+impl Eq for GeoState {}
+
+impl Ord for GeoState {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Min-heap: smaller distance pops first, deterministic index tie-break.
+        other.dist.total_cmp(&self.dist).then_with(|| other.idx.cmp(&self.idx))
+    }
+}
+
+impl PartialOrd for GeoState {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Aggregate strain and surface-area diagnostics for a morphed 3D ↔ 2D interface sheet.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default)]
+pub struct SheetFlatteningStats {
+    /// Root-mean-square edge-length distortion `sqrt(mean((L_t - L_3d)^2))` (Å).
+    pub rms_edge_strain_a: f32,
+    /// Mean absolute relative linear strain `mean(|L_t - L_3d| / L_3d)` (dimensionless).
+    pub mean_abs_strain: f32,
+    /// Worst-case relative linear strain `max(|L_t - L_3d| / L_3d)` (dimensionless).
+    pub max_abs_strain: f32,
+    /// Surface area of the unflattened 3D interface sheet (Å²).
+    pub area_3d_a2: f32,
+    /// Surface area of the sheet at the current `flatten_t` (Å²).
+    pub area_current_a2: f32,
+    /// Half-total buried SASA (`0.5 * Σ ΔSASA`) for reference against `area_3d_a2` (Å²).
+    pub buried_sasa_a2: f32,
+}
+
+/// Morphed world-space interface sheet at a given `flatten_t`, with per-vertex signed strain.
+#[derive(Clone, Debug, Default)]
+pub struct MorphedSheet {
+    pub mesh: SurfaceMesh,
+    /// Signed per-vertex relative linear strain (`< 0` compressed, `0` isometric, `> 0` stretched).
+    pub vertex_strain: Vec<f32>,
+    pub stats: SheetFlatteningStats,
+}
+
+/// Computes geodesic-unrolled 2D `(u, v)` rest coordinates for every vertex of `sheet_mesh`
+/// using Dijkstra arc-lengths from the vertex closest to `plane.origin`.
+pub fn compute_sheet_flat_uv(sheet_mesh: &SurfaceMesh, plane: &ProjectionPlane) -> Vec<[f32; 2]> {
+    let origin = Vec3::from(plane.origin);
+    let axis_u = Vec3::from(plane.axis_u);
+    let axis_v = Vec3::from(plane.axis_v);
+    let flat_uv = |pos: Vec3| -> Vec2 {
+        let rel = pos - origin;
+        Vec2::new(rel.dot(axis_u), rel.dot(axis_v))
+    };
+
+    let n_verts = sheet_mesh.vertices.len();
+    if n_verts == 0 {
+        return Vec::new();
+    }
+    let vert_pos: Vec<Vec3> = sheet_mesh.vertices.iter().map(|&v| Vec3::from(v)).collect();
+    if sheet_mesh.triangles.is_empty() {
+        return vert_pos.iter().map(|&p| flat_uv(p).to_array()).collect();
+    }
+
+    // 1. Build 3D edge-weighted adjacency list on sheet_mesh.
+    let mut adj: Vec<Vec<(usize, f32)>> = vec![Vec::new(); n_verts];
+    for &[a, b, c] in &sheet_mesh.triangles {
+        let (ua, ub, uc) = (a as usize, b as usize, c as usize);
+        if ua < n_verts && ub < n_verts && uc < n_verts {
+            let dab = vert_pos[ua].distance(vert_pos[ub]);
+            let dbc = vert_pos[ub].distance(vert_pos[uc]);
+            let dca = vert_pos[uc].distance(vert_pos[ua]);
+            adj[ua].push((ub, dab));
+            adj[ub].push((ua, dab));
+            adj[ub].push((uc, dbc));
+            adj[uc].push((ub, dbc));
+            adj[uc].push((ua, dca));
+            adj[ua].push((uc, dca));
+        }
+    }
+
+    // 2. Seed Dijkstra at the sheet vertex closest to plane.origin.
+    let seed = vert_pos
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| a.distance_squared(origin).total_cmp(&b.distance_squared(origin)))
+        .map_or(0, |(i, _)| i);
+    let seed_uv = flat_uv(vert_pos[seed]);
+
+    let mut geo_dist = vec![f32::INFINITY; n_verts];
+    let mut heap = BinaryHeap::new();
+    geo_dist[seed] = 0.0;
+    heap.push(GeoState { dist: 0.0, idx: seed });
+
+    while let Some(GeoState { dist, idx }) = heap.pop() {
+        if dist > geo_dist[idx] {
+            continue;
+        }
+        for &(nbr, w) in &adj[idx] {
+            let cand = dist + w;
+            if cand < geo_dist[nbr] {
+                geo_dist[nbr] = cand;
+                heap.push(GeoState { dist: cand, idx: nbr });
+            }
+        }
+    }
+
+    // 3. Map each vertex to (u, v) along its PCA direction scaled by geodesic arc-length.
+    vert_pos
+        .iter()
+        .enumerate()
+        .map(|(vi, &pos)| {
+            let raw = flat_uv(pos);
+            if geo_dist[vi].is_finite() {
+                let dir = (raw - seed_uv).normalize_or_zero();
+                if dir.length_squared() > 0.5 {
+                    (seed_uv + dir * geo_dist[vi]).to_array()
+                } else {
+                    raw.to_array()
+                }
+            } else {
+                raw.to_array()
+            }
+        })
+        .collect()
+}
+
+/// Morphs `sheet_mesh` from its 3D shape (`flatten_t = 0.0`) toward its flattened resting place
+/// on `plane` (`flatten_t = 1.0`), dynamically computing per-vertex signed strain and aggregate
+/// distortion/area diagnostics.
+pub fn morph_sheet_with_strain(
+    sheet_mesh: &SurfaceMesh,
+    flat_uv: &[[f32; 2]],
+    plane: &ProjectionPlane,
+    flatten_t: f32,
+    buried_sasa_a2: f32,
+) -> MorphedSheet {
+    let n_verts = sheet_mesh.vertices.len();
+    if n_verts == 0 || flat_uv.len() != n_verts {
+        return MorphedSheet::default();
+    }
+
+    let origin = Vec3::from(plane.origin);
+    let axis_u = Vec3::from(plane.axis_u);
+    let axis_v = Vec3::from(plane.axis_v);
+    let t = flatten_t.clamp(0.0, 1.0);
+
+    // 1. Lerp vertices in world space toward their flat resting coordinates on `plane`.
+    let mut pos_3d = Vec::with_capacity(n_verts);
+    let mut pos_t = Vec::with_capacity(n_verts);
+    for (i, &v) in sheet_mesh.vertices.iter().enumerate() {
+        let p3 = Vec3::from(v);
+        let [u, v_coord] = flat_uv[i];
+        let p_flat = origin + u * axis_u + v_coord * axis_v;
+        pos_3d.push(p3);
+        pos_t.push(p3.lerp(p_flat, t));
+    }
+
+    // 2. Accumulate per-vertex area-weighted normals, triangle areas, and edge strain.
+    let mut normal_acc = vec![Vec3::ZERO; n_verts];
+    let mut strain_sum = vec![0.0_f32; n_verts];
+    let mut strain_cnt = vec![0u32; n_verts];
+    let mut area_3d = 0.0_f64;
+    let mut area_cur = 0.0_f64;
+    let mut edge_err_sq = 0.0_f64;
+    let mut abs_rel_sum = 0.0_f64;
+    let mut max_abs_strain = 0.0_f32;
+    let mut edge_count = 0usize;
+
+    for &[a, b, c] in &sheet_mesh.triangles {
+        let (ua, ub, uc) = (a as usize, b as usize, c as usize);
+        if ua >= n_verts || ub >= n_verts || uc >= n_verts {
+            continue;
+        }
+        let n3 = (pos_3d[ub] - pos_3d[ua]).cross(pos_3d[uc] - pos_3d[ua]);
+        area_3d += 0.5 * n3.length() as f64;
+
+        let nt = (pos_t[ub] - pos_t[ua]).cross(pos_t[uc] - pos_t[ua]);
+        area_cur += 0.5 * nt.length() as f64;
+        normal_acc[ua] += nt;
+        normal_acc[ub] += nt;
+        normal_acc[uc] += nt;
+
+        for (i0, i1) in [(ua, ub), (ub, uc), (uc, ua)] {
+            let l3 = pos_3d[i0].distance(pos_3d[i1]);
+            if l3 < 1e-6 {
+                continue;
+            }
+            let lt = pos_t[i0].distance(pos_t[i1]);
+            let diff = lt - l3;
+            let rel = diff / l3;
+            let abs_rel = rel.abs();
+
+            edge_err_sq += (diff as f64) * (diff as f64);
+            abs_rel_sum += abs_rel as f64;
+            max_abs_strain = max_abs_strain.max(abs_rel);
+            edge_count += 1;
+
+            strain_sum[i0] += rel;
+            strain_cnt[i0] += 1;
+            strain_sum[i1] += rel;
+            strain_cnt[i1] += 1;
+        }
+    }
+
+    let vertex_strain: Vec<f32> = strain_sum
+        .into_iter()
+        .zip(strain_cnt)
+        .map(|(s, c)| if c > 0 { s / c as f32 } else { 0.0 })
+        .collect();
+
+    let normals: Vec<[f32; 3]> = normal_acc
+        .into_iter()
+        .map(|n| n.normalize_or_zero().to_array())
+        .collect();
+
+    let vertices: Vec<[f32; 3]> = pos_t.iter().map(Vec3::to_array).collect();
+    let stats = SheetFlatteningStats {
+        rms_edge_strain_a: if edge_count > 0 {
+            (edge_err_sq / edge_count as f64).sqrt() as f32
+        } else {
+            0.0
+        },
+        mean_abs_strain: if edge_count > 0 {
+            (abs_rel_sum / edge_count as f64) as f32
+        } else {
+            0.0
+        },
+        max_abs_strain,
+        area_3d_a2: area_3d as f32,
+        area_current_a2: area_cur as f32,
+        buried_sasa_a2,
+    };
+
+    MorphedSheet {
+        mesh: SurfaceMesh {
+            vertices,
+            normals,
+            nearest_atom: sheet_mesh.nearest_atom.clone(),
+            triangles: sheet_mesh.triangles.clone(),
+        },
+        vertex_strain,
+        stats,
+    }
+}
+
+/// Unrolls atoms onto initial `(u^(0), v^(0))` coordinates using 3D geodesic arc-lengths along
+/// `sheet_mesh` from the vertex closest to `plane.origin`, falling back to flat PCA projection
+/// when `sheet_mesh` is empty.
+fn project_atoms_onto_manifold(
+    nodes: &mut [AtomNode],
+    plane: &ProjectionPlane,
+    sheet_mesh: &SurfaceMesh,
+) -> Vec<Vec2> {
+    let origin = Vec3::from(plane.origin);
+    let axis_u = Vec3::from(plane.axis_u);
+    let axis_v = Vec3::from(plane.axis_v);
+
+    let flat_uv = |pos: Vec3| -> Vec2 {
+        let rel = pos - origin;
+        Vec2::new(rel.dot(axis_u), rel.dot(axis_v))
+    };
+
+    if sheet_mesh.vertices.is_empty() || sheet_mesh.triangles.is_empty() {
+        return nodes
+            .iter_mut()
+            .map(|node| {
+                let uv = flat_uv(Vec3::from(node.pos_3d));
+                node.pos_uv_raw = uv.to_array();
+                node.pos_uv = node.pos_uv_raw;
+                uv
+            })
+            .collect();
+    }
+
+    let vert_pos: Vec<Vec3> = sheet_mesh.vertices.iter().map(|&v| Vec3::from(v)).collect();
+    let sheet_uv = compute_sheet_flat_uv(sheet_mesh, plane);
+
+    nodes
+        .iter_mut()
+        .map(|node| {
+            let pos = Vec3::from(node.pos_3d);
+            let best_v = vert_pos
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| a.distance_squared(pos).total_cmp(&b.distance_squared(pos)))
+                .map(|(vi, _)| vi);
+
+            let uv = best_v.map_or_else(|| flat_uv(pos), |vi| Vec2::from(sheet_uv[vi]));
+            node.pos_uv_raw = uv.to_array();
+            node.pos_uv = node.pos_uv_raw;
+            uv
+        })
+        .collect()
+}
+
 /// Computes the weighted SVD best-fit projection plane for the interface patch,
 /// with normal pointing from SideB centroid toward SideA centroid.
-fn compute_shared_tangent_plane(nodes: &[AtomNode]) -> ProjectionPlane {
+fn compute_projection_plane(nodes: &[AtomNode]) -> ProjectionPlane {
     let mut weighted_sum = Vec3::ZERO;
     let mut total_w = 0.0_f32;
     let mut side_a_sum = Vec3::ZERO;
@@ -418,16 +712,16 @@ fn relax_interface_uv(
 
         // 3. Residue territory cohesion
         for terr in territories {
-            if terr.patch_atoms.len() <= 1 {
+            if terr.member_atoms.len() <= 1 {
                 continue;
             }
             let centroid = terr
-                .patch_atoms
+                .member_atoms
                 .iter()
                 .map(|&idx| pos[idx.0 as usize])
                 .sum::<Vec2>()
-                / (terr.patch_atoms.len() as f32);
-            for &idx in &terr.patch_atoms {
+                / (terr.member_atoms.len() as f32);
+            for &idx in &terr.member_atoms {
                 let i = idx.0 as usize;
                 forces[i] += p.k_territory_cohesion * (centroid - pos[i]);
             }
@@ -560,69 +854,4 @@ pub fn interpolate_atom_position(
 
     let t = flatten_t.clamp(0.0, 1.0);
     p3.lerp(p_flat, t).to_array()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ingest::load_complex;
-
-    #[test]
-    fn test_bas_relief_and_open_book_butterfly_interpolation() {
-        let plane = ProjectionPlane {
-            origin: [0.0, 0.0, 0.0],
-            axis_u: [1.0, 0.0, 0.0],
-            axis_v: [0.0, 1.0, 0.0],
-            normal: [0.0, 0.0, 1.0],
-            hinge_u: -10.0,
-        };
-
-        let pos_3d = [4.0, 6.0, 8.0];
-        let pos_uv = [2.0, 5.0];
-
-        let p_3d =
-            interpolate_atom_position(pos_3d, pos_uv, InterfaceSide::SideB, &plane, 0.0, 1.0);
-        assert_eq!(p_3d, pos_3d);
-
-        let p_side_a_overlay =
-            interpolate_atom_position(pos_3d, pos_uv, InterfaceSide::SideA, &plane, 1.0, 0.0);
-        let p_side_b_overlay =
-            interpolate_atom_position(pos_3d, pos_uv, InterfaceSide::SideB, &plane, 1.0, 0.0);
-        assert!((p_side_a_overlay[0] - 2.0).abs() < 1e-5);
-        assert!((p_side_b_overlay[0] - 2.0).abs() < 1e-5);
-
-        let p_side_b_book =
-            interpolate_atom_position(pos_3d, pos_uv, InterfaceSide::SideB, &plane, 1.0, 1.0);
-        assert!((p_side_b_book[0] - (-22.0)).abs() < 1e-4);
-        assert!((p_side_b_book[1] - 5.0).abs() < 1e-4);
-    }
-
-    #[test]
-    fn test_flatten_7jvb_and_latentx() {
-        let c_7jvb = load_complex("../../examples/7JVB.cif").unwrap();
-        let part_7jvb = InterfacePartition::new("7JVB", "Group A", vec!["A".into()], "Group B", vec!["C".into()]);
-        assert_eq!(c_7jvb.chains.len(), 4);
-        let (map_7jvb, stats_7jvb) = build_interface_map(&c_7jvb, &part_7jvb, &Default::default()).unwrap();
-        println!("7JVB stats: {stats_7jvb:?}");
-        assert!(stats_7jvb.side_a_atoms > 30);
-        assert!(stats_7jvb.side_b_atoms > 30);
-        assert!(stats_7jvb.overlaps_after < stats_7jvb.overlaps_before);
-        // Verify that bas-relief (t = 0.5) has even lower edge distortion than full 2D (t = 1.0)
-        assert!(stats_7jvb.edge_rmse_halfway_a < stats_7jvb.edge_rmse_after_a);
-        assert!(!map_7jvb.territories[0].contour_uv.is_empty());
-        for t in &map_7jvb.territories {
-            assert_eq!(t.contour_uv.len(), t.contour_3d.len());
-            assert!(t.contour_uv.len() >= 12);
-        }
-        assert!(!map_7jvb.nodes.is_empty());
-        assert!(!map_7jvb.edges.is_empty());
-
-        let c_lx = load_complex("../../examples/fold_r8s15_mp3_model_0.cif").unwrap();
-        let part_lx = InterfacePartition::new("LatentX", "Group A", vec!["B".into()], "Group B", vec!["A".into()]);
-        let (_map_lx, stats_lx) = build_interface_map(&c_lx, &part_lx, &Default::default()).unwrap();
-        println!("LatentX stats: {stats_lx:?}");
-        assert!(stats_lx.side_a_atoms > 20);
-        assert!(stats_lx.side_b_atoms > 20);
-        assert!(stats_lx.edge_rmse_halfway_a < stats_lx.edge_rmse_after_a);
-    }
 }

@@ -8,8 +8,8 @@ pub mod sizing;
 
 pub use channels::{
     AtomSizeMode, BFactorMode, ChainColorLens, ChannelPreset, ColorLens, EdgeColorLens, EdgeWidthLens, LabelBuilder,
-    LabelValueChannel, NodeStrokeColorLens, ResidueNameStyle, ScalarMetric, TerritoryColorLens, TerritoryStrokeLens,
-    VisualChannel,
+    LabelPosition, LabelValueChannel, NodeStrokeColorLens, ResidueNameStyle, ScalarMetric, TerritoryColorLens,
+    TerritoryStrokeLens, VisualChannel,
 };
 pub use palette::{
     AaChemistryPalette, ChromePalette, ColorMap, ContactPalette, ElementPalette, GizmoPalette, InterfaceSidePalette,

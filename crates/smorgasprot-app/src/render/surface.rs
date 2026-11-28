@@ -37,6 +37,10 @@ pub enum GpuMeshKey {
     BallStickSpheres(usize),
     Spheres(usize),
     InterfaceSpheres(usize),
+    CartographySheet(usize),
+    CartographyAtoms(usize, u8),
+    CartographyEdges(usize, u8),
+    CartographyTerritories(usize, u8),
 }
 
 #[repr(C)]

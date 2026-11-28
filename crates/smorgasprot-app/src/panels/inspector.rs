@@ -59,6 +59,34 @@ fn show_cartography_inspector(ui: &mut Ui, ds: &ViewerDataset, state: &UiState) 
     show_selection_and_diagnostics(ui, ds, state, state.cartography.bfactor_mode);
 
     let s = &state.cartography;
+    if let Some(iface) = ds.active_interface()
+        && !iface.draw_geometry.sheet_mesh.vertices.is_empty()
+    {
+        section(ui, "Interface Sheet Strain", |ui| {
+            let morphed = smorgasprot_core::projection2d::morph_sheet_with_strain(
+                &iface.draw_geometry.sheet_mesh,
+                &iface.sheet_flat_uv,
+                &iface.map.plane,
+                s.flatten.value,
+                iface.half_buried_sasa_a2,
+            );
+            let st = morphed.stats;
+            let sasa_ratio = if st.buried_sasa_a2 > 1e-3 {
+                100.0 * st.area_3d_a2 / st.buried_sasa_a2
+            } else {
+                0.0
+            };
+            ui.label(format!("Edge RMSE: {:.2} Å", st.rms_edge_strain_a));
+            ui.label(format!(
+                "Mean / Max strain: {:.1}% / {:.1}%",
+                st.mean_abs_strain * 100.0,
+                st.max_abs_strain * 100.0
+            ));
+            ui.label(format!("Sheet area (3D → now): {:.0} → {:.0} Å²", st.area_3d_a2, st.area_current_a2));
+            ui.label(format!("Buried SASA (½Δ): {:.0} Å² (sheet = {:.0}%)", st.buried_sasa_a2, sasa_ratio));
+        });
+    }
+
     section(ui, "Legend", |ui| {
         render_lens_legend(
             ui,
@@ -70,6 +98,15 @@ fn show_cartography_inspector(ui: &mut Ui, ds: &ViewerDataset, state: &UiState) 
             &state.palette.thresholds,
             &state.palette,
         );
+        if s.sheet.visible {
+            ui.separator();
+            ui.label(RichText::new("Interface sheet").strong());
+            if s.sheet_color == crate::state::SheetColorMode::Fixed {
+                legend_swatch(ui, s.sheet_fixed_color, "Fixed sheet color");
+            } else {
+                ui.label(RichText::new(s.sheet_color.legend_text()).small().weak());
+            }
+        }
     });
 }
 
@@ -487,7 +524,7 @@ fn residue_card(ui: &mut Ui, ds: &ViewerDataset, terr: &ResidueTerritory, sides:
         ui.label(RichText::new(&terr.label_top).strong().size(15.0));
         ui.label(RichText::new(format!("({})", ds.group_name(terr.side))).color(sides.side_light(terr.side)));
     });
-    ui.label(format!("Chain {} • {} • {} interfacial atoms", terr.chain_id, terr.label_bottom, terr.patch_atoms.len()));
+    ui.label(format!("Chain {} • {} • {} interfacial atoms", terr.chain_id, terr.label_bottom, terr.member_atoms.len()));
     ui.label(format!("Buried ΔSASA: {:.1} Å²", terr.buried_sasa_a2));
     if terr.has_unsatisfied_polar {
         ui.colored_label(chrome.warning, "⚠️ Buried polar atom with 0 satisfied H-bonds/salt bridges.");
@@ -513,7 +550,7 @@ fn atom_card(ui: &mut Ui, ds: &ViewerDataset, node: &AtomNode, mode: BFactorMode
 fn contacts_list(ui: &mut Ui, ds: &ViewerDataset, terr: &ResidueTerritory, contacts_pal: &ContactPalette) {
     ui.label(RichText::new("Cross-Interface Contacts:").strong());
     let contacts: Vec<(&AtomNode, &AtomInteraction)> = terr
-        .patch_atoms
+        .member_atoms
         .iter()
         .filter_map(|&idx| ds.node(idx))
         .flat_map(|n| n.interactions.iter().filter(|i| i.is_cross_interface).map(move |i| (n, i)))

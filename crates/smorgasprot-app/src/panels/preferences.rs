@@ -76,6 +76,13 @@ fn config_toolbar(ui: &mut Ui, config_path: Option<&Path>, actions: &mut Vec<Act
         if ui.add_enabled(enabled, egui::Button::new("Reload")).clicked() {
             actions.push(Action::ReloadConfig);
         }
+        if ui
+            .button("Reset to Defaults")
+            .on_hover_text("Overwrite the active config file with built-in defaults")
+            .clicked()
+        {
+            actions.push(Action::ResetConfig);
+        }
     });
     match config_path {
         Some(path) => ui.small(format!("File: {}", path.display())),

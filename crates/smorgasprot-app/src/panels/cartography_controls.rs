@@ -3,19 +3,23 @@
 
 use super::widgets::{
     EDGE_WIDTH_RANGE, RADIUS_RANGE, UNIT_RANGE, bare_slider, choice_combo, choice_combo_short, color_channel_control,
-    customize_popover, max_text_width, popover_header, row_height, scalar_channel_control, section, truncate_paren,
+    named_popover, param_group_controls, popover_header, presentation_popover, scalar_channel_control, section, slider,
     tween_presets, tween_slider,
 };
 use crate::dataset::ViewerDataset;
 use crate::state::{
-    AtomSizeMode, ChannelPreset, Choice, ColorLens, EdgeColorLens, EdgeWidthLens, LabelBuilder, NodeStrokeColorLens,
-    TerritoryColorLens, TerritoryStrokeLens, Tween, UiState,
+    AtomLayerStyle, AtomSizeMode, BoundaryLayerStyle, ChannelPreset, ColorLens, EdgeColorLens, EdgeLayerStyle,
+    EdgeWidthLens, LabelBuilder, NodeStrokeColorLens, PresentationCaps, RibbonStyle, SheetColorMode,
+    TerritoryColorLens, TerritoryLayerStyle, TerritoryStrokeLens, Tween, UiState,
 };
-use egui::{Align, Grid, Layout, RichText, Ui, vec2};
+use egui::{Align, ComboBox, Grid, Layout, RichText, Ui};
 use smorgasprot_core::InterfaceSide;
 
+/// Debounce delay (s) for live residue territory contour remeshing.
+const CONTOUR_REMESH_DEBOUNCE_S: f64 = 0.2;
+
 /// Renders the Sandwich (Cartography) tab's side panel.
-pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState) {
+pub fn show(ui: &mut Ui, ds: &mut ViewerDataset, state: &mut UiState) {
     ui.heading("Sandwich Cartography");
     ui.add_space(4.0);
     let side_a_color = state.palette.sides.side_light(InterfaceSide::SideA);
@@ -29,6 +33,54 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState) {
         tween_slider(ui, &mut s.flatten, label);
         tween_presets(ui, &mut s.flatten, &[("3D (0.0)", 0.0), ("Bas-relief (0.5)", 0.5), ("2D map (1.0)", 1.0)]);
         ui.checkbox(&mut s.use_relaxed_uv, "Spring-relaxed 2D (vs. tangent plane)");
+        ui.separator();
+        let sheet_color_dirty = s.sheet_color != SheetColorMode::default();
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut s.sheet.visible, RichText::new("Interface sheet").strong());
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if s.sheet.visible
+                    && presentation_popover(
+                        ui,
+                        "carto_sheet_pres",
+                        "Interface sheet presentation",
+                        &mut s.sheet.presentation,
+                        &BoundaryLayerStyle::default_presentation(),
+                        PresentationCaps {
+                            shading: true,
+                            culling: true,
+                            border: true,
+                            wireframe: true,
+                            fill_alpha: true,
+                        },
+                        sheet_color_dirty,
+                        |ui, _| {
+                            ui.horizontal(|ui| {
+                                ui.label("Coloring:");
+                                ComboBox::from_id_salt("carto_sheet_color_mode")
+                                    .selected_text(s.sheet_color.label())
+                                    .show_ui(ui, |ui| {
+                                        for &mode in SheetColorMode::ALL {
+                                            ui.selectable_value(&mut s.sheet_color, mode, mode.label());
+                                        }
+                                    });
+                            });
+                            if s.sheet_color == SheetColorMode::Fixed {
+                                ui.horizontal(|ui| {
+                                    ui.label("Color:");
+                                    ui.color_edit_button_srgba(&mut s.sheet_fixed_color);
+                                });
+                            }
+                            ui.separator();
+                        },
+                    )
+                {
+                    s.sheet_color = SheetColorMode::default();
+                }
+            });
+        });
+        if s.sheet.visible {
+            slider(ui, "Alpha:", &mut s.sheet.alpha, UNIT_RANGE);
+        }
     });
 
     section(ui, "2. Overlay ↔ Open sandwich (θ)", |ui| {
@@ -42,7 +94,7 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState) {
         }
     });
 
-    section(ui, "3. Visual lenses & layer channels", |ui| {
+    section(ui, "3. Visual lenses & layers", |ui| {
         ui.label(RichText::new("Quick presets:").strong());
         ui.horizontal_wrapped(|ui| {
             for &preset in ChannelPreset::ALL {
@@ -53,124 +105,242 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState) {
         });
 
         ui.separator();
+        let now = ui.input(|i| i.time);
 
-        let col1_w = max_text_width(ui, &["Atom nodes", "Contact edges", "Residue territories"], true);
-        let col3_w = max_text_width(ui, &["Customize...", "Customize*..."], false) + 2.0 * ui.spacing().button_padding.x;
+        // ── Atom nodes ──────────────────────────────────────────────────────────
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut s.atoms.visible, RichText::new("Atom nodes").strong());
+            if s.atoms.visible {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let is_mesh = s.atoms.presentation.quality.geodesic_preset().is_some();
+                    presentation_popover(
+                        ui,
+                        "if_atoms_pres",
+                        "Atom node presentation",
+                        &mut s.atoms.presentation,
+                        &AtomLayerStyle::default_presentation(),
+                        PresentationCaps {
+                            shading: is_mesh,
+                            culling: is_mesh,
+                            border: is_mesh,
+                            wireframe: is_mesh,
+                            fill_alpha: true,
+                        },
+                        false,
+                        |ui, pres| {
+                            ui.label(RichText::new("Quality / Geometry").strong());
+                            choice_combo(ui, "if_atoms_quality", &mut pres.quality);
+                        },
+                    );
+                    let chan_mod = !s.atoms.channels_default();
+                    named_popover(ui, "if_atoms_chan", "Channels", chan_mod, |ui| {
+                        popover_header(ui, false, "Atom node channels", chan_mod, || s.atoms.reset_channels());
+                        color_channel_control(ui, "if_node_fill_lens", "Fill color", &mut s.atoms.fill, ColorLens::Fixed);
+                        scalar_channel_control(
+                            ui,
+                            "if_node_size_mode",
+                            "Node radius",
+                            &mut s.atoms.radius,
+                            AtomSizeMode::Fixed,
+                            RADIUS_RANGE,
+                            "x scale",
+                        );
+                        color_channel_control(
+                            ui,
+                            "if_node_stroke_color",
+                            "Border color",
+                            &mut s.atoms.stroke_color,
+                            NodeStrokeColorLens::Fixed,
+                        );
+                        scalar_channel_control(
+                            ui,
+                            "if_node_stroke_width",
+                            "Border width",
+                            &mut s.atoms.stroke_width,
+                            AtomSizeMode::Fixed,
+                            EDGE_WIDTH_RANGE,
+                            "px",
+                        );
+                    });
+                });
+            }
+        });
 
-        layer_channel_row(
-            ui,
-            col1_w,
-            col3_w,
-            "Atom nodes",
-            truncate_paren(s.atoms.fill.lens.label()),
-            "if_atoms_popover",
-            !s.atoms.is_default(),
-            |ui| {
-                popover_header(ui, false, "Atom nodes layer", !s.atoms.is_default(), || s.atoms.reset());
-                color_channel_control(ui, "if_node_fill_lens", "Fill color", &mut s.atoms.fill, ColorLens::Fixed);
-                scalar_channel_control(
-                    ui,
-                    "if_node_size_mode",
-                    "Node radius",
-                    &mut s.atoms.radius,
-                    AtomSizeMode::Fixed,
-                    RADIUS_RANGE,
-                    "x scale",
-                );
-                color_channel_control(
-                    ui,
-                    "if_node_stroke_color",
-                    "Border color",
-                    &mut s.atoms.stroke_color,
-                    NodeStrokeColorLens::Fixed,
-                );
-                scalar_channel_control(
-                    ui,
-                    "if_node_stroke_width",
-                    "Border width",
-                    &mut s.atoms.stroke_width,
-                    AtomSizeMode::Fixed,
-                    EDGE_WIDTH_RANGE,
-                    "px",
-                );
-                ui.separator();
-                label_builder_control(
-                    ui,
-                    "if_atom_labels",
-                    "Labels",
-                    &mut s.atoms.labels,
-                    LabelBuilder::default_atom(),
-                    true,
-                );
-            },
-        );
+        // ── Contact edges ───────────────────────────────────────────────────────
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut s.edges.visible, RichText::new("Contact edges").strong());
+            if s.edges.visible {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let is_prism = s.edges.presentation.quality == RibbonStyle::Prism8;
+                    presentation_popover(
+                        ui,
+                        "if_edges_pres",
+                        "Contact edge presentation",
+                        &mut s.edges.presentation,
+                        &EdgeLayerStyle::default_presentation(),
+                        PresentationCaps {
+                            shading: is_prism,
+                            culling: is_prism,
+                            border: is_prism,
+                            wireframe: is_prism,
+                            fill_alpha: true,
+                        },
+                        false,
+                        |ui, pres| {
+                            ui.label(RichText::new("Quality / Geometry").strong());
+                            choice_combo(ui, "if_edges_quality", &mut pres.quality);
+                        },
+                    );
+                    let filt_mod = !s.edges.filters_default();
+                    named_popover(ui, "if_edges_filter", "Filter", filt_mod, |ui| {
+                        popover_header(ui, false, "Contact edge filters", filt_mod, || s.edges.reset_filters());
+                        ui.checkbox(&mut s.edges.show_intra, "1st-shell intra-chain contacts");
+                        ui.checkbox(&mut s.edges.show_cross, "Cross-interface contacts");
+                        ui.separator();
+                        ui.label(RichText::new("Interaction types").strong());
+                        ui.checkbox(&mut s.edges.show_covalent, "Covalent bonds");
+                        ui.checkbox(&mut s.edges.show_hbond, "Hydrogen bonds");
+                        ui.checkbox(&mut s.edges.show_salt_bridge, "Salt bridges");
+                        ui.checkbox(&mut s.edges.show_clash, "Steric clashes");
+                        ui.checkbox(&mut s.edges.show_vdw, "van der Waals contacts");
+                    });
+                    let chan_mod = !s.edges.channels_default();
+                    named_popover(ui, "if_edges_chan", "Channels", chan_mod, |ui| {
+                        popover_header(ui, false, "Contact edge channels", chan_mod, || s.edges.reset_channels());
+                        color_channel_control(
+                            ui,
+                            "if_edge_color_lens",
+                            "Edge color",
+                            &mut s.edges.color,
+                            EdgeColorLens::Fixed,
+                        );
+                        scalar_channel_control(
+                            ui,
+                            "if_edge_width_lens",
+                            "Edge width",
+                            &mut s.edges.width,
+                            EdgeWidthLens::Fixed,
+                            EDGE_WIDTH_RANGE,
+                            "px",
+                        );
+                    });
+                });
+            }
+        });
 
-        layer_channel_row(
-            ui,
-            col1_w,
-            col3_w,
-            "Contact edges",
-            truncate_paren(s.edges.color.lens.label()),
-            "if_edges_popover",
-            !s.edges.is_default(),
-            |ui| {
-                popover_header(ui, false, "Contact edges layer", !s.edges.is_default(), || s.edges.reset());
-                color_channel_control(ui, "if_edge_color_lens", "Edge color", &mut s.edges.color, EdgeColorLens::Fixed);
-                scalar_channel_control(
-                    ui,
-                    "if_edge_width_lens",
-                    "Edge width",
-                    &mut s.edges.width,
-                    EdgeWidthLens::Fixed,
-                    EDGE_WIDTH_RANGE,
-                    "px",
-                );
-            },
-        );
+        // ── Residue territories ─────────────────────────────────────────────────
+        let mut contour_changed = false;
+        let mut contour_reset = false;
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut s.territories.visible, RichText::new("Residue territories").strong());
+            if s.territories.visible {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    presentation_popover(
+                        ui,
+                        "if_terr_pres",
+                        "Territory presentation",
+                        &mut s.territories.presentation,
+                        &TerritoryLayerStyle::default_presentation(),
+                        PresentationCaps {
+                            shading: true,
+                            culling: true,
+                            border: true,
+                            wireframe: true,
+                            fill_alpha: true,
+                        },
+                        false,
+                        |_, _| {},
+                    );
+                    let geom_mod = !ds.is_default_draw_contour() || (s.contour_sheet_blend - 0.90).abs() > 1e-3;
+                    named_popover(ui, "if_terr_geom", "Geometry", geom_mod, |ui| {
+                        popover_header(ui, false, "Territory geometry & drape", geom_mod, || {
+                            contour_reset = true;
+                            s.contour_sheet_blend = 0.90;
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Contour → sheet:")
+                                .on_hover_text("0.0 = through atomic centers, 0.99 = 99% onto the interface sheet");
+                            ui.add(egui::Slider::new(&mut s.contour_sheet_blend, 0.0..=0.99).fixed_decimals(2));
+                        });
+                        ui.separator();
+                        ui.label(RichText::new("Contour meshing").strong());
+                        if param_group_controls(ui, &mut ds.draw_contour, None) {
+                            contour_changed = true;
+                        }
+                    });
+                    let chan_mod = s.territories.fill != TerritoryLayerStyle::default().fill
+                        || s.territories.stroke_width != TerritoryLayerStyle::default().stroke_width;
+                    named_popover(ui, "if_terr_chan", "Channels", chan_mod, |ui| {
+                        popover_header(ui, false, "Territory channels", chan_mod, || {
+                            let d = TerritoryLayerStyle::default();
+                            s.territories.fill = d.fill;
+                            s.territories.stroke_width = d.stroke_width;
+                        });
+                        color_channel_control(
+                            ui,
+                            "if_terr_color_lens",
+                            "Territory fill color",
+                            &mut s.territories.fill,
+                            TerritoryColorLens::Fixed,
+                        );
+                        scalar_channel_control(
+                            ui,
+                            "if_terr_stroke_lens",
+                            "Territory border width",
+                            &mut s.territories.stroke_width,
+                            TerritoryStrokeLens::Fixed,
+                            EDGE_WIDTH_RANGE,
+                            "px",
+                        );
+                    });
+                });
+            }
+        });
+        if contour_reset {
+            ds.reset_draw_contour();
+        } else if contour_changed {
+            ds.schedule_contour_remesh(now, CONTOUR_REMESH_DEBOUNCE_S);
+        }
 
-        layer_channel_row(
-            ui,
-            col1_w,
-            col3_w,
-            "Residue territories",
-            truncate_paren(s.territories.fill.lens.label()),
-            "if_terr_popover",
-            !s.territories.is_default(),
-            |ui| {
-                popover_header(
-                    ui,
-                    false,
-                    "Residue territories layer",
-                    !s.territories.is_default(),
-                    || s.territories.reset(),
-                );
-                color_channel_control(
-                    ui,
-                    "if_terr_color_lens",
-                    "Territory fill color",
-                    &mut s.territories.fill,
-                    TerritoryColorLens::Fixed,
-                );
-                scalar_channel_control(
-                    ui,
-                    "if_terr_stroke_lens",
-                    "Territory border width",
-                    &mut s.territories.stroke_width,
-                    TerritoryStrokeLens::Fixed,
-                    EDGE_WIDTH_RANGE,
-                    "px",
-                );
-                ui.separator();
-                label_builder_control(
-                    ui,
-                    "if_territory_labels",
-                    "Territory labels",
-                    &mut s.territories.labels,
-                    LabelBuilder::default_territory(),
-                    false,
-                );
-            },
-        );
+        // ── Territory labels (top-level) ────────────────────────────────────────
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut s.territories.labels.enabled, RichText::new("Territory labels").strong());
+            if s.territories.labels.enabled {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let mod_lbl = s.territories.labels != LabelBuilder::default_territory();
+                    named_popover(ui, "if_terr_labels_pop", "Customize", mod_lbl, |ui| {
+                        label_builder_control(
+                            ui,
+                            "if_territory_labels",
+                            "Territory labels",
+                            &mut s.territories.labels,
+                            LabelBuilder::default_territory(),
+                            false,
+                        );
+                    });
+                });
+            }
+        });
+
+        // ── Atom labels (top-level) ─────────────────────────────────────────────
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut s.atoms.labels.enabled, RichText::new("Atom labels").strong());
+            if s.atoms.labels.enabled {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let mod_lbl = s.atoms.labels != LabelBuilder::default_atom();
+                    named_popover(ui, "if_atom_labels_pop", "Customize", mod_lbl, |ui| {
+                        label_builder_control(
+                            ui,
+                            "if_atom_labels",
+                            "Atom labels",
+                            &mut s.atoms.labels,
+                            LabelBuilder::default_atom(),
+                            true,
+                        );
+                    });
+                });
+            }
+        });
 
         ui.separator();
         ui.label("Mobility column interpretation:");
@@ -187,42 +357,12 @@ pub fn show(ui: &mut Ui, ds: &ViewerDataset, state: &mut UiState) {
                 group_visibility_row(ui, name_a, &mut s.side_a_alpha);
                 group_visibility_row(ui, name_b, &mut s.side_b_alpha);
             });
-
-        ui.separator();
-        ui.checkbox(&mut s.territories.visible, "Residue territory contours");
-        ui.checkbox(&mut s.edges.show_intra, "1st-shell intra-chain contacts");
-        ui.checkbox(&mut s.edges.show_cross, "Cross-interface contacts");
-        ui.checkbox(&mut s.show_backbone, "3D Cα backbone ribbons");
         // A pure presentation choice — doesn't touch `InterfacePartition`'s actual chain-to-side assignment.
         let on_top_name = ds.group_name(if s.side_a_on_top { InterfaceSide::SideA } else { InterfaceSide::SideB });
         ui.checkbox(&mut s.side_a_on_top, format!("{on_top_name} draws on top"));
-    });
-}
 
-#[allow(clippy::too_many_arguments)]
-fn layer_channel_row(
-    ui: &mut Ui,
-    col1_w: f32,
-    col3_w: f32,
-    name: &str,
-    summary: &str,
-    popover_id: &str,
-    modified: bool,
-    add_contents: impl FnOnce(&mut Ui),
-) {
-    ui.horizontal(|ui| {
-        let h = row_height(ui);
-        let spacing = ui.spacing().item_spacing.x;
-        ui.allocate_ui_with_layout(vec2(col1_w, h), Layout::left_to_right(Align::Center), |ui| {
-            ui.label(RichText::new(name).strong());
-        });
-        let mid_w = (ui.available_width() - col3_w - spacing).max(0.0);
-        ui.allocate_ui_with_layout(vec2(mid_w, h), Layout::left_to_right(Align::Center), |ui| {
-            ui.add(egui::Label::new(RichText::new(summary).weak()).truncate());
-        });
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            customize_popover(ui, popover_id, modified, add_contents);
-        });
+        ui.separator();
+        ui.checkbox(&mut s.show_backbone, "3D Cα backbone ribbons");
     });
 }
 
@@ -266,6 +406,8 @@ fn label_builder_control(
             });
             ui.label("Data value channel:");
             choice_combo(ui, &format!("{id_salt}_value_ch"), &mut builder.value_channel);
+            ui.label("Position:");
+            choice_combo(ui, &format!("{id_salt}_position"), &mut builder.position);
         });
     }
 }

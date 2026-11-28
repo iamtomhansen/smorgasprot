@@ -1,10 +1,13 @@
 //! Tunable analysis parameters: traits, metadata, visitor pattern, and pipeline aggregation.
-//! Subsystems declare their own parameter groups via [`param_group!`]; this module re-exports them.
+//! Subsystems declare their own parameter groups via [`param_group!`]; this module re-exports
+//! them.
+//! 
+//! Every parameter group in the program is collected by [`AnalysisParams`].
 
 use serde::{Deserialize, Serialize};
 
 pub use crate::contour::ContourParams;
-pub use crate::flatten::RelaxParams;
+pub use crate::projection2d::RelaxParams;
 pub use crate::interface::cavities::CavityParams;
 pub use crate::interface::uv_mesh::InterfaceMeshParams;
 pub use crate::interface::GeometryParams;

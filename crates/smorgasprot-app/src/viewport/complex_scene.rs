@@ -428,6 +428,7 @@ fn for_each_sphere(
             fill_lens,
             rep.fill.fixed,
             view.bfactor_mode,
+            true,
             view.lenses,
             view.pal,
         );
@@ -446,6 +447,7 @@ fn for_each_sphere(
                 stroke_color_lens,
                 rep.stroke_color.fixed,
                 view.bfactor_mode,
+                true,
                 false,
                 view.lenses,
                 view.pal,
@@ -528,7 +530,7 @@ fn for_each_sphere(
     }
 }
 
-fn build_geodesic_spheres_mesh(atoms: &[([f32; 3], f32, Color32)], preset: GeodesicPreset) -> (SurfaceMesh, Vec<Color32>) {
+pub(super) fn build_geodesic_spheres_mesh(atoms: &[([f32; 3], f32, Color32)], preset: GeodesicPreset) -> (SurfaceMesh, Vec<Color32>) {
     let (unit_verts, unit_tris) = unit_geodesic_sphere(preset);
     let nv = unit_verts.len();
     let nt = unit_tris.len();

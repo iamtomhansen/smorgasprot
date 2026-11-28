@@ -198,11 +198,6 @@ pub fn close_popover(ctx: &egui::Context) {
     ctx.data_mut(|d| d.insert_temp::<Option<egui::Id>>(egui::Id::new(ACTIVE_POPOVER_KEY), None));
 }
 
-/// Legacy single-drawer popover wrapper retained for Cartography controls.
-pub fn customize_popover(ui: &mut Ui, id_salt: &str, modified: bool, add_contents: impl FnOnce(&mut Ui)) {
-    named_popover(ui, id_salt, "Customize...", modified, add_contents);
-}
-
 /// Shared `Presentation` popover for any representation's quality/geometry, shading, culling, border, wireframe, and alphas.
 /// Returns `true` when "Reset Layer" was clicked so callers can reset any sibling state cleanly.
 #[allow(clippy::too_many_arguments)]

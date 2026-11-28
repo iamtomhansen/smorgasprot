@@ -10,18 +10,18 @@ pub mod cavities;
 pub mod contour;
 pub mod definition;
 pub mod envelope;
-pub mod flatten;
 pub mod model;
 pub mod negative_mesh;
+pub mod projection2d;
 pub mod uv_mesh;
 
 pub use cavities::*;
 pub use contour::*;
 pub use definition::*;
 pub use envelope::*;
-pub use flatten::*;
 pub use model::*;
 pub use negative_mesh::*;
+pub use projection2d::*;
 pub use uv_mesh::*;
 pub use crate::isosurface::{compute_mesh_volume_a3, mesh_volume_area_centroid};
 

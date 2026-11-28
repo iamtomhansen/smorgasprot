@@ -28,12 +28,17 @@ pub struct AtomNodeIdx(pub u32);
 #[serde(transparent)]
 pub struct TerritoryIdx(pub u32);
 
-/// 3D projection-plane Π = (origin, axis_u, axis_v, normal) for the interface. Flat, but 3D-oriented.
+/// 3D projection-plane Π = (origin, axis_u, axis_v, normal) for the interface.
+/// Flat, but 3D-oriented.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ProjectionPlane {
+    /// Origin of the 2D projection plane in 3D space (center of the plane).
     pub origin: [f32; 3],
+    /// Long axis of the 2D projection plane (u-axis) in 3D space.
     pub axis_u: [f32; 3],
+    /// Short axis of the 2D projection plane (v-axis) in 3D space.
     pub axis_v: [f32; 3],
+    /// Normal vector of the 2D projection plane in 3D space.
     pub normal: [f32; 3],
     pub hinge_u: f32,
 }
@@ -67,25 +72,47 @@ pub struct InterfaceGeometry {
 /// The bounded 2D/3D territory on the interface map corresponding to a single residue.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ResidueTerritory {
+    /// The dense index of this residue territory in the `InterfaceMap`.
     pub idx: TerritoryIdx,
+    /// The global residue index of the residue in the `ComplexStructure`.
     pub global_residue: GlobalResidueIdx,
+    /// The side of the interface to which this residue belongs.
     pub side: InterfaceSide,
+    /// The chain to which this residue belongs.
     pub chain_id: ChainName,
+    /// First line of the label for this territory.
     pub label_top: String,
+    /// Second line of the label for this territory.
     pub label_bottom: String,
-    pub patch_atoms: Vec<AtomNodeIdx>,
+    /// Indices of the [`AtomNode`]s that belong to this residue territory.
+    pub member_atoms: Vec<AtomNodeIdx>,
     pub buried_sasa_a2: f32,
     pub has_unsatisfied_polar: bool,
-    /// Relaxed 2D contour polygon vertices `(u, v)` on `ProjectionPlane` (at `flatten_t = 1.0`).
+    /// Relaxed 2D contour boundary polygon vertices `(u, v)` on `ProjectionPlane` (at `flatten_t = 1.0`).
     pub contour_uv: Vec<[f32; 2]>,
-    /// True 3D contour polygon vertices `(x, y, z)` draped over the residue's 3D atoms (at `flatten_t = 0.0`).
+    /// 3D boundary polygon vertices draped through the residue's atomic centers (blend = 0.0).
     pub contour_3d: Vec<[f32; 3]>,
-    /// Ear-clipping triangulation of `contour_uv`/`contour_3d` for rendering concave shape as a filled polygon.
+    /// 3D boundary polygon vertices draped onto the curved `uv_mesh` interface sheet (blend = 1.0).
+    #[serde(default)]
+    pub contour_3d_sheet: Vec<[f32; 3]>,
+    /// Filled territory mesh 2D `(u, v)` vertices (boundary `0..contour_uv.len()` + interior Steiner points).
+    #[serde(default)]
+    pub contour_mesh_uv: Vec<[f32; 2]>,
+    /// Filled territory mesh 3D vertices draped through atomic centers (1:1 with `contour_mesh_uv`).
+    #[serde(default)]
+    pub contour_mesh_3d_atoms: Vec<[f32; 3]>,
+    /// Filled territory mesh 3D vertices draped onto `uv_mesh` (1:1 with `contour_mesh_uv`).
+    #[serde(default)]
+    pub contour_mesh_3d_sheet: Vec<[f32; 3]>,
+    /// Triangulation indexing into `contour_mesh_*` for rendering the concave territory fill.
     pub contour_triangles: Vec<[u32; 3]>,
     /// Pole of inaccessibility in 2D `(u, v)` space for label placement (at `flatten_t = 1.0`).
     pub label_center_uv: [f32; 2],
-    /// Pole of inaccessibility in 3D `(x, y, z)` space for label placement (at `flatten_t = 0.0`).
+    /// Pole of inaccessibility in 3D `(x, y, z)` space draped to atoms (blend = 0.0).
     pub label_center_3d: [f32; 3],
+    /// Pole of inaccessibility in 3D `(x, y, z)` space draped to `uv_mesh` (blend = 1.0).
+    #[serde(default)]
+    pub label_center_3d_sheet: [f32; 3],
     pub local_uv_anchor: [f32; 2],
 }
 

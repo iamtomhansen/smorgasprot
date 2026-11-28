@@ -76,7 +76,7 @@ pub fn select_ball_stick_atoms(ds: &ViewerDataset, complex: &ComplexStructure, s
 }
 
 /// Appends a single uncapped or capped 8-sided cylinder segment between `pa` and `pb`.
-fn push_cylinder_segment(
+pub(super) fn push_cylinder_segment(
     pa: Vec3,
     pb: Vec3,
     radius: f32,

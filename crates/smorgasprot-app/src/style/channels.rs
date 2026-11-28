@@ -520,8 +520,28 @@ impl Choice for LabelValueChannel {
     }
 }
 
+/// Vertical anchor position for atom and territory text labels.
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum LabelPosition {
+    #[default]
+    Center,
+    Top,
+}
+
+impl Choice for LabelPosition {
+    const ALL: &'static [Self] = &[Self::Center, Self::Top];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Center => "Center",
+            Self::Top => "Top",
+        }
+    }
+}
+
 /// Composable builder for atom node or residue territory text labels.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
 pub struct LabelBuilder {
     pub enabled: bool,
     pub res_name_style: ResidueNameStyle,
@@ -530,6 +550,13 @@ pub struct LabelBuilder {
     pub show_atom_name: bool,
     pub show_sec_struct: bool,
     pub value_channel: LabelValueChannel,
+    pub position: LabelPosition,
+}
+
+impl Default for LabelBuilder {
+    fn default() -> Self {
+        Self::default_territory()
+    }
 }
 
 impl LabelBuilder {
@@ -543,6 +570,7 @@ impl LabelBuilder {
             show_atom_name: false,
             show_sec_struct: false,
             value_channel: LabelValueChannel::Off,
+            position: LabelPosition::Center,
         }
     }
 
@@ -556,6 +584,7 @@ impl LabelBuilder {
             show_atom_name: true,
             show_sec_struct: false,
             value_channel: LabelValueChannel::Off,
+            position: LabelPosition::Top,
         }
     }
 }

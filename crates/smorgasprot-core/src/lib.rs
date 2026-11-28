@@ -26,4 +26,4 @@ pub use selection::AtomSelection;
 
 // Compatibility aliases for submodule paths.
 pub use interface::contour;
-pub use interface::flatten;
+pub use interface::projection2d;

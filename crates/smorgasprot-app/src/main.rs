@@ -57,6 +57,7 @@ Options:
   -a, -b, --group-a, --binder  Chain for interface group A (default: A)
   -t, --group-b, --target      Chain for interface group B (default: C)
   -c, --config FILE            App config file (.ron)
+      --reset-config           Overwrite the active config file with defaults before starting
   -o, --out FILE.html          HTML output path (default: viewer.html)
       --export-html [FILE]     Write the HTML report and exit (no GUI)
       --headless               Same as --export-html
@@ -69,6 +70,7 @@ Options:
         chain_a: Option<String>,
         chain_b: Option<String>,
         config_path: Option<PathBuf>,
+        reset_config: bool,
         out_path: String,
         export_only: bool,
         serve: bool,
@@ -82,6 +84,7 @@ Options:
                 chain_a: None,
                 chain_b: None,
                 config_path: None,
+                reset_config: false,
                 out_path: "viewer.html".to_owned(),
                 export_only: false,
                 serve: false,
@@ -95,6 +98,7 @@ Options:
                     "-a" | "-b" | "--group-a" | "--binder" => args.chain_a = Some(value(&arg)?),
                     "-t" | "--group-b" | "--target" => args.chain_b = Some(value(&arg)?),
                     "-c" | "--config" => args.config_path = Some(PathBuf::from(value(&arg)?)),
+                    "--reset-config" => args.reset_config = true,
                     "-o" | "--out" => args.out_path = value(&arg)?,
                     "--export-html" => {
                         args.export_only = true;
@@ -143,7 +147,23 @@ Options:
             }
         };
 
-        let loaded_cfg = AppConfig::load(args.config_path.as_deref());
+        let loaded_cfg = if args.reset_config {
+            let path = smorgasprot_app::config::resolve_config_path(args.config_path.as_deref());
+            let default_cfg = AppConfig::default();
+            let warning = match path.as_deref() {
+                Some(p) => match default_cfg.save_to(p) {
+                    Ok(()) => {
+                        println!("Reset config to defaults: {}", p.display());
+                        None
+                    }
+                    Err(err) => Some(err),
+                },
+                None => Some("No config path resolved to reset.".to_owned()),
+            };
+            StartupConfig { config: default_cfg, path, warning }
+        } else {
+            AppConfig::load(args.config_path.as_deref())
+        };
         if let Some(ref warn) = loaded_cfg.warning {
             eprintln!("Warning: {warn}");
         }

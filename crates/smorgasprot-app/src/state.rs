@@ -13,7 +13,7 @@ pub use crate::style::{
     LabelValueChannel, NodeStrokeColorLens, ResidueNameStyle, ScalarMetric, TerritoryColorLens, TerritoryStrokeLens,
     VisualChannel,
 };
-pub use cartography::{AtomLayerStyle, CartographyViewSettings, EdgeLayerStyle, TerritoryLayerStyle};
+pub use cartography::{AtomLayerStyle, CartographyViewSettings, EdgeLayerStyle, SheetColorMode, TerritoryLayerStyle};
 pub use garnish::{
     BallStickParams, BallStickRepStyle, CartoonParams, CartoonRepStyle, GarnishViewSettings, RibbonRepStyle,
     SphereRepStyle, SurfaceRepStyle,

@@ -6,11 +6,11 @@ use smorgasprot_core::{
     AnalysisParams, AtomNode, AtomNodeIdx, ChainName, ComplexStructure, Element, GlobalAtomIdx, GlobalChainIdx,
     GlobalResidueIdx, InterfaceGeometry, InterfaceMap, InterfacePartition, InterfaceSide, ResidueTerritory,
     SurfaceMesh, TerritoryIdx,
-    flatten::FlatteningStats,
+    projection2d::FlatteningStats,
     interface::{
-        CavityParams, GeometryParams, InterfaceMeshParams, build_interface_cavities,
+        CavityParams, ContourParams, GeometryParams, InterfaceMeshParams, build_interface_cavities,
         build_interface_geometry, build_interface_negative_mesh, build_interface_sheet_mesh,
-        compute_mesh_volume_a3, extract_interface_envelope_mesh,
+        compute_mesh_volume_a3, compute_territory_contours, extract_interface_envelope_mesh,
     },
     surface::{
         GeodesicPreset, SurfaceParams, build_chain_surface_mesh_with_preset, compute_chain_explode_offsets,
@@ -92,6 +92,12 @@ pub struct InterfaceViewData {
     /// Interface side of each `draw_geometry.envelope_mesh` vertex (render cache, not exported).
     #[serde(skip)]
     pub draw_envelope_sides: Vec<InterfaceSide>,
+    /// Geodesic-unrolled 2D `(u, v)` rest positions for `draw_geometry.sheet_mesh` vertices.
+    #[serde(skip)]
+    pub sheet_flat_uv: Vec<[f32; 2]>,
+    /// Half-total buried SASA (`0.5 * Σ ΔSASA`, Å²) for comparison against sheet surface area.
+    #[serde(skip)]
+    pub half_buried_sasa_a2: f32,
 }
 
 impl InterfaceViewData {
@@ -109,6 +115,10 @@ impl InterfaceViewData {
             .collect()
     }
 
+    fn half_buried_sasa(map: &InterfaceMap) -> f32 {
+        0.5 * map.nodes.iter().map(|n| n.buried_sasa_a2).sum::<f32>()
+    }
+
     /// Computes analytical flattening, void volume, metadata, and initial display meshes for a partition.
     pub fn compute(
         complex: &ComplexStructure,
@@ -117,7 +127,7 @@ impl InterfaceViewData {
         analysis_params: &AnalysisParams,
     ) -> Result<Self, String> {
         partition.recompute_membership(complex);
-        let (map, stats) = smorgasprot_core::flatten::build_interface_map(complex, &partition, analysis_params)?;
+        let (map, stats) = smorgasprot_core::projection2d::build_interface_map(complex, &partition, analysis_params)?;
         let draw_geometry = build_interface_geometry(
             complex,
             &partition,
@@ -129,6 +139,9 @@ impl InterfaceViewData {
         );
         let analysis_void_volume_a3 = draw_geometry.void_volume_a3;
         let draw_envelope_sides = Self::envelope_sides_for(&partition, complex, &draw_geometry.envelope_mesh);
+        let sheet_flat_uv =
+            smorgasprot_core::projection2d::compute_sheet_flat_uv(&draw_geometry.sheet_mesh, &map.plane);
+        let half_buried_sasa_a2 = Self::half_buried_sasa(&map);
         let atom_meta = map.nodes.iter().map(|n| atom_meta(complex, n)).collect();
         Ok(Self {
             partition,
@@ -138,6 +151,8 @@ impl InterfaceViewData {
             analysis_void_volume_a3,
             atom_meta,
             draw_envelope_sides,
+            sheet_flat_uv,
+            half_buried_sasa_a2,
         })
     }
 
@@ -170,6 +185,8 @@ impl InterfaceViewData {
         );
         draw_geometry.void_volume_a3 = self.analysis_void_volume_a3;
         self.draw_envelope_sides = Self::envelope_sides_for(&self.partition, complex, &draw_geometry.envelope_mesh);
+        self.sheet_flat_uv =
+            smorgasprot_core::projection2d::compute_sheet_flat_uv(&draw_geometry.sheet_mesh, &self.map.plane);
         self.draw_geometry = draw_geometry;
     }
 
@@ -181,10 +198,11 @@ impl InterfaceViewData {
         analysis_params: &AnalysisParams,
     ) -> Result<(), String> {
         self.partition.recompute_membership(complex);
-        let (map, stats) = smorgasprot_core::flatten::build_interface_map(complex, &self.partition, analysis_params)?;
+        let (map, stats) = smorgasprot_core::projection2d::build_interface_map(complex, &self.partition, analysis_params)?;
         let analysis_negative = build_interface_negative_mesh(complex, &map.nodes, &analysis_params.geometry);
         self.analysis_void_volume_a3 = compute_mesh_volume_a3(&analysis_negative);
         self.atom_meta = map.nodes.iter().map(|n| atom_meta(complex, n)).collect();
+        self.half_buried_sasa_a2 = Self::half_buried_sasa(&map);
         self.map = map;
         self.stats = stats;
         self.recompute_draw_geometry(
@@ -237,6 +255,9 @@ pub struct ViewerDataset {
     /// Presentation parameters for probe-accessible cavity detection.
     #[serde(skip)]
     pub draw_cavities: CavityParams,
+    /// Presentation parameters for residue territory contour meshing.
+    #[serde(skip)]
+    pub draw_contour: ContourParams,
     /// Face-culling mode; decided at construction by `display_defaults_for`.
     #[serde(skip)]
     pub culling: SurfaceCulling,
@@ -255,6 +276,9 @@ pub struct ViewerDataset {
     /// Pending debounced cavity remesh deadline (`egui` time in seconds).
     #[serde(skip)]
     cavity_remesh_due: Option<f64>,
+    /// Pending debounced residue territory contour remesh deadline (`egui` time in seconds).
+    #[serde(skip)]
+    contour_remesh_due: Option<f64>,
     /// Unique per-instance key for GPU buffer caching (survives file reloads with the same `id`).
     #[serde(skip)]
     draw_instance_id: u64,
@@ -332,12 +356,14 @@ impl ViewerDataset {
             draw_mesh: initial_draw_surface.clone(),
             draw_interface_mesh: analysis_params.interface_mesh.clone(),
             draw_cavities: analysis_params.cavities.clone(),
+            draw_contour: analysis_params.contour.clone(),
             culling: defaults.culling,
             applied_draw_preset: initial_preset,
             applied_draw_surface: initial_draw_surface,
             draw_remesh_due: None,
             sheet_remesh_due: None,
             cavity_remesh_due: None,
+            contour_remesh_due: None,
             draw_instance_id: NEXT_DATASET_INSTANCE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             draw_mesh_gen: 1,
         })
@@ -545,6 +571,10 @@ impl ViewerDataset {
                 &iface.map.plane,
                 &self.draw_interface_mesh,
             );
+            iface.sheet_flat_uv = smorgasprot_core::projection2d::compute_sheet_flat_uv(
+                &iface.draw_geometry.sheet_mesh,
+                &iface.map.plane,
+            );
         }
         self.draw_mesh_gen = self.draw_mesh_gen.wrapping_add(1);
     }
@@ -559,6 +589,55 @@ impl ViewerDataset {
         if !self.is_default_draw_interface_mesh() {
             self.draw_interface_mesh = self.analysis_params.interface_mesh.clone();
             self.recompute_active_interface_sheet();
+        }
+    }
+
+    /// Schedules a debounced residue territory contour remesh `delay_s` seconds after `now`.
+    pub fn schedule_contour_remesh(&mut self, now: f64, delay_s: f64) {
+        self.contour_remesh_due = Some(now + delay_s);
+    }
+
+    /// Runs any pending contour remesh whose deadline has arrived, or returns remaining wait seconds.
+    pub fn poll_contour_remesh(&mut self, now: f64) -> Option<f64> {
+        let due = self.contour_remesh_due?;
+        if now >= due {
+            self.contour_remesh_due = None;
+            self.recompute_active_interface_contours();
+            None
+        } else {
+            Some(due - now)
+        }
+    }
+
+    /// Recomputes the active interface's residue territory contours from `draw_contour`.
+    pub fn recompute_active_interface_contours(&mut self) {
+        self.contour_remesh_due = None;
+        let Some(active_idx) = self.active_interface else { return };
+        if let Some(iface) = self.interfaces.get_mut(active_idx) {
+            let sheet_ref = (!iface.draw_geometry.sheet_mesh.vertices.is_empty()
+                && !iface.draw_geometry.sheet_mesh.triangles.is_empty()
+                && iface.sheet_flat_uv.len() == iface.draw_geometry.sheet_mesh.vertices.len())
+            .then_some((&iface.draw_geometry.sheet_mesh, iface.sheet_flat_uv.as_slice()));
+            compute_territory_contours(
+                &mut iface.map.territories,
+                &iface.map.nodes,
+                &iface.map.plane,
+                sheet_ref,
+                &self.draw_contour,
+            );
+        }
+    }
+
+    /// Returns whether `draw_contour` matches the dataset's `analysis_params`.
+    pub fn is_default_draw_contour(&self) -> bool {
+        self.draw_contour == self.analysis_params.contour
+    }
+
+    /// Resets `draw_contour` to `analysis_params.contour` and recomputes active territory contours.
+    pub fn reset_draw_contour(&mut self) {
+        if !self.is_default_draw_contour() {
+            self.draw_contour = self.analysis_params.contour.clone();
+            self.recompute_active_interface_contours();
         }
     }
 

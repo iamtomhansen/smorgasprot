@@ -1,21 +1,86 @@
 //! State, layer styles, and preset helpers for the 2D/3D Interface Cartography workspace tab.
 
-use super::Tween;
+use super::{BoundaryLayerStyle, MeshShading, PresentationStyle, RibbonStyle, SphereQuality, SurfaceCulling, Tween};
 use crate::camera::CameraState;
 use crate::style::{
-    AtomSizeMode, BFactorMode, ChannelPreset, ChromePalette, ColorLens, EdgeColorLens, EdgeWidthLens, LabelBuilder,
-    NodeStrokeColorLens, TerritoryColorLens, TerritoryStrokeLens, VisualChannel,
+    AtomSizeMode, BFactorMode, ChannelPreset, ChromePalette, ColorLens, ColorMap, EdgeColorLens, EdgeWidthLens,
+    LabelBuilder, NodeStrokeColorLens, Palette, TerritoryColorLens, TerritoryStrokeLens, VisualChannel,
 };
 use egui::Color32;
 use smorgasprot_core::InterfaceSide;
 
-/// Visual channels and label builder for the atom node layer.
+/// Coloring mode for the morphed 3D ↔ 2D interface sheet in the Sandwich view.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum SheetColorMode {
+    /// Palette diverging strain ramp: blue (compressed) → white (isometric) → red (stretched).
+    #[default]
+    StrainBlueWhiteRed,
+    /// Colorblind-safe diverging strain ramp: teal (compressed) → white → orange (stretched).
+    StrainTealWhiteOrange,
+    /// Diverging strain ramp: purple (compressed) → white → green (stretched).
+    StrainPurpleWhiteGreen,
+    /// Uniform user-picked color (no strain encoding).
+    Fixed,
+}
+
+impl SheetColorMode {
+    pub const ALL: &'static [Self] = &[
+        Self::StrainBlueWhiteRed,
+        Self::StrainTealWhiteOrange,
+        Self::StrainPurpleWhiteGreen,
+        Self::Fixed,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::StrainBlueWhiteRed => "Strain (Blue–White–Red)",
+            Self::StrainTealWhiteOrange => "Strain (Teal–White–Orange)",
+            Self::StrainPurpleWhiteGreen => "Strain (Purple–White–Green)",
+            Self::Fixed => "Fixed color",
+        }
+    }
+
+    pub fn legend_text(self) -> &'static str {
+        match self {
+            Self::StrainBlueWhiteRed => "Blue = compressed · White = isometric · Red = stretched (±35%)",
+            Self::StrainTealWhiteOrange => "Teal = compressed · White = isometric · Orange = stretched (±35%)",
+            Self::StrainPurpleWhiteGreen => "Purple = compressed · White = isometric · Green = stretched (±35%)",
+            Self::Fixed => "Interface sheet (fixed color)",
+        }
+    }
+
+    /// Evaluates the vertex color for relative linear `strain` (saturating at ±35%).
+    pub fn sample(self, pal: &Palette, strain: f32, fixed: Color32) -> Color32 {
+        const SATURATION: f32 = 0.35;
+        let t = 0.5 + 0.5 * (strain / SATURATION).clamp(-1.0, 1.0);
+        match self {
+            Self::StrainBlueWhiteRed => pal.strain.sample(t),
+            Self::StrainTealWhiteOrange => ColorMap::diverging(
+                Color32::from_rgb(13, 148, 136),
+                Color32::WHITE,
+                Color32::from_rgb(234, 88, 12),
+            )
+            .sample(t),
+            Self::StrainPurpleWhiteGreen => ColorMap::diverging(
+                Color32::from_rgb(126, 34, 206),
+                Color32::WHITE,
+                Color32::from_rgb(22, 163, 74),
+            )
+            .sample(t),
+            Self::Fixed => fixed,
+        }
+    }
+}
+
+/// Visual channels, presentation, and label builder for the atom node layer.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AtomLayerStyle {
+    pub visible: bool,
     pub fill: VisualChannel<ColorLens, Color32>,
     pub radius: VisualChannel<AtomSizeMode, f32>,
     pub stroke_color: VisualChannel<NodeStrokeColorLens, Color32>,
     pub stroke_width: VisualChannel<AtomSizeMode, f32>,
+    pub presentation: PresentationStyle<SphereQuality>,
     pub labels: LabelBuilder,
 }
 
@@ -23,18 +88,45 @@ impl Default for AtomLayerStyle {
     fn default() -> Self {
         let chrome = ChromePalette::default();
         Self {
+            visible: true,
             fill: VisualChannel::new(ColorLens::Interactions, Color32::from_rgb(86, 180, 233)),
             radius: VisualChannel::new(AtomSizeMode::SqrtBuriedSasa, 1.15),
             stroke_color: VisualChannel::new(NodeStrokeColorLens::DefaultInk, chrome.ink),
             stroke_width: VisualChannel::new(AtomSizeMode::Fixed, 1.0),
+            presentation: Self::default_presentation(),
             labels: LabelBuilder::default_atom(),
         }
     }
 }
 
 impl AtomLayerStyle {
+    pub fn default_presentation() -> PresentationStyle<SphereQuality> {
+        PresentationStyle {
+            quality: SphereQuality::Flat2D,
+            shading: MeshShading::Smooth,
+            culling: SurfaceCulling::Backfaces,
+            ..PresentationStyle::default()
+        }
+    }
+
     pub fn is_default(&self) -> bool {
         *self == Self::default()
+    }
+
+    pub fn channels_default(&self) -> bool {
+        let d = Self::default();
+        self.fill == d.fill
+            && self.radius == d.radius
+            && self.stroke_color == d.stroke_color
+            && self.stroke_width == d.stroke_width
+    }
+
+    pub fn reset_channels(&mut self) {
+        let d = Self::default();
+        self.fill = d.fill;
+        self.radius = d.radius;
+        self.stroke_color = d.stroke_color;
+        self.stroke_width = d.stroke_width;
     }
 
     pub fn reset(&mut self) {
@@ -42,29 +134,85 @@ impl AtomLayerStyle {
     }
 }
 
-/// Visual channels and layer toggles for the contact edge layer (intra-side springs & cross-interface arcs).
+/// Visual channels, presentation, and filter toggles for the contact edge layer.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EdgeLayerStyle {
+    pub visible: bool,
     pub color: VisualChannel<EdgeColorLens, Color32>,
     pub width: VisualChannel<EdgeWidthLens, f32>,
+    pub presentation: PresentationStyle<RibbonStyle>,
     pub show_intra: bool,
     pub show_cross: bool,
+    pub show_covalent: bool,
+    pub show_hbond: bool,
+    pub show_salt_bridge: bool,
+    pub show_clash: bool,
+    pub show_vdw: bool,
 }
 
 impl Default for EdgeLayerStyle {
     fn default() -> Self {
         Self {
+            visible: true,
             color: VisualChannel::new(EdgeColorLens::InteractionKind, Color32::from_rgb(135, 206, 250)),
             width: VisualChannel::new(EdgeWidthLens::InteractionKind, 1.5),
+            presentation: Self::default_presentation(),
             show_intra: true,
             show_cross: true,
+            show_covalent: true,
+            show_hbond: true,
+            show_salt_bridge: true,
+            show_clash: true,
+            show_vdw: true,
         }
     }
 }
 
 impl EdgeLayerStyle {
+    pub fn default_presentation() -> PresentationStyle<RibbonStyle> {
+        PresentationStyle {
+            quality: RibbonStyle::Capsule2D,
+            shading: MeshShading::Smooth,
+            culling: SurfaceCulling::Backfaces,
+            ..PresentationStyle::default()
+        }
+    }
+
     pub fn is_default(&self) -> bool {
         *self == Self::default()
+    }
+
+    pub fn channels_default(&self) -> bool {
+        let d = Self::default();
+        self.color == d.color && self.width == d.width
+    }
+
+    pub fn filters_default(&self) -> bool {
+        let d = Self::default();
+        self.show_intra == d.show_intra
+            && self.show_cross == d.show_cross
+            && self.show_covalent == d.show_covalent
+            && self.show_hbond == d.show_hbond
+            && self.show_salt_bridge == d.show_salt_bridge
+            && self.show_clash == d.show_clash
+            && self.show_vdw == d.show_vdw
+    }
+
+    pub fn reset_channels(&mut self) {
+        let d = Self::default();
+        self.color = d.color;
+        self.width = d.width;
+    }
+
+    pub fn reset_filters(&mut self) {
+        let d = Self::default();
+        self.show_intra = d.show_intra;
+        self.show_cross = d.show_cross;
+        self.show_covalent = d.show_covalent;
+        self.show_hbond = d.show_hbond;
+        self.show_salt_bridge = d.show_salt_bridge;
+        self.show_clash = d.show_clash;
+        self.show_vdw = d.show_vdw;
     }
 
     pub fn reset(&mut self) {
@@ -72,12 +220,13 @@ impl EdgeLayerStyle {
     }
 }
 
-/// Visual channels, label builder, and visibility toggle for the residue territory contour layer.
+/// Visual channels, presentation, label builder, and visibility toggle for residue territories.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TerritoryLayerStyle {
     pub visible: bool,
     pub fill: VisualChannel<TerritoryColorLens, Color32>,
     pub stroke_width: VisualChannel<TerritoryStrokeLens, f32>,
+    pub presentation: PresentationStyle<()>,
     pub labels: LabelBuilder,
 }
 
@@ -87,12 +236,24 @@ impl Default for TerritoryLayerStyle {
             visible: true,
             fill: VisualChannel::new(TerritoryColorLens::InterfaceSide, Color32::from_rgb(86, 180, 233)),
             stroke_width: VisualChannel::new(TerritoryStrokeLens::Fixed, 1.2),
+            presentation: Self::default_presentation(),
             labels: LabelBuilder::default_territory(),
         }
     }
 }
 
 impl TerritoryLayerStyle {
+    pub fn default_presentation() -> PresentationStyle<()> {
+        let mut p = PresentationStyle {
+            quality: (),
+            shading: MeshShading::Unlit,
+            culling: SurfaceCulling::None,
+            ..PresentationStyle::default()
+        };
+        p.alphas.fill = 0.15;
+        p
+    }
+
     pub fn is_default(&self) -> bool {
         *self == Self::default()
     }
@@ -121,6 +282,14 @@ pub struct CartographyViewSettings {
     pub side_a_alpha: Tween,
     pub side_b_alpha: Tween,
     pub show_backbone: bool,
+    /// Morphed 3D ↔ 2D interface sheet visibility, opacity, and mesh presentation.
+    pub sheet: BoundaryLayerStyle,
+    /// Coloring mode for the morphed interface sheet (diverging strain ramp or fixed color).
+    pub sheet_color: SheetColorMode,
+    /// Uniform color used when `sheet_color == SheetColorMode::Fixed`.
+    pub sheet_fixed_color: Color32,
+    /// 3D contour draping blend: `0.0` = through atomic centers, `0.99` = 99% onto interface sheet.
+    pub contour_sheet_blend: f32,
     /// Which side's territories/labels paint on top of the other — a pure presentation choice,
     /// independent of `InterfacePartition`'s actual chain-to-side assignment.
     pub side_a_on_top: bool,
@@ -128,6 +297,8 @@ pub struct CartographyViewSettings {
 
 impl Default for CartographyViewSettings {
     fn default() -> Self {
+        let mut sheet = BoundaryLayerStyle::new(false);
+        sheet.alpha = Tween::new(0.75);
         Self {
             camera: CameraState::default(),
             flatten: Tween::new(1.0),
@@ -140,6 +311,10 @@ impl Default for CartographyViewSettings {
             side_a_alpha: Tween::new(1.0),
             side_b_alpha: Tween::new(0.35),
             show_backbone: true,
+            sheet,
+            sheet_color: SheetColorMode::default(),
+            sheet_fixed_color: Color32::from_rgb(148, 163, 184),
+            contour_sheet_blend: 0.90,
             side_a_on_top: true,
         }
     }
@@ -232,6 +407,7 @@ impl CartographyViewSettings {
             | self.book.step(dt, rate)
             | self.side_a_alpha.step(dt, rate)
             | self.side_b_alpha.step(dt, rate)
+            | self.sheet.alpha.step(dt, rate)
     }
 
     /// Immediately snaps all Interface tab tweens to their targets.
@@ -240,5 +416,6 @@ impl CartographyViewSettings {
         self.book.finish();
         self.side_a_alpha.finish();
         self.side_b_alpha.finish();
+        self.sheet.alpha.finish();
     }
 }

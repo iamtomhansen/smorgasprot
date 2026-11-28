@@ -92,33 +92,33 @@ impl ScalarMetric {
         match self {
             Self::BuriedSasa => terr.buried_sasa_a2,
             Self::Mobility | Self::Rigidity => {
-                if terr.patch_atoms.is_empty() {
+                if terr.member_atoms.is_empty() {
                     0.0
                 } else {
                     let sum: f32 = terr
-                        .patch_atoms
+                        .member_atoms
                         .iter()
                         .filter_map(|idx| nodes.get(idx.0 as usize))
                         .map(|n| n.b_factor)
                         .sum();
-                    sum / terr.patch_atoms.len() as f32
+                    sum / terr.member_atoms.len() as f32
                 }
             }
             Self::AliphaticScore => {
-                if terr.patch_atoms.is_empty() {
+                if terr.member_atoms.is_empty() {
                     0.0
                 } else {
                     let sum: f32 = terr
-                        .patch_atoms
+                        .member_atoms
                         .iter()
                         .filter_map(|idx| nodes.get(idx.0 as usize))
                         .map(|n| n.aliphatic_score)
                         .sum();
-                    sum / terr.patch_atoms.len() as f32
+                    sum / terr.member_atoms.len() as f32
                 }
             }
             Self::ClashSeverity => terr
-                .patch_atoms
+                .member_atoms
                 .iter()
                 .filter_map(|idx| nodes.get(idx.0 as usize))
                 .map(worst_clash_overlap)
@@ -137,16 +137,16 @@ impl ScalarMetric {
         match self {
             Self::BuriedSasa => (terr.buried_sasa_a2 / params.territory_buried_sasa_max_a2.max(1e-3)).clamp(0.0, 1.0),
             Self::Mobility | Self::Rigidity => {
-                if terr.patch_atoms.is_empty() {
+                if terr.member_atoms.is_empty() {
                     0.5
                 } else {
                     let sum: f32 = terr
-                        .patch_atoms
+                        .member_atoms
                         .iter()
                         .filter_map(|idx| nodes.get(idx.0 as usize))
                         .map(|n| self.atom_norm(n, bfactor_mode, params))
                         .sum();
-                    (sum / terr.patch_atoms.len() as f32).clamp(0.0, 1.0)
+                    (sum / terr.member_atoms.len() as f32).clamp(0.0, 1.0)
                 }
             }
             Self::AliphaticScore => self.territory_raw(terr, nodes).clamp(0.0, 1.0),

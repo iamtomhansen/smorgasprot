@@ -60,12 +60,14 @@ pub(crate) fn sample_metric_color(metric: ScalarMetric, t: f32, palette: &Palett
 }
 
 /// Fill color for an interface atom node under the active [`ColorLens`].
+#[allow(clippy::too_many_arguments)]
 pub fn atom_fill_color(
     node: &AtomNode,
     meta: &AtomMeta,
     lens: ColorLens,
     fixed_color: Color32,
     bfactor_mode: BFactorMode,
+    side_a_on_top: bool,
     params: &LensParams,
     palette: &Palette,
 ) -> Color32 {
@@ -77,17 +79,18 @@ pub fn atom_fill_color(
         ColorLens::Off => Color32::TRANSPARENT,
         ColorLens::Interactions => {
             let c = &palette.contacts;
-            // Priority: clash > salt bridge > H-bond > plain side color.
+            // Priority: clash > salt bridge > H-bond > plain side color (top group primary, bottom lighter).
+            let top_side = if side_a_on_top { InterfaceSide::SideA } else { InterfaceSide::SideB };
             if ScalarMetric::ClashSeverity.atom_raw(node) > params.clash_threshold_a {
                 c.clash
             } else if has_cross_interaction(node, EdgeKind::SaltBridge) {
                 c.salt_bridge
             } else if has_cross_interaction(node, EdgeKind::HBond) {
                 c.hbond
-            } else if node.side == InterfaceSide::SideA {
-                palette.sides.side_a
+            } else if node.side == top_side {
+                palette.sides.side(node.side)
             } else {
-                palette.sides.side_light(InterfaceSide::SideB)
+                palette.sides.side_light(node.side)
             }
         }
         ColorLens::AaChemistry => aa_chemistry_color(&meta.res_name, node.aliphatic_score, params, palette),
@@ -164,12 +167,14 @@ pub fn complex_atom_color(
 }
 
 /// Border stroke color for an interface atom node under the active [`NodeStrokeColorLens`].
+#[allow(clippy::too_many_arguments)]
 pub fn atom_stroke_color(
     node: &AtomNode,
     meta: &AtomMeta,
     lens: NodeStrokeColorLens,
     fixed_color: Color32,
     bfactor_mode: BFactorMode,
+    side_a_on_top: bool,
     hovered: bool,
     params: &LensParams,
     palette: &Palette,
@@ -189,17 +194,17 @@ pub fn atom_stroke_color(
             }
         }
         NodeStrokeColorLens::Interactions => {
-            atom_fill_color(node, meta, ColorLens::Interactions, fixed_color, bfactor_mode, params, palette)
+            atom_fill_color(node, meta, ColorLens::Interactions, fixed_color, bfactor_mode, side_a_on_top, params, palette)
         }
         NodeStrokeColorLens::Chemistry => {
-            atom_fill_color(node, meta, ColorLens::AaChemistry, fixed_color, bfactor_mode, params, palette)
+            atom_fill_color(node, meta, ColorLens::AaChemistry, fixed_color, bfactor_mode, side_a_on_top, params, palette)
         }
         NodeStrokeColorLens::ModernCpk => {
-            atom_fill_color(node, meta, ColorLens::ModernCpk, fixed_color, bfactor_mode, params, palette)
+            atom_fill_color(node, meta, ColorLens::ModernCpk, fixed_color, bfactor_mode, side_a_on_top, params, palette)
         }
         NodeStrokeColorLens::InterfaceSide => palette.sides.side_dark(node.side),
         NodeStrokeColorLens::Bfactor => {
-            atom_fill_color(node, meta, ColorLens::Bfactor, fixed_color, bfactor_mode, params, palette)
+            atom_fill_color(node, meta, ColorLens::Bfactor, fixed_color, bfactor_mode, side_a_on_top, params, palette)
         }
     }
 }
@@ -256,7 +261,7 @@ pub fn territory_fill_color(
         TerritoryColorLens::InterfaceSide => palette.sides.side(terr.side),
         TerritoryColorLens::Chemistry => {
             let res_name = terr
-                .patch_atoms
+                .member_atoms
                 .first()
                 .and_then(|idx| metas.get(idx.0 as usize))
                 .map_or("", |m| m.res_name.as_str());
@@ -306,7 +311,7 @@ pub fn format_territory_label(
     if !builder.enabled {
         return None;
     }
-    let first_meta = terr.patch_atoms.first().and_then(|idx| metas.get(idx.0 as usize));
+    let first_meta = terr.member_atoms.first().and_then(|idx| metas.get(idx.0 as usize));
     let res_name = first_meta.map_or("", |m| m.res_name.as_str());
     let res_num = first_meta.map_or(0, |m| m.res_num);
 
@@ -334,18 +339,20 @@ pub fn format_territory_label(
         head.push_str(&res_num.to_string());
     }
 
-    let mut parts = Vec::new();
+    let mut header_parts = Vec::new();
     if !head.is_empty() {
-        parts.push(head);
+        header_parts.push(head);
     }
     if builder.show_sec_struct && !terr.label_bottom.is_empty() {
-        parts.push(format!("({})", terr.label_bottom));
+        header_parts.push(format!("({})", terr.label_bottom));
     }
-    if let Some(val_str) = format_territory_value(terr, nodes, builder.value_channel) {
-        parts.push(val_str);
+    let header = header_parts.join(" ");
+    match (header.is_empty(), format_territory_value(terr, nodes, builder.value_channel)) {
+        (true, None) => None,
+        (false, None) => Some(header),
+        (true, Some(val_str)) => Some(val_str),
+        (false, Some(val_str)) => Some(format!("{header}\n{val_str}")),
     }
-
-    if parts.is_empty() { None } else { Some(parts.join(" ")) }
 }
 
 /// Builds the display text for an [`AtomNode`] label from [`LabelBuilder`].
@@ -383,15 +390,12 @@ pub fn format_atom_label(node: &AtomNode, meta: &AtomMeta, builder: &LabelBuilde
         head.push_str(&meta.atom_name);
     }
 
-    let mut parts = Vec::new();
-    if !head.is_empty() {
-        parts.push(head);
+    match (head.is_empty(), format_atom_value(node, builder.value_channel)) {
+        (true, None) => None,
+        (false, None) => Some(head),
+        (true, Some(val_str)) => Some(val_str),
+        (false, Some(val_str)) => Some(format!("{head}\n{val_str}")),
     }
-    if let Some(val_str) = format_atom_value(node, builder.value_channel) {
-        parts.push(val_str);
-    }
-
-    if parts.is_empty() { None } else { Some(parts.join(" ")) }
 }
 
 fn format_territory_value(terr: &ResidueTerritory, nodes: &[AtomNode], ch: LabelValueChannel) -> Option<String> {
@@ -402,7 +406,7 @@ fn format_territory_value(terr: &ResidueTerritory, nodes: &[AtomNode], ch: Label
         LabelValueChannel::Off => None,
         LabelValueChannel::ContactCount => {
             let count: usize = terr
-                .patch_atoms
+                .member_atoms
                 .iter()
                 .filter_map(|idx| nodes.get(idx.0 as usize))
                 .map(|n| n.interactions.iter().filter(|i| i.is_cross_interface).count())

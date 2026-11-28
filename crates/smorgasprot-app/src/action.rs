@@ -18,4 +18,6 @@ pub enum Action {
     SaveConfig,
     /// Reload app-wide preferences from disk.
     ReloadConfig,
+    /// Reset app-wide preferences to compiled defaults and overwrite the config file.
+    ResetConfig,
 }

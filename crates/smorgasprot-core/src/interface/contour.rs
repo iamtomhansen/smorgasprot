@@ -2,7 +2,8 @@
 //! 
 //! ## Summary
 //! This is just a visualization layer tool. It draws borders around the 2D projections of residues
-//! and/or molecules in the interface map.
+//! and/or molecules in the interface map. [`compute_territory_contours`] is the main entry point,
+//! and it computes the model's [`ResidueTerritory`] s.
 //! 
 //! ## Considerations
 //! The size of the contour is scaled by the buried surface area of each atom, giving a visual
@@ -15,44 +16,68 @@
 //! are scaled by the buried surface area, and then a concave union is drawn, ensuring that
 //! residues are contiguous. The corners are then smoothed with Chaikin's corner-cutting algorithm.
 
+use super::definition::InterfaceSide;
 use super::model::{AtomNode, ProjectionPlane, ResidueTerritory};
+use crate::model::SurfaceMesh;
 use glam::{Vec2, Vec3};
 
 crate::param_group! {
     /// Padded, Voronoi-clipped residue territory contours on the 2D map.
     pub struct ContourParams("contour", "Residue Territories") {
+        /// Blend between shrinkwrap (`0.0`) and true buried-SASA circle area `π r² = ΔSASA` (`1.0`).
+        #[desc = "How accurately the padding radius reflects the buried surface area of each atom. 1 = true ΔSASA, but is often less readable."]
+        sasa_padding_scale: f32 = 0.75, 0.0..=1.0, "ΔSASA area scaling (0=shrinkwrap, 1=SASA)", "";
         /// Smallest padding disc around an atom (Å).
-        min_padding_radius_a: f32 = 0.5, 0.0..=3.0, "Min atom padding radius", "Å";
+        #[desc = "Minimum radius to draw around each atom to indicate its territory."]
+        min_padding_radius_a: f32 = 0.1, 0.0..=3.0, "Min atom padding radius", "Å";
         /// Largest padding disc around an atom (Å).
-        max_padding_radius_a: f32 = 2.15, 0.5..=5.0, "Max atom padding radius", "Å";
-        /// Padding growth per square root of buried area.
-        sasa_padding_scale: f32 = 0.22, 0.0..=1.0, "ΔSASA padding growth scale", "";
+        #[desc = "Maximum radius to draw around each atom to indicate its territory."]
+        max_padding_radius_a: f32 = 10.0, 0.0..=10.0, "Max atom padding radius", "Å";
         /// Smooth-minimum blend radius joining atom discs (Å).
-        smin_blend_a: f32 = 0.65, 0.0..=3.0, "Smooth-minimum blend radius", "Å";
+        #[desc = "Smooth-minimum blend radius for atom discs (0 = sharp corners, 1 = blobby contours)"]
+        smin_blend_a: f32 = 0.5, 0.0..=3.0, "Smoothing radius", "Å";
         /// Radius of capsules bridging bonded atoms (Å).
-        bridge_capsule_radius_a: f32 = 0.58, 0.0..=2.0, "Bonded bridge capsule radius", "Å";
-        /// Gap left between neighboring territories (Å).
-        voronoi_gap_a: f32 = 0.05, 0.0..=1.0, "Inter-territory Voronoi gap", "Å";
+        #[desc = "Adds bridges of this width to keep multi-atom surface patches contiguous."]
+        bridge_capsule_radius_a: f32 = 0.2, 0.0..=2.0, "Territory bridge width", "Å";
+        /// Inter-territory Voronoi gap (Å).
+        #[desc = "Distance to enforce between neighbouring territories."]
+        voronoi_gap_a: f32 = 0.1, 0.0..=1.0, "Inter-territory gap", "Å";
         /// Resolution of the per-residue SDF grid (cells per side).
+        #[desc = "Resolution of the per-residue SDF grid (cells per side)."]
         sdf_grid_res: usize = 36, 8..=128, "Per-residue SDF grid resolution", "";
+        /// Chaikin corner-cutting passes on each territory outline (0 = low-poly, 2 = ultra-smooth).
+        chaikin_passes: usize = 1, 0..=3, "Contour smoothing passes", "";
+        /// Spacing of interior Steiner vertices inside each territory mesh (Å; 0 = boundary-only ear clipping).
+        interior_mesh_step_a: f32 = 1.5, 0.0..=5.0, "Interior mesh spacing", "Å";
         /// Gaussian width for draping contours onto 3D atoms (Å).
         relief_drape_sigma_a: f32 = 1.85, 0.1..=5.0, "3D relief drape Gaussian width", "Å";
     }
 }
 
-/// Computes an atom's 2D territory splat radius from its buried surface area (`delta_SASA_i`):
-/// r_text i = clamp(r_min + scale * squrt(delta SASA_i), r_min, r_max)
+/// An atom's 2D territory disc radius from its buried surface area and `sasa_padding_scale`.
+/// sasa_padding_scale of 0 = shrinkwrap, 1 = draw true ΔSASA.
 #[inline]
 pub fn atom_padding_radius_a(buried_sasa_a2: f32, p: &ContourParams) -> f32 {
-    (p.min_padding_radius_a + p.sasa_padding_scale * buried_sasa_a2.max(0.0).sqrt())
-        .clamp(p.min_padding_radius_a, p.max_padding_radius_a)
+    let r_sasa = (buried_sasa_a2.max(0.0) / std::f32::consts::PI).sqrt();
+    let r_target = r_sasa.max(p.min_padding_radius_a);
+    let r = p.min_padding_radius_a + p.sasa_padding_scale.clamp(0.0, 1.0) * (r_target - p.min_padding_radius_a);
+    r.clamp(p.min_padding_radius_a, p.max_padding_radius_a)
 }
 
 /// Polynomial C^1 smooth minimum of two signed distances `a` and `b` with blend radius `k`.
 #[inline]
 fn smin_poly(a: f32, b: f32, k: f32) -> f32 {
+    if k <= 1e-5 {
+        return a.min(b);
+    }
     let h = (k - (a - b).abs()).max(0.0) / k;
     a.min(b) - h * h * k * 0.25
+}
+
+/// Polynomial C^1 smooth maximum of two signed distances `a` and `b` with blend radius `k`.
+#[inline]
+fn smax_poly(a: f32, b: f32, k: f32) -> f32 {
+    -smin_poly(-a, -b, k)
 }
 
 /// Signed distance from point `p` to a 2D line-segment capsule `(a, b)` of radius `r`.
@@ -71,6 +96,7 @@ pub fn compute_territory_contours(
     territories: &mut [ResidueTerritory],
     nodes: &[AtomNode],
     plane: &ProjectionPlane,
+    sheet: Option<(&SurfaceMesh, &[[f32; 2]])>,
     params: &ContourParams,
 ) {
     let n_terr = territories.len();
@@ -78,6 +104,7 @@ pub fn compute_territory_contours(
     let origin = Vec3::from(plane.origin);
     let axis_u = Vec3::from(plane.axis_u);
     let axis_v = Vec3::from(plane.axis_v);
+    let plane_normal = Vec3::from(plane.normal);
 
     for t_idx in 0..n_terr {
         let role = territories[t_idx].side;
@@ -85,7 +112,7 @@ pub fn compute_territory_contours(
         // delta_3d = pos_3d - (origin + u * axis_u + v * axis_v) captures both the atom's
         // 3D normal elevation (z-height) and its lateral relaxation displacement.
         let my_atoms: Vec<(Vec2, f32, Vec3)> = territories[t_idx]
-            .patch_atoms
+            .member_atoms
             .iter()
             .map(|&a_idx| {
                 let n = &nodes[a_idx.0 as usize];
@@ -149,24 +176,71 @@ pub fn compute_territory_contours(
         // Extract the closed counter-clockwise zero-contour loop via Marching Squares
         let raw_loop = extract_marching_squares_loop(&sdf, res, min_bb, step);
 
-        // Apply 2 passes of Chaikin corner-cutting for an organic contour
-        let smooth1 = chaikin_smooth(&raw_loop);
-        let smooth2 = chaikin_smooth(&smooth1);
+        // Apply configurable Chaikin corner-cutting passes (0 = low-poly, 2 = ultra-smooth).
+        let mut boundary = raw_loop;
+        for _ in 0..params.chaikin_passes.min(3) {
+            boundary = chaikin_smooth(&boundary);
+        }
 
-        // Drape every 2D contour vertex and the Pole of Inaccessibility onto the 3D atomic relief
-        let contour_3d: Vec<[f32; 3]> = smooth2
-            .iter()
-            .map(|&uv| drape_uv_to_3d(uv, &my_atoms, origin, axis_u, axis_v, params).to_array())
-            .collect();
-        let label_center_3d =
-            drape_uv_to_3d(best_poi_uv, &my_atoms, origin, axis_u, axis_v, params).to_array();
+        // Build interior Steiner mesh vertices (boundary 0..B + interior grid points strictly inside).
+        let mut mesh_uv = boundary.clone();
+        if params.interior_mesh_step_a > 0.05 && boundary.len() >= 3 {
+            let h = params.interior_mesh_step_a;
+            let margin = -0.25 * h;
+            let mut y = min_bb.y + 0.5 * h;
+            while y < max_bb.y {
+                let mut x = min_bb.x + 0.5 * h;
+                while x < max_bb.x {
+                    let pt = Vec2::new(x, y);
+                    if evaluate_territory_sdf(pt, &my_atoms, &bridges, &other_atoms, params) < margin
+                        && point_in_polygon(pt, &boundary)
+                    {
+                        mesh_uv.push(pt);
+                    }
+                    x += h;
+                }
+                y += h;
+            }
+        }
 
-        // Triangulated once on computation.
-        territories[t_idx].contour_triangles = triangulate_polygon(&smooth2);
-        territories[t_idx].contour_uv = smooth2.into_iter().map(|v| v.to_array()).collect();
-        territories[t_idx].contour_3d = contour_3d;
+        let triangles = if mesh_uv.len() > boundary.len() {
+            let delaunay = triangulate_delaunay_interior(&boundary, &mesh_uv);
+            if delaunay.is_empty() {
+                mesh_uv.truncate(boundary.len());
+                triangulate_polygon(&boundary)
+            } else {
+                delaunay
+            }
+        } else {
+            triangulate_polygon(&boundary)
+        };
+
+        // Drape both to atomic centers (blend = 0.0) and onto the curved uv_mesh sheet (blend = 1.0).
+        let drape_atoms = |uv: Vec2| -> [f32; 3] {
+            drape_uv_to_3d(uv, &my_atoms, origin, axis_u, axis_v, params).to_array()
+        };
+        let drape_sheet = |uv: Vec2| -> [f32; 3] {
+            if let Some((sheet_mesh, sheet_uv)) = sheet {
+                drape_uv_onto_sheet(uv, sheet_mesh, sheet_uv, role, plane_normal).to_array()
+            } else {
+                drape_atoms(uv)
+            }
+        };
+
+        let n_boundary = boundary.len();
+        let mesh_3d_atoms: Vec<[f32; 3]> = mesh_uv.iter().map(|&uv| drape_atoms(uv)).collect();
+        let mesh_3d_sheet: Vec<[f32; 3]> = mesh_uv.iter().map(|&uv| drape_sheet(uv)).collect();
+
+        territories[t_idx].contour_triangles = triangles;
+        territories[t_idx].contour_uv = boundary.into_iter().map(|v| v.to_array()).collect();
+        territories[t_idx].contour_3d = mesh_3d_atoms[..n_boundary].to_vec();
+        territories[t_idx].contour_3d_sheet = mesh_3d_sheet[..n_boundary].to_vec();
+        territories[t_idx].contour_mesh_uv = mesh_uv.into_iter().map(|v| v.to_array()).collect();
+        territories[t_idx].contour_mesh_3d_atoms = mesh_3d_atoms;
+        territories[t_idx].contour_mesh_3d_sheet = mesh_3d_sheet;
         territories[t_idx].label_center_uv = best_poi_uv.to_array();
-        territories[t_idx].label_center_3d = label_center_3d;
+        territories[t_idx].label_center_3d = drape_atoms(best_poi_uv);
+        territories[t_idx].label_center_3d_sheet = drape_sheet(best_poi_uv);
         territories[t_idx].local_uv_anchor = centroid.to_array();
     }
 }
@@ -182,17 +256,8 @@ fn evaluate_territory_sdf(
 ) -> f32 {
     // 1. Smooth union of our residue's ΔSASA-scaled atom circles + spanning-tree bridges.
     let mut d_my = f32::INFINITY;
-    let mut best_atom_pos = my_atoms[0].0;
-    let mut best_atom_rad = my_atoms[0].1;
-    let mut best_raw_sd = f32::INFINITY;
-
     for &(c, r, _) in my_atoms {
         let sd = p.distance(c) - r;
-        if sd < best_raw_sd {
-            best_raw_sd = sd;
-            best_atom_pos = c;
-            best_atom_rad = r;
-        }
         d_my = if d_my.is_infinite() {
             sd
         } else {
@@ -205,30 +270,26 @@ fn evaluate_territory_sdf(
         d_my = smin_poly(d_my, sd_cap, params.smin_blend_a * 0.7);
     }
 
-    // Fast exit if already well outside our own smooth union.
-    if d_my > 0.5 {
+    // Fast exit if already well outside our own smooth union or if no neighbor exists.
+    if d_my > 0.5 || other_atoms.is_empty() {
         return d_my;
     }
 
-    // 2. Radius-weighted Voronoi half-plane clipping against neighboring same-side residues.
-    let mut voronoi_clip = f32::NEG_INFINITY;
+    // 2. Smooth SDF Voronoi clipping against neighboring same-side residues:
+    //    `d_other` is the exact signed distance to neighboring residues' discs, so
+    //    `0.5 * (d_my - d_other + gap)` is C^1 continuous everywhere (zero switching seams)
+    //    and only clips where territories actually meet. `smax_poly` rounds corners cleanly.
+    let mut d_other = f32::INFINITY;
     for &(other_pos, other_rad) in other_atoms {
-        let dir = other_pos - best_atom_pos;
-        let dist = dir.length();
-        if dist < 1e-4 {
-            continue;
-        }
-        let unit_dir = dir / dist;
-        let weight_fraction = best_atom_rad / (best_atom_rad + other_rad).max(1e-4);
-        let max_proj = weight_fraction * dist - params.voronoi_gap_a;
-        let cur_proj = (p - best_atom_pos).dot(unit_dir);
-        let clip_sd = cur_proj - max_proj;
-        if clip_sd > voronoi_clip {
-            voronoi_clip = clip_sd;
+        let sd = p.distance(other_pos) - other_rad;
+        if sd < d_other {
+            d_other = sd;
         }
     }
 
-    d_my.max(voronoi_clip)
+    let voronoi_clip = 0.5 * (d_my - d_other + params.voronoi_gap_a);
+    let corner_blend = (0.35 * params.smin_blend_a).clamp(0.05, 0.35);
+    smax_poly(d_my, voronoi_clip, corner_blend)
 }
 
 /// Builds a Prim's minimal spanning tree of line segments connecting the atoms of a single residue
@@ -265,6 +326,92 @@ fn build_residue_spanning_bridges(atoms: &[(Vec2, f32, Vec3)]) -> Vec<(Vec2, Vec
     }
 
     bridges
+}
+
+/// Computes barycentric coordinates `(w0, w1, w2)` of `p` with respect to 2D triangle `(a, b, c)`
+/// and returns `(clamped_bary, dist_sq_to_triangle)`.
+fn closest_barycentric_2d(p: Vec2, a: Vec2, b: Vec2, c: Vec2) -> ([f32; 3], f32) {
+    let ab = b - a;
+    let ac = c - a;
+    let ap = p - a;
+    let d1 = ab.dot(ap);
+    let d2 = ac.dot(ap);
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return ([1.0, 0.0, 0.0], p.distance_squared(a));
+    }
+    let bp = p - b;
+    let d3 = ab.dot(bp);
+    let d4 = ac.dot(bp);
+    if d3 >= 0.0 && d4 <= d3 {
+        return ([0.0, 1.0, 0.0], p.distance_squared(b));
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        let v = d1 / (d1 - d3).max(1e-8);
+        let q = a + ab * v;
+        return ([1.0 - v, v, 0.0], p.distance_squared(q));
+    }
+    let cp = p - c;
+    let d5 = ab.dot(cp);
+    let d6 = ac.dot(cp);
+    if d6 >= 0.0 && d5 <= d6 {
+        return ([0.0, 0.0, 1.0], p.distance_squared(c));
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        let w = d2 / (d2 - d6).max(1e-8);
+        let q = a + ac * w;
+        return ([1.0 - w, 0.0, w], p.distance_squared(q));
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
+        let w = (d4 - d3) / ((d4 - d3) + (d5 - d6)).max(1e-8);
+        let q = b + (c - b) * w;
+        return ([0.0, 1.0 - w, w], p.distance_squared(q));
+    }
+    let denom = 1.0 / (va + vb + vc).max(1e-8);
+    let v = vb * denom;
+    let w = vc * denom;
+    ([1.0 - v - w, v, w], 0.0)
+}
+
+/// Drapes a 2D `(u, v)` contour vertex directly onto its containing (or nearest) 3D triangle of
+/// `sheet_mesh` using barycentric coordinates, with a small `±0.08 Å` normal offset per side.
+/// Because barycentric interpolation commutes with linear interpolation, the draped contour
+/// stays synchronized with the deforming `uv_mesh` at every `flatten_t ∈ [0, 1]`.
+fn drape_uv_onto_sheet(
+    uv: Vec2,
+    sheet_mesh: &SurfaceMesh,
+    sheet_uv: &[[f32; 2]],
+    _side: InterfaceSide,
+    _plane_normal: Vec3,
+) -> Vec3 {
+    let n_verts = sheet_mesh.vertices.len().min(sheet_uv.len());
+    let mut best_d2 = f32::INFINITY;
+    let mut best_pos = Vec3::ZERO;
+
+    for &[i0, i1, i2] in &sheet_mesh.triangles {
+        let (u0, u1, u2) = (i0 as usize, i1 as usize, i2 as usize);
+        if u0 >= n_verts || u1 >= n_verts || u2 >= n_verts {
+            continue;
+        }
+        let a2 = Vec2::from(sheet_uv[u0]);
+        let b2 = Vec2::from(sheet_uv[u1]);
+        let c2 = Vec2::from(sheet_uv[u2]);
+        let ([w0, w1, w2], d2) = closest_barycentric_2d(uv, a2, b2, c2);
+        if d2 < best_d2 {
+            best_d2 = d2;
+            let v0 = Vec3::from(sheet_mesh.vertices[u0]);
+            let v1 = Vec3::from(sheet_mesh.vertices[u1]);
+            let v2 = Vec3::from(sheet_mesh.vertices[u2]);
+            best_pos = w0 * v0 + w1 * v1 + w2 * v2;
+            if d2 == 0.0 {
+                break;
+            }
+        }
+    }
+
+    best_pos
 }
 
 /// Drapes a 2D projection-plane point `uv` onto the residue's 3D atomic relief at `flatten_t = 0.0`
@@ -398,7 +545,7 @@ fn extract_marching_squares_loop(sdf: &[f32], res: usize, min_bb: Vec2, step: Ve
             continue;
         }
         used[start_idx] = true;
-        let mut poly = vec![directed_edges[start_idx].2];
+        let mut poly = vec![directed_edges[start_idx].2, directed_edges[start_idx].3];
         let start_node = directed_edges[start_idx].0;
         let mut cur_node = directed_edges[start_idx].1;
 
@@ -407,7 +554,9 @@ fn extract_marching_squares_loop(sdf: &[f32], res: usize, min_bb: Vec2, step: Ve
             for (idx, &(u, v, _, pt_v)) in directed_edges.iter().enumerate() {
                 if !used[idx] && u == cur_node {
                     used[idx] = true;
-                    poly.push(pt_v);
+                    if v != start_node {
+                        poly.push(pt_v);
+                    }
                     found_next = Some(v);
                     break;
                 }
@@ -496,4 +645,128 @@ fn triangulate_polygon(points: &[Vec2]) -> Vec<[u32; 3]> {
         triangles.push([indices[0], indices[1], indices[2]]);
     }
     triangles
+}
+
+/// Ray-casting point-in-polygon test in 2D.
+fn point_in_polygon(p: Vec2, poly: &[Vec2]) -> bool {
+    let n = poly.len();
+    if n < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let pi = poly[i];
+        let pj = poly[j];
+        if ((pi.y > p.y) != (pj.y > p.y))
+            && (p.x < (pj.x - pi.x) * (p.y - pi.y) / (pj.y - pi.y) + pi.x)
+        {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+/// Returns true if `p` lies strictly inside the circumcircle of CCW triangle `(a, b, c)`.
+fn in_circumcircle(p: Vec2, a: Vec2, b: Vec2, c: Vec2) -> bool {
+    let (ax, ay) = ((a.x - p.x) as f64, (a.y - p.y) as f64);
+    let (bx, by) = ((b.x - p.x) as f64, (b.y - p.y) as f64);
+    let (cx, cy) = ((c.x - p.x) as f64, (c.y - p.y) as f64);
+    let orient = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+    let det = (ax * ax + ay * ay) * (bx * cy - cx * by)
+        - (bx * bx + by * by) * (ax * cy - cx * ay)
+        + (cx * cx + cy * cy) * (ax * by - bx * ay);
+    if orient >= 0.0 { det > 1e-10 } else { det < -1e-10 }
+}
+
+/// Bowyer–Watson 2D Delaunay triangulation of `points` (boundary `0..boundary.len()` + interior
+/// Steiner vertices), filtered to triangles whose centroid lies inside `boundary`.
+fn triangulate_delaunay_interior(boundary: &[Vec2], points: &[Vec2]) -> Vec<[u32; 3]> {
+    let n = points.len();
+    if n < 3 || boundary.len() < 3 {
+        return Vec::new();
+    }
+
+    let mut min_p = Vec2::splat(f32::INFINITY);
+    let mut max_p = Vec2::splat(f32::NEG_INFINITY);
+    for &p in points {
+        min_p = min_p.min(p);
+        max_p = max_p.max(p);
+    }
+    let span = (max_p.x - min_p.x).max(max_p.y - min_p.y).max(1.0);
+    let mid = 0.5 * (min_p + max_p);
+
+    // Super-triangle containing all points.
+    let mut pts = Vec::with_capacity(n + 3);
+    pts.extend_from_slice(points);
+    let s0 = n;
+    let s1 = n + 1;
+    let s2 = n + 2;
+    pts.push(Vec2::new(mid.x - 20.0 * span, mid.y - span));
+    pts.push(Vec2::new(mid.x, mid.y + 20.0 * span));
+    pts.push(Vec2::new(mid.x + 20.0 * span, mid.y - span));
+
+    let mut tris: Vec<[usize; 3]> = vec![[s0, s1, s2]];
+
+    for p_idx in 0..n {
+        let p = pts[p_idx];
+        let mut bad = Vec::new();
+        for (ti, &[a, b, c]) in tris.iter().enumerate() {
+            if in_circumcircle(p, pts[a], pts[b], pts[c]) {
+                bad.push(ti);
+            }
+        }
+        if bad.is_empty() {
+            continue;
+        }
+
+        // Collect boundary edges of the polygonal hole (edges belonging to only 1 bad triangle).
+        let mut edges: Vec<(usize, usize)> = Vec::with_capacity(bad.len() * 3);
+        for &ti in &bad {
+            let [a, b, c] = tris[ti];
+            edges.push((a, b));
+            edges.push((b, c));
+            edges.push((c, a));
+        }
+
+        let mut poly_edges = Vec::new();
+        for (ei, &(u, v)) in edges.iter().enumerate() {
+            let shared = edges
+                .iter()
+                .enumerate()
+                .any(|(ej, &(a, b))| ej != ei && ((a == u && b == v) || (a == v && b == u)));
+            if !shared {
+                poly_edges.push((u, v));
+            }
+        }
+
+        // Remove bad triangles (in reverse index order).
+        for &ti in bad.iter().rev() {
+            tris.swap_remove(ti);
+        }
+
+        for (u, v) in poly_edges {
+            tris.push([u, v, p_idx]);
+        }
+    }
+
+    // Drop super-triangle vertices and keep only triangles strictly inside the concave boundary.
+    let mut out = Vec::with_capacity(tris.len());
+    for [a, b, c] in tris {
+        if a >= n || b >= n || c >= n {
+            continue;
+        }
+        let centroid = (pts[a] + pts[b] + pts[c]) / 3.0;
+        if point_in_polygon(centroid, boundary) {
+            // Ensure CCW winding.
+            let cross = (pts[b] - pts[a]).perp_dot(pts[c] - pts[a]);
+            if cross >= 0.0 {
+                out.push([a as u32, b as u32, c as u32]);
+            } else {
+                out.push([a as u32, c as u32, b as u32]);
+            }
+        }
+    }
+    out
 }

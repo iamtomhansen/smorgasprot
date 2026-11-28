@@ -171,6 +171,24 @@ impl SmorgasprotApp {
                     None => StatusMessage::warning("No config path available.", now, &self.state.view_params.status),
                 });
             }
+            Action::ResetConfig => {
+                let default_cfg = AppConfig::default();
+                self.apply_reloaded_config(default_cfg.clone());
+                self.status = Some(match self.config_watcher.path().map(Path::to_path_buf) {
+                    Some(path) => match default_cfg.save_to(&path) {
+                        Ok(()) => {
+                            self.config_watcher.record_synced();
+                            StatusMessage::success(
+                                format!("Reset config to defaults ({})", path.display()),
+                                now,
+                                &self.state.view_params.status,
+                            )
+                        }
+                        Err(err) => StatusMessage::error(err, now, &self.state.view_params.status),
+                    },
+                    None => StatusMessage::info("Reset preferences to defaults.", now, &self.state.view_params.status),
+                });
+            }
         }
     }
 
@@ -286,6 +304,7 @@ impl eframe::App for SmorgasprotApp {
             ds.poll_draw_surface_remesh(now);
             ds.poll_interface_sheet_remesh(now);
             ds.poll_cavity_remesh(now);
+            ds.poll_contour_remesh(now);
         }
 
         // Poll app config for external edits at the configured cadence.
@@ -430,6 +449,9 @@ impl eframe::App for SmorgasprotApp {
                 ctx.request_repaint_after(std::time::Duration::from_secs_f64(rem));
             }
             if let Some(rem) = ds.poll_cavity_remesh(now) {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(rem));
+            }
+            if let Some(rem) = ds.poll_contour_remesh(now) {
                 ctx.request_repaint_after(std::time::Duration::from_secs_f64(rem));
             }
         }

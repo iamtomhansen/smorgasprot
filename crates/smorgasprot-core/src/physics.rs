@@ -370,21 +370,26 @@ pub fn extract_3d_interface_graph(
                 chain_id: res.chain_id.clone(),
                 label_top,
                 label_bottom,
-                patch_atoms: Vec::new(),
+                member_atoms: Vec::new(),
                 buried_sasa_a2: 0.0,
                 has_unsatisfied_polar: false,
                 contour_uv: Vec::new(),
                 contour_3d: Vec::new(),
+                contour_3d_sheet: Vec::new(),
+                contour_mesh_uv: Vec::new(),
+                contour_mesh_3d_atoms: Vec::new(),
+                contour_mesh_3d_sheet: Vec::new(),
                 contour_triangles: Vec::new(),
                 label_center_uv: [0.0, 0.0],
                 label_center_3d: [0.0, 0.0, 0.0],
+                label_center_3d_sheet: [0.0, 0.0, 0.0],
                 local_uv_anchor: [0.0, 0.0],
             });
             t_idx
         });
 
         let p_idx = AtomNodeIdx(nodes.len() as u32);
-        territories[terr_idx.0 as usize].patch_atoms.push(p_idx);
+        territories[terr_idx.0 as usize].member_atoms.push(p_idx);
         territories[terr_idx.0 as usize].buried_sasa_a2 += sasa.buried_sasa_a2;
 
         nodes.push(AtomNode {
